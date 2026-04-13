@@ -125,9 +125,9 @@ def run_prediction(ticker):
         "last_date":  last_date,
     }
 
-# ── build searchable list ─────────────────────────────────────
-# Each entry: display label → ticker symbol
-# We add a plain-English + Hebrew alias string so typing either works
+# ── split stocks by market ───────────────────────────────────
+TASE_STOCKS = {k: v for k, v in PRESET_STOCKS.items() if v.endswith(".TA")}
+US_STOCKS   = {k: v for k, v in PRESET_STOCKS.items() if not v.endswith(".TA") and v != "__custom__"}
 STOCK_OPTIONS = {k: v for k, v in PRESET_STOCKS.items() if v != "__custom__"}
 
 # ── UI ───────────────────────────────────────────────────────
@@ -139,11 +139,22 @@ tab1, tab2 = st.tabs(["🔍 מניה בודדת", "📊 סורק מניות"])
 
 # ── TAB 1: single stock ──────────────────────────────────────
 with tab1:
-    st.markdown("**חפש מניה** — הקלד שם בעברית, אנגלית, או סימול (לדוג׳ ESLT.TA)")
+    market = st.radio(
+        "שוק",
+        ["🇮🇱 ישראל (TASE)", "🇺🇸 ארה״ב (US)", "🌍 הכל"],
+        horizontal=True,
+    )
+
+    if market == "🇮🇱 ישראל (TASE)":
+        filtered = TASE_STOCKS
+    elif market == "🇺🇸 ארה״ב (US)":
+        filtered = US_STOCKS
+    else:
+        filtered = STOCK_OPTIONS
 
     choice = st.selectbox(
         label="בחר מניה",
-        options=list(STOCK_OPTIONS.keys()),
+        options=list(filtered.keys()),
         index=0,
         placeholder="התחל להקליד שם מניה...",
         label_visibility="collapsed",
@@ -151,7 +162,7 @@ with tab1:
 
     st.caption("מניה שלא ברשימה? הקלד את הסימול ישירות:")
     custom_ticker = st.text_input("סימול מותאם אישית (לדוג׳ MSFT או BEZQ.TA)", "").strip().upper()
-    ticker = custom_ticker if custom_ticker else STOCK_OPTIONS[choice]
+    ticker = custom_ticker if custom_ticker else filtered[choice]
 
     if st.button("Run Prediction", type="primary", disabled=not ticker):
         with st.spinner(f"Downloading {ticker} data and training model..."):
@@ -183,18 +194,27 @@ with tab1:
 
 # ── TAB 2: scanner ───────────────────────────────────────────
 with tab2:
-    st.markdown("סרוק את כל המניות ברשימה ומיין לפי Confidence")
+    st.markdown("סרוק מניות ומיין לפי Confidence")
 
-    col_a, col_b, col_c = st.columns([1, 1, 2])
+    col_a, col_b, col_c, col_d = st.columns([1, 1, 1, 1])
     with col_a:
-        filter_signal = st.selectbox("סנן לפי Signal", ["הכל", "BUY", "SELL", "HOLD"])
+        scan_market = st.selectbox("שוק", ["🌍 הכל", "🇮🇱 ישראל (TASE)", "🇺🇸 ארה״ב (US)"])
     with col_b:
+        filter_signal = st.selectbox("סנן לפי Signal", ["הכל", "BUY", "SELL", "HOLD"])
+    with col_c:
         top_n = st.number_input("הצג Top N", min_value=1, max_value=50, value=10)
 
-    if st.button("סרוק את כל המניות", type="primary"):
+    if scan_market == "🇮🇱 ישראל (TASE)":
+        scan_list = TASE_STOCKS
+    elif scan_market == "🇺🇸 ארה״ב (US)":
+        scan_list = US_STOCKS
+    else:
+        scan_list = STOCK_OPTIONS
+
+    if st.button("סרוק מניות", type="primary"):
         rows = []
         progress = st.progress(0, text="מוריד נתונים ומאמן מודלים...")
-        tickers_list = list(STOCK_OPTIONS.items())
+        tickers_list = list(scan_list.items())
 
         for i, (name, sym) in enumerate(tickers_list):
             progress.progress((i + 1) / len(tickers_list), text=f"מעבד {sym}...")
@@ -232,4 +252,4 @@ with tab2:
 
             styled = df_results.style.map(color_signal, subset=["Signal"])
             st.dataframe(styled, use_container_width=True)
-            st.caption(f"מציג {len(df_results)} מניות מתוך {len(STOCK_OPTIONS)} · ממוין לפי Confidence")
+            st.caption(f"מציג {len(df_results)} מניות מתוך {len(scan_list)} · ממוין לפי Confidence")
