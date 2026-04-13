@@ -410,6 +410,10 @@ with tab2:
 
     def show_results(df_all):
         df_view = df_all.copy()
+        # clean up number formatting
+        df_view["Confidence"] = df_view["Confidence"].apply(lambda x: f"{x:.1f}%")
+        df_view["Accuracy"]   = df_view["Accuracy"].apply(lambda x: f"{x:.1f}%")
+        df_view["מחיר"]       = df_view["מחיר"].apply(lambda x: f"{x:,.2f}")
         if filter_signal != "הכל":
             df_view = df_view[df_view["Signal"] == filter_signal]
         df_view = df_view.sort_values("Confidence", ascending=False).head(top_n).reset_index(drop=True)
@@ -418,11 +422,23 @@ with tab2:
             st.warning("לא נמצאו מניות עם הפילטר שנבחר.")
         else:
             def color_signal(val):
-                colors = {"BUY": "background-color: #d4edda; color: #155724",
-                          "SELL": "background-color: #f8d7da; color: #721c24",
-                          "HOLD": "background-color: #fff3cd; color: #856404"}
+                colors = {
+                    "BUY":  "background-color: #0d3320; color: #4ade80; font-weight: bold",
+                    "SELL": "background-color: #3b0d0d; color: #f87171; font-weight: bold",
+                    "HOLD": "background-color: #3b2d00; color: #fbbf24; font-weight: bold",
+                }
                 return colors.get(val, "")
-            st.dataframe(df_view.style.map(color_signal, subset=["Signal"]), use_container_width=True)
+            def color_conf(val):
+                num = float(val.replace("%",""))
+                if num >= 70: return "color: #4ade80; font-weight: bold"
+                if num >= 55: return "color: #fbbf24"
+                return "color: #f87171"
+            styled = (df_view.style
+                      .map(color_signal, subset=["Signal"])
+                      .map(color_conf,   subset=["Confidence"])
+                      .set_properties(**{"background-color": "#1a1a2e", "color": "#e0e0e0", "border-color": "#333"})
+                      .set_table_styles([{"selector": "th", "props": [("background-color","#0f0c29"),("color","#aaa"),("font-size","0.85rem")]}]))
+            st.dataframe(styled, use_container_width=True, height=min(40 * len(df_view) + 50, 600))
             updated = json.load(open(cache_file, encoding="utf-8"))["updated"] if os.path.exists(cache_file) else "לא ידוע"
             st.caption(f"מציג {len(df_view)} מניות מתוך {len(df_all)} · ממוין לפי Confidence · עודכן: {updated}")
 
