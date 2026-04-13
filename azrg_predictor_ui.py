@@ -5,6 +5,26 @@ import yfinance as yf
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score
 
+@st.cache_data(show_spinner=False)
+def load_sp500():
+    """Fetch S&P 500 components from Wikipedia."""
+    url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+    df = pd.read_html(url)[0]
+    return dict(zip(df["Security"], df["Symbol"].str.replace(".", "-", regex=False)))
+
+@st.cache_data(show_spinner=False)
+def load_nasdaq100():
+    """Fetch NASDAQ-100 components from Wikipedia."""
+    url = "https://en.wikipedia.org/wiki/Nasdaq-100"
+    tables = pd.read_html(url)
+    # find the table with Symbol column
+    for t in tables:
+        if "Ticker" in t.columns or "Symbol" in t.columns:
+            col = "Ticker" if "Ticker" in t.columns else "Symbol"
+            name_col = "Company" if "Company" in t.columns else t.columns[0]
+            return dict(zip(t[name_col], t[col].str.replace(".", "-", regex=False)))
+    return NASDAQ100  # fallback to hardcoded
+
 # ── constants ────────────────────────────────────────────────
 PERIOD       = "5y"
 FORWARD_DAYS = 5
@@ -301,7 +321,7 @@ with tab2:
 
     col_a, col_b, col_c, col_d = st.columns([1, 1, 1, 1])
     with col_a:
-        scan_market = st.selectbox("שוק", ["🌍 הכל", "🇮🇱 ישראל (TASE)", "🇺🇸 ארה״ב (US)", "📈 NASDAQ-100"])
+        scan_market = st.selectbox("שוק", ["🌍 הכל", "🇮🇱 ישראל (TASE)", "🇺🇸 ארה״ב (US)", "📈 NASDAQ-100", "📊 S&P 500"])
     with col_b:
         filter_signal = st.selectbox("סנן לפי Signal", ["הכל", "BUY", "SELL", "HOLD"])
     with col_c:
@@ -312,8 +332,11 @@ with tab2:
     elif scan_market == "🇺🇸 ארה״ב (US)":
         scan_list = US_STOCKS
     elif scan_market == "📈 NASDAQ-100":
-        scan_list = NASDAQ100
+        scan_list = load_nasdaq100()
         st.warning("סריקת NASDAQ-100 תיקח כ-8-10 דקות. הראשונה בלבד — הבאות מהירות יותר.")
+    elif scan_market == "📊 S&P 500":
+        scan_list = load_sp500()
+        st.warning("סריקת S&P 500 תיקח כ-40-45 דקות. הראשונה בלבד — הבאות מהירות יותר.")
     else:
         scan_list = STOCK_OPTIONS
 
