@@ -292,8 +292,22 @@ st.markdown("""
     }
     .stButton > button[kind="primary"]:hover { opacity: 0.85; transform: scale(1.02); }
 
-    /* Selectbox & inputs */
-    .stSelectbox > div, .stNumberInput > div { background: rgba(255,255,255,0.07) !important; border-radius: 8px !important; }
+    /* Selectbox & inputs — readable text */
+    .stSelectbox > div > div, .stTextInput > div > div > input, .stNumberInput input {
+        background: rgba(255,255,255,0.1) !important;
+        color: #ffffff !important;
+        border: 1px solid rgba(255,255,255,0.2) !important;
+        border-radius: 8px !important;
+    }
+    .stSelectbox svg { fill: #fff !important; }
+    /* Radio buttons */
+    .stRadio label { color: #ddd !important; font-size: 0.95rem !important; }
+    /* General text */
+    p, label, .stMarkdown { color: #ddd !important; }
+    /* Dropdown options */
+    [data-baseweb="popover"] { background: #1e1e3f !important; }
+    [data-baseweb="option"] { background: #1e1e3f !important; color: #fff !important; }
+    [data-baseweb="option"]:hover { background: #302b63 !important; }
 
     /* Dataframe */
     .stDataFrame { border-radius: 12px; overflow: hidden; }
