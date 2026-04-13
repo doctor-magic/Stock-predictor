@@ -47,6 +47,109 @@ PRESET_STOCKS = {
     "Custom ticker...":                 "__custom__",
 }
 
+# ── NASDAQ-100 tickers ────────────────────────────────────────
+NASDAQ100 = {
+    "Apple":                  "AAPL",
+    "Microsoft":              "MSFT",
+    "NVIDIA":                 "NVDA",
+    "Amazon":                 "AMZN",
+    "Meta":                   "META",
+    "Broadcom":               "AVGO",
+    "Tesla":                  "TSLA",
+    "Costco":                 "COST",
+    "Alphabet (GOOGL)":       "GOOGL",
+    "Alphabet (GOOG)":        "GOOG",
+    "Netflix":                "NFLX",
+    "T-Mobile":               "TMUS",
+    "ASML":                   "ASML",
+    "Cisco":                  "CSCO",
+    "Adobe":                  "ADBE",
+    "AMD":                    "AMD",
+    "PepsiCo":                "PEP",
+    "Linde":                  "LIN",
+    "Qualcomm":               "QCOM",
+    "Intuit":                 "INTU",
+    "Texas Instruments":      "TXN",
+    "Intuitive Surgical":     "ISRG",
+    "Comcast":                "CMCSA",
+    "Booking Holdings":       "BKNG",
+    "Amgen":                  "AMGN",
+    "Honeywell":              "HON",
+    "Vertex Pharma":          "VRTX",
+    "Palo Alto Networks":     "PANW",
+    "ADP":                    "ADP",
+    "Starbucks":              "SBUX",
+    "Gilead Sciences":        "GILD",
+    "Micron":                 "MU",
+    "Analog Devices":         "ADI",
+    "Intel":                  "INTC",
+    "Regeneron":              "REGN",
+    "Lam Research":           "LRCX",
+    "Mondelez":               "MDLZ",
+    "KLA Corp":               "KLAC",
+    "Synopsys":               "SNPS",
+    "Cadence Design":         "CDNS",
+    "MercadoLibre":           "MELI",
+    "Airbnb":                 "ABNB",
+    "Fortinet":               "FTNT",
+    "Cintas":                 "CTAS",
+    "CSX":                    "CSX",
+    "O'Reilly Auto":          "ORLY",
+    "Marvell Tech":           "MRVL",
+    "Paccar":                 "PCAR",
+    "Workday":                "WDAY",
+    "Constellation Energy":   "CEG",
+    "NXP Semi":               "NXPI",
+    "Copart":                 "CPRT",
+    "Keurig Dr Pepper":       "KDP",
+    "Ross Stores":            "ROST",
+    "Dexcom":                 "DXCM",
+    "Diamondback Energy":     "FANG",
+    "Trade Desk":             "TTD",
+    "Paychex":                "PAYX",
+    "GE HealthCare":          "GEHC",
+    "AstraZeneca":            "AZN",
+    "IDEXX Labs":             "IDXX",
+    "Old Dominion Freight":   "ODFL",
+    "Fastenal":               "FAST",
+    "Cognizant":              "CTSH",
+    "Verisk Analytics":       "VRSK",
+    "Microchip Tech":         "MCHP",
+    "Biogen":                 "BIIB",
+    "ON Semi":                "ON",
+    "Datadog":                "DDOG",
+    "Atlassian":              "TEAM",
+    "Exelon":                 "EXC",
+    "Xcel Energy":            "XEL",
+    "Monster Beverage":       "MNST",
+    "ANSYS":                  "ANSS",
+    "Charter Comm":           "CHTR",
+    "Illumina":               "ILMN",
+    "Zscaler":                "ZS",
+    "PayPal":                 "PYPL",
+    "PDD Holdings":           "PDD",
+    "CrowdStrike":            "CRWD",
+    "Splunk":                 "SPLK",
+    "Rivian":                 "RIVN",
+    "Lucid Group":            "LCID",
+    "Dollar Tree":            "DLTR",
+    "Warner Bros":            "WBD",
+    "Zoom":                   "ZM",
+    "MongoDB":                "MDB",
+    "Snowflake":              "SNOW",
+    "Cloudflare":             "NET",
+    "Uber":                   "UBER",
+    "Arm Holdings":           "ARM",
+    "Lululemon":              "LULU",
+    "Moderna":                "MRNA",
+    "Mercado Libre":          "MELI",
+    "Super Micro":            "SMCI",
+    "DoorDash":               "DASH",
+    "CoStar Group":           "CSGP",
+    "Electronic Arts":        "EA",
+    "Kraft Heinz":            "KHC",
+}
+
 # ── helpers ──────────────────────────────────────────────────
 def compute_rsi(series, period=14):
     delta    = series.diff()
@@ -198,16 +301,19 @@ with tab2:
 
     col_a, col_b, col_c, col_d = st.columns([1, 1, 1, 1])
     with col_a:
-        scan_market = st.selectbox("שוק", ["🌍 הכל", "🇮🇱 ישראל (TASE)", "🇺🇸 ארה״ב (US)"])
+        scan_market = st.selectbox("שוק", ["🌍 הכל", "🇮🇱 ישראל (TASE)", "🇺🇸 ארה״ב (US)", "📈 NASDAQ-100"])
     with col_b:
         filter_signal = st.selectbox("סנן לפי Signal", ["הכל", "BUY", "SELL", "HOLD"])
     with col_c:
-        top_n = st.number_input("הצג Top N", min_value=1, max_value=50, value=10)
+        top_n = st.number_input("הצג Top N", min_value=1, max_value=100, value=10)
 
     if scan_market == "🇮🇱 ישראל (TASE)":
         scan_list = TASE_STOCKS
     elif scan_market == "🇺🇸 ארה״ב (US)":
         scan_list = US_STOCKS
+    elif scan_market == "📈 NASDAQ-100":
+        scan_list = NASDAQ100
+        st.warning("סריקת NASDAQ-100 תיקח כ-8-10 דקות. הראשונה בלבד — הבאות מהירות יותר.")
     else:
         scan_list = STOCK_OPTIONS
 
