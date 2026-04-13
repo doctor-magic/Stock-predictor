@@ -258,6 +258,54 @@ STOCK_OPTIONS = {k: v for k, v in PRESET_STOCKS.items() if v != "__custom__"}
 
 # ── UI ───────────────────────────────────────────────────────
 st.set_page_config(page_title="Stock Swing Predictor", page_icon="📈", layout="wide")
+
+st.markdown("""
+<style>
+    /* Background */
+    .stApp { background: linear-gradient(135deg, #0f0c29, #302b63, #24243e); color: #f0f0f0; }
+
+    /* Title */
+    h1 { font-size: 2.6rem !important; font-weight: 800 !important;
+         background: linear-gradient(90deg, #00d2ff, #a200ff);
+         -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+
+    /* Tabs */
+    .stTabs [data-baseweb="tab"] { font-size: 1rem; font-weight: 600; color: #ccc; }
+    .stTabs [aria-selected="true"] { color: #00d2ff !important; border-bottom: 2px solid #00d2ff; }
+
+    /* Metric cards */
+    [data-testid="metric-container"] {
+        background: rgba(255,255,255,0.07);
+        border: 1px solid rgba(255,255,255,0.15);
+        border-radius: 12px; padding: 16px;
+        backdrop-filter: blur(10px);
+    }
+    [data-testid="metric-container"] label { color: #aaa !important; font-size: 0.85rem !important; }
+    [data-testid="metric-container"] [data-testid="stMetricValue"] { font-size: 1.6rem !important; font-weight: 700 !important; color: #fff !important; }
+
+    /* Primary button */
+    .stButton > button[kind="primary"] {
+        background: linear-gradient(90deg, #00d2ff, #a200ff) !important;
+        border: none !important; color: white !important;
+        font-weight: 700 !important; border-radius: 8px !important;
+        padding: 0.5rem 2rem !important; font-size: 1rem !important;
+    }
+    .stButton > button[kind="primary"]:hover { opacity: 0.85; transform: scale(1.02); }
+
+    /* Selectbox & inputs */
+    .stSelectbox > div, .stNumberInput > div { background: rgba(255,255,255,0.07) !important; border-radius: 8px !important; }
+
+    /* Dataframe */
+    .stDataFrame { border-radius: 12px; overflow: hidden; }
+
+    /* Divider */
+    hr { border-color: rgba(255,255,255,0.1) !important; }
+
+    /* Caption */
+    .stCaption { color: #888 !important; }
+</style>
+""", unsafe_allow_html=True)
+
 st.title("📈 Stock Swing Predictor")
 st.caption("Random Forest · 3-5 day outlook · No cloud calls · Free data")
 
