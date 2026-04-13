@@ -5,25 +5,28 @@ import yfinance as yf
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score
 
+import requests
+from io import StringIO
+
+HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+
 @st.cache_data(show_spinner=False)
 def load_sp500():
-    """Fetch S&P 500 components from Wikipedia."""
-    url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-    df = pd.read_html(url)[0]
+    url  = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+    html = requests.get(url, headers=HEADERS, timeout=15).text
+    df   = pd.read_html(StringIO(html))[0]
     return dict(zip(df["Security"], df["Symbol"].str.replace(".", "-", regex=False)))
 
 @st.cache_data(show_spinner=False)
 def load_nasdaq100():
-    """Fetch NASDAQ-100 components from Wikipedia."""
-    url = "https://en.wikipedia.org/wiki/Nasdaq-100"
-    tables = pd.read_html(url)
-    # find the table with Symbol column
-    for t in tables:
+    url  = "https://en.wikipedia.org/wiki/Nasdaq-100"
+    html = requests.get(url, headers=HEADERS, timeout=15).text
+    for t in pd.read_html(StringIO(html)):
         if "Ticker" in t.columns or "Symbol" in t.columns:
-            col = "Ticker" if "Ticker" in t.columns else "Symbol"
+            col      = "Ticker" if "Ticker" in t.columns else "Symbol"
             name_col = "Company" if "Company" in t.columns else t.columns[0]
             return dict(zip(t[name_col], t[col].str.replace(".", "-", regex=False)))
-    return NASDAQ100  # fallback to hardcoded
+    return NASDAQ100
 
 # ── constants ────────────────────────────────────────────────
 PERIOD       = "5y"
@@ -340,7 +343,36 @@ with tab2:
     else:
         scan_list = STOCK_OPTIONS
 
-    if st.button("סרוק מניות", type="primary"):
+    import os, json
+    cache_file = os.path.join(os.path.dirname(__file__), f"scan_cache_{scan_market.split()[0].strip()}.json")
+
+    def show_results(df_all):
+        df_view = df_all.copy()
+        if filter_signal != "הכל":
+            df_view = df_view[df_view["Signal"] == filter_signal]
+        df_view = df_view.sort_values("Confidence", ascending=False).head(top_n).reset_index(drop=True)
+        df_view.index += 1
+        if df_view.empty:
+            st.warning("לא נמצאו מניות עם הפילטר שנבחר.")
+        else:
+            def color_signal(val):
+                colors = {"BUY": "background-color: #d4edda; color: #155724",
+                          "SELL": "background-color: #f8d7da; color: #721c24",
+                          "HOLD": "background-color: #fff3cd; color: #856404"}
+                return colors.get(val, "")
+            st.dataframe(df_view.style.map(color_signal, subset=["Signal"]), use_container_width=True)
+            updated = json.load(open(cache_file, encoding="utf-8"))["updated"] if os.path.exists(cache_file) else "לא ידוע"
+            st.caption(f"מציג {len(df_view)} מניות מתוך {len(df_all)} · ממוין לפי Confidence · עודכן: {updated}")
+
+    # show cached results if exist
+    if os.path.exists(cache_file):
+        cached = json.load(open(cache_file, encoding="utf-8"))
+        df_cached = pd.DataFrame(cached["rows"])
+        st.success(f"תוצאות שמורות מ-{cached['updated']} — לחץ 'עדכן סריקה' לרענון")
+        show_results(df_cached)
+
+    btn_label = "עדכן סריקה" if os.path.exists(cache_file) else "סרוק מניות"
+    if st.button(btn_label, type="primary"):
         rows = []
         progress = st.progress(0, text="מוריד נתונים ומאמן מודלים...")
         tickers_list = list(scan_list.items())
@@ -359,26 +391,9 @@ with tab2:
                 })
 
         progress.empty()
-
-        df_results = pd.DataFrame(rows)
-
-        # filter
-        if filter_signal != "הכל":
-            df_results = df_results[df_results["Signal"] == filter_signal]
-
-        # sort by confidence, take top N
-        df_results = df_results.sort_values("Confidence", ascending=False).head(top_n).reset_index(drop=True)
-        df_results.index += 1  # start from 1
-
-        if df_results.empty:
-            st.warning("לא נמצאו מניות עם הפילטר שנבחר.")
-        else:
-            def color_signal(val):
-                colors = {"BUY": "background-color: #d4edda; color: #155724",
-                          "SELL": "background-color: #f8d7da; color: #721c24",
-                          "HOLD": "background-color: #fff3cd; color: #856404"}
-                return colors.get(val, "")
-
-            styled = df_results.style.map(color_signal, subset=["Signal"])
-            st.dataframe(styled, use_container_width=True)
-            st.caption(f"מציג {len(df_results)} מניות מתוך {len(scan_list)} · ממוין לפי Confidence")
+        from datetime import date
+        payload = {"updated": str(date.today()), "rows": rows}
+        with open(cache_file, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False)
+        st.success(f"סריקה הושלמה — {len(rows)} מניות נסרקו. דחוף ל-GitHub כדי לשתף עם החברים.")
+        show_results(pd.DataFrame(rows))
