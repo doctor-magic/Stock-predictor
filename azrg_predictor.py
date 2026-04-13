@@ -22,9 +22,11 @@ FEATURES = [
 
 def compute_rsi(series: pd.Series, period: int = 14) -> pd.Series:
     delta = series.diff()
-    gain = delta.where(delta > 0, 0.0).rolling(period).mean()
-    loss = (-delta.where(delta < 0, 0.0)).rolling(period).mean()
-    rs = gain / loss
+    gain = delta.clip(lower=0)
+    loss = (-delta).clip(lower=0)
+    avg_gain = gain.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
+    rs = avg_gain / avg_loss.replace(0, np.nan)
     return 100 - (100 / (1 + rs))
 
 
@@ -36,7 +38,7 @@ def add_labels(df: pd.DataFrame) -> pd.DataFrame:
     pass  # Task 4
 
 
-def train_and_evaluate(df: pd.DataFrame):
+def train_and_evaluate(df: pd.DataFrame) -> tuple[RandomForestClassifier, float]:
     pass  # Task 5
 
 
