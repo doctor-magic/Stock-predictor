@@ -494,24 +494,40 @@ with tab2:
         if df_view.empty:
             st.warning("לא נמצאו מניות עם הפילטר שנבחר.")
         else:
-            def color_signal(val):
-                colors = {
-                    "BUY":  "background-color: #0d3320; color: #4ade80; font-weight: bold",
-                    "SELL": "background-color: #3b0d0d; color: #f87171; font-weight: bold",
-                    "HOLD": "background-color: #3b2d00; color: #fbbf24; font-weight: bold",
-                }
-                return colors.get(val, "")
-            def color_conf(val):
-                num = float(val.replace("%",""))
-                if num >= 70: return "color: #4ade80; font-weight: bold"
-                if num >= 55: return "color: #fbbf24"
-                return "color: #f87171"
-            styled = (df_view.style
-                      .map(color_signal, subset=["Signal"])
-                      .map(color_conf,   subset=["Confidence"])
-                      .set_properties(**{"background-color": "#1a1a2e", "color": "#e0e0e0", "border-color": "#333"})
-                      .set_table_styles([{"selector": "th", "props": [("background-color","#0f0c29"),("color","#aaa"),("font-size","0.85rem")]}]))
-            st.dataframe(styled, use_container_width=True, height=min(40 * len(df_view) + 50, 600), column_config={"סימול": st.column_config.LinkColumn("סימול", display_text=r"https://finance\.yahoo\.com/quote/(.*)")})
+            SIG_STYLE = {
+                "BUY":  "background:#0d3320;color:#4ade80;font-weight:bold",
+                "SELL": "background:#3b0d0d;color:#f87171;font-weight:bold",
+                "HOLD": "background:#3b2d00;color:#fbbf24;font-weight:bold",
+            }
+            TD = 'style="padding:8px 14px;border-bottom:1px solid #2a2a3e;'
+            rows_html = ""
+            for i, row in df_view.iterrows():
+                conf_num = float(row["Confidence"].replace("%",""))
+                conf_col = "#4ade80" if conf_num >= 70 else "#fbbf24" if conf_num >= 55 else "#f87171"
+                sym_url  = row["סימול"]
+                sym_name = sym_url.split("/quote/")[-1]
+                rows_html += (
+                    f'<tr>' +
+                    f'<td {TD}color:#666;">{i}</td>' +
+                    f'<td {TD}color:#e0e0e0;">{row["מניה"]}</td>' +
+                    f'<td {TD}">' +
+                    f'<a href="{sym_url}" target="_blank" ' +
+                    f'style="color:#38bdf8;text-decoration:underline;font-weight:700;font-family:monospace;font-size:0.9rem;">{sym_name}</a></td>' +
+                    f'<td {TD}{SIG_STYLE.get(row["Signal"],"")};">{row["Signal"]}</td>' +
+                    f'<td {TD}color:{conf_col};font-weight:bold;">{row["Confidence"]}</td>' +
+                    f'<td {TD}color:#e0e0e0;">{row["Accuracy"]}</td>' +
+                    f'<td {TD}color:#e0e0e0;text-align:right;">{row["מחיר"]}</td>' +
+                    f'</tr>'
+                )
+            th = 'style="padding:10px 14px;background:#0f0c29;color:#aaa;font-size:0.82rem;font-weight:600;text-align:left;border-bottom:2px solid #2a2a3e;"'
+            html_table = (
+                '<div style="overflow-x:auto;border-radius:14px;border:1px solid rgba(255,255,255,0.08);">' +
+                '<table style="width:100%;border-collapse:collapse;background:#1a1a2e;font-family:Fira Sans,sans-serif;font-size:0.9rem;">' +
+                f'<thead><tr><th {th}>#</th><th {th}>מניה</th><th {th}>סימול</th>' +
+                f'<th {th}>Signal</th><th {th}>Confidence</th><th {th}>Accuracy</th><th {th}>מחיר</th></tr></thead>' +
+                f'<tbody>{rows_html}</tbody></table></div>'
+            )
+            st.markdown(html_table, unsafe_allow_html=True)
             updated = json.load(open(cache_file, encoding="utf-8"))["updated"] if os.path.exists(cache_file) else "לא ידוע"
             st.caption(f"מציג {len(df_view)} מניות מתוך {len(df_all)} · ממוין לפי Confidence · עודכן: {updated}")
 
