@@ -617,7 +617,14 @@ with tab3:
                     sections.append((cur_title, "\n".join(cur_body).strip()))
                 cur_title = stripped.strip("-").strip()
                 cur_body  = []
-            elif stripped.startswith("==="):
+            elif re.match(r"^## ", stripped):
+                if cur_title is not None:
+                    sections.append((cur_title, "\n".join(cur_body).strip()))
+                cur_title = stripped.lstrip("#").strip()
+                cur_body  = []
+            elif stripped == "---" or stripped.startswith("==="):
+                continue
+            elif re.match(r"^# ", stripped):
                 continue
             else:
                 cur_body.append(line)
@@ -627,7 +634,7 @@ with tab3:
 
         # ── Find overall date header
         header_text = next(
-            (l.strip() for l in lines
+            (l.strip().lstrip("#").strip() for l in lines
              if l.strip() and not l.strip().startswith("=") and not l.strip().startswith("---")),
             ""
         )
