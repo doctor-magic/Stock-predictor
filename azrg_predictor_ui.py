@@ -387,7 +387,7 @@ st.markdown("""
 st.title("📈 Stock Swing Predictor")
 st.caption("Random Forest · 3-5 day outlook · No cloud calls · Free data")
 
-tab1, tab2 = st.tabs(["🔍 מניה בודדת", "📊 סורק מניות"])
+tab1, tab2, tab3 = st.tabs(["🔍 מניה בודדת", "📊 סורק מניות", "📰 המלצות יומיות"])
 
 # ── TAB 1: single stock ──────────────────────────────────────
 with tab1:
@@ -547,3 +547,82 @@ with tab2:
             json.dump(payload, f, ensure_ascii=False)
         st.success(f"סריקה הושלמה — {len(rows)} מניות נסרקו. דחוף ל-GitHub כדי לשתף עם החברים.")
         show_results(pd.DataFrame(rows))
+
+# ── TAB 3: daily recommendations ─────────────────────────────
+with tab3:
+    import glob, re
+
+    rec_dir   = os.path.dirname(os.path.abspath(__file__))
+    rec_files = sorted(
+        glob.glob(os.path.join(rec_dir, "stock_recommendations_*.txt")),
+        reverse=True,
+    )
+
+    if not rec_files:
+        st.warning("לא נמצאו קבצי המלצות. הפעל את ה-pipeline להוספת המלצות.")
+    else:
+        MONTHS_HE = {
+            "01": "ינואר", "02": "פברואר", "03": "מרץ",    "04": "אפריל",
+            "05": "מאי",   "06": "יוני",   "07": "יולי",   "08": "אוגוסט",
+            "09": "ספטמבר","10": "אוקטובר","11": "נובמבר", "12": "דצמבר",
+        }
+
+        def fname_to_label(path):
+            m = re.search(r"stock_recommendations_(\d{2})_(\d{2})_(\d{4})", path)
+            if m:
+                d, mo, y = m.groups()
+                return f"{d} ב{MONTHS_HE.get(mo, mo)} {y}"
+            return os.path.basename(path)
+
+        options        = {fname_to_label(f): f for f in rec_files}
+        selected_label = st.selectbox("תאריך", list(options.keys()), index=0)
+        selected_file  = options[selected_label]
+
+        with open(selected_file, encoding="utf-8") as fh:
+            content = fh.read()
+
+        # ── Parse sections separated by --- Title ---
+        lines    = content.splitlines()
+        sections = []
+        cur_title, cur_body = None, []
+
+        for line in lines:
+            stripped = line.strip()
+            if re.match(r"^---.*---$", stripped) and len(stripped) > 6:
+                if cur_title is not None:
+                    sections.append((cur_title, "\n".join(cur_body).strip()))
+                cur_title = stripped.strip("-").strip()
+                cur_body  = []
+            elif stripped.startswith("==="):
+                continue
+            else:
+                cur_body.append(line)
+
+        if cur_title is not None:
+            sections.append((cur_title, "\n".join(cur_body).strip()))
+
+        # ── Find overall date header
+        header_text = next(
+            (l.strip() for l in lines
+             if l.strip() and not l.strip().startswith("=") and not l.strip().startswith("---")),
+            ""
+        )
+        if header_text:
+            st.markdown(
+                f'<p style="text-align:right; color:#aaa; font-size:0.9rem; margin-bottom:1rem;">'
+                f'{header_text}</p>',
+                unsafe_allow_html=True,
+            )
+
+        if not sections:
+            st.text(content)
+        else:
+            for title, body in sections:
+                with st.expander(f"**{title}**", expanded=True):
+                    html_body = body.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                    html_body = html_body.replace("\n", "<br>")
+                    st.markdown(
+                        f'<div style="direction:rtl; text-align:right; line-height:1.9; '
+                        f'color:#d0d0d0; font-size:0.95rem;">{html_body}</div>',
+                        unsafe_allow_html=True,
+                    )
