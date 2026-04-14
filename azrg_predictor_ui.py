@@ -642,11 +642,15 @@ with tab3:
             st.text(content)
         else:
             for title, body in sections:
-                with st.expander(f"**{title}**", expanded=True):
-                    html_body = body.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-                    html_body = html_body.replace("\n", "<br>")
-                    st.markdown(
-                        f'<div style="direction:rtl; text-align:right; line-height:1.9; '
-                        f'color:#d0d0d0; font-size:0.95rem;">{html_body}</div>',
-                        unsafe_allow_html=True,
-                    )
+                html_body = body.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                html_body = html_body.replace("\n", "<br>")
+                st.markdown(
+                    f'<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);'
+                    f'border-radius:12px;padding:16px 22px;margin-bottom:14px;">'
+                    f'<p style="color:#00d2ff;font-weight:700;font-size:1rem;margin:0 0 10px 0;'
+                    f'direction:rtl;text-align:right;font-family:Fira Sans,sans-serif;">{title}</p>'
+                    f'<div style="direction:rtl;text-align:right;line-height:1.9;'
+                    f'color:#d0d0d0;font-size:0.95rem;">{html_body}</div>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
