@@ -261,62 +261,126 @@ st.set_page_config(page_title="Stock Swing Predictor", page_icon="📈", layout=
 
 st.markdown("""
 <style>
+    @import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&family=Fira+Sans:wght@300;400;500;600&display=swap');
+
     /* Background */
-    .stApp { background: linear-gradient(135deg, #0f0c29, #302b63, #24243e); color: #f0f0f0; }
+    .stApp {
+        background: linear-gradient(135deg, #0a0a0f 0%, #0f0c29 40%, #302b63 80%, #24243e 100%);
+        color: #e8e8f0;
+        font-family: 'Fira Sans', -apple-system, sans-serif;
+    }
+
+    /* Pulse animation for live indicators */
+    @keyframes pulse-glow {
+        0%, 100% { box-shadow: 0 0 4px #22C55E; opacity: 1; }
+        50%       { box-shadow: 0 0 14px #22C55E, 0 0 28px rgba(34,197,94,0.3); opacity: 0.8; }
+    }
+    @keyframes signal-fade-in {
+        from { opacity: 0; transform: translateY(8px); }
+        to   { opacity: 1; transform: translateY(0); }
+    }
 
     /* Title */
-    h1 { font-size: 2.6rem !important; font-weight: 800 !important;
-         background: linear-gradient(90deg, #00d2ff, #a200ff);
-         -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    h1 {
+        font-size: 2.6rem !important; font-weight: 800 !important;
+        background: linear-gradient(90deg, #00d2ff, #a200ff);
+        -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+        font-family: 'Fira Code', monospace !important;
+        letter-spacing: -0.02em;
+    }
+    h2, h3 { font-family: 'Fira Code', monospace !important; color: #e8e8f0 !important; }
 
     /* Tabs */
-    .stTabs [data-baseweb="tab"] { font-size: 1rem; font-weight: 600; color: #ccc; }
+    .stTabs [data-baseweb="tab"] {
+        font-size: 1rem; font-weight: 600; color: #888;
+        transition: color 150ms ease-out;
+        font-family: 'Fira Sans', sans-serif;
+    }
     .stTabs [aria-selected="true"] { color: #00d2ff !important; border-bottom: 2px solid #00d2ff; }
+    .stTabs [data-baseweb="tab"]:hover { color: #ccc !important; }
 
     /* Metric cards */
     [data-testid="metric-container"] {
-        background: rgba(255,255,255,0.07);
-        border: 1px solid rgba(255,255,255,0.15);
-        border-radius: 12px; padding: 16px;
-        backdrop-filter: blur(10px);
+        background: rgba(255,255,255,0.05);
+        border: 1px solid rgba(255,255,255,0.1);
+        border-radius: 16px; padding: 20px;
+        backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+        transition: border-color 200ms ease-out, box-shadow 200ms ease-out;
     }
-    [data-testid="metric-container"] label { color: #aaa !important; font-size: 0.85rem !important; }
-    [data-testid="metric-container"] [data-testid="stMetricValue"] { font-size: 1.6rem !important; font-weight: 700 !important; color: #fff !important; }
+    [data-testid="metric-container"]:hover {
+        border-color: rgba(0,210,255,0.3);
+        box-shadow: 0 0 20px rgba(0,210,255,0.07);
+    }
+    [data-testid="metric-container"] label {
+        color: #888 !important; font-size: 0.78rem !important;
+        text-transform: uppercase; letter-spacing: 0.08em;
+        font-family: 'Fira Sans', sans-serif !important;
+    }
+    [data-testid="stMetricValue"] {
+        font-size: 1.8rem !important; font-weight: 700 !important;
+        color: #fff !important; font-family: 'Fira Code', monospace !important;
+    }
+
+    /* Signal badge */
+    .signal-badge {
+        display: inline-block; padding: 0.55rem 2rem;
+        border-radius: 50px; font-family: 'Fira Code', monospace;
+        font-weight: 700; font-size: 1.3rem; letter-spacing: 0.12em;
+        text-transform: uppercase; animation: signal-fade-in 300ms ease-out;
+    }
+    .signal-buy  { background: rgba(34,197,94,0.12);  color: #4ade80; border: 1px solid rgba(34,197,94,0.35);  box-shadow: 0 0 24px rgba(34,197,94,0.15); }
+    .signal-sell { background: rgba(220,38,38,0.12);  color: #f87171; border: 1px solid rgba(220,38,38,0.35);  box-shadow: 0 0 24px rgba(220,38,38,0.15); }
+    .signal-hold { background: rgba(251,191,36,0.12); color: #fbbf24; border: 1px solid rgba(251,191,36,0.35); box-shadow: 0 0 24px rgba(251,191,36,0.12); }
 
     /* Primary button */
     .stButton > button[kind="primary"] {
         background: linear-gradient(90deg, #00d2ff, #a200ff) !important;
         border: none !important; color: white !important;
-        font-weight: 700 !important; border-radius: 8px !important;
-        padding: 0.5rem 2rem !important; font-size: 1rem !important;
+        font-weight: 700 !important; border-radius: 10px !important;
+        padding: 0.6rem 2.5rem !important; font-size: 1rem !important;
+        font-family: 'Fira Sans', sans-serif !important;
+        transition: opacity 150ms ease-out, transform 150ms ease-out, box-shadow 150ms ease-out !important;
     }
-    .stButton > button[kind="primary"]:hover { opacity: 0.85; transform: scale(1.02); }
+    .stButton > button[kind="primary"]:hover {
+        opacity: 0.9; transform: scale(1.02);
+        box-shadow: 0 4px 24px rgba(0,210,255,0.28) !important;
+    }
+    .stButton > button[kind="primary"]:active { transform: scale(0.98) !important; }
 
-    /* Selectbox & inputs — readable text */
+    /* Inputs */
     .stSelectbox > div > div, .stTextInput > div > div > input, .stNumberInput input {
-        background: rgba(255,255,255,0.1) !important;
-        color: #ffffff !important;
-        border: 1px solid rgba(255,255,255,0.2) !important;
-        border-radius: 8px !important;
+        background: rgba(255,255,255,0.07) !important; color: #ffffff !important;
+        border: 1px solid rgba(255,255,255,0.15) !important; border-radius: 10px !important;
+        font-family: 'Fira Sans', sans-serif !important;
+        transition: border-color 150ms ease-out !important;
     }
     .stSelectbox svg { fill: #fff !important; }
-    /* Radio buttons */
-    .stRadio label { color: #ddd !important; font-size: 0.95rem !important; }
+
+    /* Radio */
+    .stRadio label { color: #ccc !important; font-size: 0.95rem !important; font-family: 'Fira Sans', sans-serif !important; }
+
     /* General text */
-    p, label, .stMarkdown { color: #ddd !important; }
-    /* Dropdown options */
-    [data-baseweb="popover"] { background: #1e1e3f !important; }
-    [data-baseweb="option"] { background: #1e1e3f !important; color: #fff !important; }
+    p, label, .stMarkdown { color: #ccc !important; font-family: 'Fira Sans', sans-serif; }
+
+    /* Dropdown */
+    [data-baseweb="popover"] { background: #1a1730 !important; border: 1px solid rgba(255,255,255,0.1) !important; border-radius: 10px !important; }
+    [data-baseweb="option"] { background: #1a1730 !important; color: #ddd !important; }
     [data-baseweb="option"]:hover { background: #302b63 !important; }
 
     /* Dataframe */
-    .stDataFrame { border-radius: 12px; overflow: hidden; }
+    .stDataFrame { border-radius: 14px; overflow: hidden; border: 1px solid rgba(255,255,255,0.08) !important; }
+
+    /* Progress bar */
+    .stProgress > div > div > div { background: linear-gradient(90deg, #00d2ff, #a200ff) !important; border-radius: 4px !important; }
 
     /* Divider */
-    hr { border-color: rgba(255,255,255,0.1) !important; }
+    hr { border-color: rgba(255,255,255,0.08) !important; }
 
     /* Caption */
-    .stCaption { color: #888 !important; }
+    .stCaption { color: #666 !important; font-size: 0.82rem !important; }
+
+    /* Alert boxes */
+    .stAlert { border-radius: 10px !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -360,17 +424,24 @@ with tab1:
             st.error(f"Could not download data for **{ticker}**. Check the ticker symbol and try again.")
         else:
             st.divider()
-            signal    = result["signal"]
-            color_map = {"BUY": "green", "SELL": "red", "HOLD": "orange"}
-            color     = color_map.get(signal, "gray")
+            signal     = result["signal"]
+            badge_cls  = {"BUY": "signal-buy", "SELL": "signal-sell", "HOLD": "signal-hold"}.get(signal, "signal-hold")
+            badge_icon = {"BUY": "▲", "SELL": "▼", "HOLD": "●"}.get(signal, "●")
 
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Signal",     signal)
-            c2.metric("Confidence", f"{result['confidence']:.0%}")
-            c3.metric("Backtest Accuracy", f"{result['accuracy']:.1%}")
+            st.markdown(
+                f'<div style="text-align:center; padding: 1.2rem 0 0.8rem;">'
+                f'<span class="signal-badge {badge_cls}">{badge_icon} {signal}</span>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
 
-            st.markdown(f"### :{color}[{signal}]")
-            st.caption(f"Last price: {result['last_price']:,.2f}  |  Date: {result['last_date']}  |  {result['rows']} trading days of history")
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Confidence",       f"{result['confidence']:.0%}")
+            c2.metric("Backtest Accuracy", f"{result['accuracy']:.1%}")
+            c3.metric("Last Price",        f"{result['last_price']:,.2f}")
+            c4.metric("Trading Days",      f"{result['rows']:,}")
+
+            st.caption(f"**{ticker}** · {result['last_date']}")
 
             st.subheader("Feature importance")
             st.bar_chart(result["importance"])
@@ -410,13 +481,14 @@ with tab2:
 
     def show_results(df_all):
         df_view = df_all.copy()
-        # clean up number formatting
-        df_view["Confidence"] = df_view["Confidence"].apply(lambda x: f"{x:.1f}%")
-        df_view["Accuracy"]   = df_view["Accuracy"].apply(lambda x: f"{x:.1f}%")
-        df_view["מחיר"]       = df_view["מחיר"].apply(lambda x: f"{x:,.2f}")
+        # Filter and sort while values are still numeric
         if filter_signal != "הכל":
             df_view = df_view[df_view["Signal"] == filter_signal]
         df_view = df_view.sort_values("Confidence", ascending=False).head(top_n).reset_index(drop=True)
+        # Format for display only after sorting
+        df_view["Confidence"] = df_view["Confidence"].apply(lambda x: f"{x:.1f}%")
+        df_view["Accuracy"]   = df_view["Accuracy"].apply(lambda x: f"{x:.1f}%")
+        df_view["מחיר"]       = df_view["מחיר"].apply(lambda x: f"{x:,.2f}")
         df_view.index += 1
         if df_view.empty:
             st.warning("לא נמצאו מניות עם הפילטר שנבחר.")
