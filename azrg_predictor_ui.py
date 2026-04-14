@@ -381,6 +381,13 @@ st.markdown("""
 
     /* Alert boxes */
     .stAlert { border-radius: 10px !important; }
+
+    /* Expander headers */
+    .streamlit-expanderHeader { color: #e0e0e0 !important; font-weight: 600 !important; font-family: 'Fira Sans', sans-serif !important; }
+    .streamlit-expanderHeader:hover { color: #00d2ff !important; }
+    [data-testid="stExpander"] details summary { color: #e0e0e0 !important; font-weight: 600 !important; }
+    [data-testid="stExpander"] details summary:hover { color: #00d2ff !important; }
+    [data-testid="stExpander"] details summary p { color: #e0e0e0 !important; }
 </style>
 """, unsafe_allow_html=True)
 
