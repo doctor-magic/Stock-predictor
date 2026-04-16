@@ -85,7 +85,7 @@ PRESET_STOCKS = {
     "שופרסל      | Shufersal":         "SAE.TA",
     "רמי לוי     | Rami Levy":         "RMLI.TA",
     # אחר
-    "ורטקס       | Vertex Bioenergy":  "VERT.TA",
+    "מיבנה        | Mivne Real Estate": "MVNE.TA",
     "אפריקה ישראל | Africa Israel":    "AFPR.TA",
     # ── US ────────────────────────────────────────────
     "Apple":                            "AAPL",
