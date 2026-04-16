@@ -1,8 +1,8 @@
+fastapi
+uvicorn
+pydantic
 yfinance
 pandas
 numpy
 scikit-learn
-streamlit
-lxml
-requests
 xgboost
