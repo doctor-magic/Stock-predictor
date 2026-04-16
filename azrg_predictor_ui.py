@@ -42,21 +42,51 @@ FEATURES = [
 ]
 
 PRESET_STOCKS = {
-    # ── TASE ──────────────────────────────────────────
-    "אזריאלי   | Azrieli Group":        "AZRG.TA",
-    "אלביט     | Elbit Systems":        "ESLT.TA",
-    "טבע       | Teva":                 "TEVA.TA",
-    "נייס      | NICE Systems":         "NICE.TA",
-    "סייברארק  | CyberArk":             "CYBR.TA",
+    # ── TA-35 ─────────────────────────────────────────
+    # בנקים
     "בנק הפועלים | Bank Hapoalim":      "POLI.TA",
-    "בנק לאומי  | Bank Leumi":          "LUMI.TA",
-    "בנק מזרחי  | Mizrahi Tefahot":     "MZTF.TA",
-    "בזק       | Bezeq":               "BEZQ.TA",
-    "פרטנר     | Partner":             "PTNR.TA",
-    "ICL Group":                        "ICL.TA",
-    "צ'ק פוינט  | Check Point":         "CHKP.TA",
-    "טאואר     | Tower Semiconductor": "TSEM.TA",
-    "סאפיינס   | Sapiens":             "SPNS.TA",
+    "בנק לאומי   | Bank Leumi":         "LUMI.TA",
+    "בנק מזרחי   | Mizrahi Tefahot":    "MZTF.TA",
+    "בנק דיסקונט | Discount Bank":      "DSCT.TA",
+    "הבנק הבינלאומי | First Intl Bank": "FTIN.TA",
+    # ביטוח ופיננסים
+    "הראל        | Harel Insurance":    "HARL.TA",
+    "הפניקס      | Phoenix Holdings":   "PHOE.TA",
+    "כלל ביטוח   | Clal Insurance":     "CALI.TA",
+    "מגדל        | Migdal Insurance":   "MGDL.TA",
+    "מנורה מבטחים | Menora Mivtachim": "MNRT.TA",
+    # טכנולוגיה
+    "צ'ק פוינט   | Check Point":        "CHKP.TA",
+    "נייס        | NICE Systems":       "NICE.TA",
+    "סייברארק    | CyberArk":           "CYBR.TA",
+    "סאפיינס     | Sapiens":            "SPNS.TA",
+    "טאואר       | Tower Semiconductor":"TSEM.TA",
+    "אלביט       | Elbit Systems":      "ESLT.TA",
+    # פרמה ותעשייה
+    "טבע         | Teva":               "TEVA.TA",
+    "כיל         | ICL Group":          "ICL.TA",
+    # נדל"ן
+    "אזריאלי     | Azrieli Group":      "AZRG.TA",
+    "אלוני חץ    | Alony Hetz":         "ALHE.TA",
+    "מליסרון     | Melisron":           "MLSR.TA",
+    "ביג         | Big Centers":        "BIG.TA",
+    "שיכון ובינוי | Shikun & Binui":   "SKBN.TA",
+    # תקשורת
+    "בזק         | Bezeq":             "BEZQ.TA",
+    "פרטנר       | Partner":           "PTNR.TA",
+    "סלקום       | Cellcom":           "SCEL.TA",
+    # אנרגיה
+    "דלק קבוצה   | Delek Group":       "DLEKG.TA",
+    "פז נפט      | Paz Oil":           "PZOL.TA",
+    "בתי זיקוק   | Bazan (ORL)":       "ORL.TA",
+    "אנליט       | Enlight Energy":    "ENLT.TA",
+    # מזון וקמעונאות
+    "שטראוס      | Strauss Group":     "STRS.TA",
+    "שופרסל      | Shufersal":         "SAE.TA",
+    "רמי לוי     | Rami Levy":         "RMLI.TA",
+    # אחר
+    "ורטקס       | Vertex Bioenergy":  "VERT.TA",
+    "אפריקה ישראל | Africa Israel":    "AFPR.TA",
     # ── US ────────────────────────────────────────────
     "Apple":                            "AAPL",
     "NVIDIA":                           "NVDA",
