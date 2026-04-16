@@ -463,25 +463,27 @@ st.markdown("""
     user-select: none;
     list-style: none;
 ">
-    &#9432;&nbsp; איך המודל עובד? (לחץ להרחבה)
+    &#9432;&nbsp; How does the model work? (click to expand)
 </summary>
-<div style="margin-top: 10px; color: #8a9bb5; font-size: 0.85rem; line-height: 1.7; direction: rtl; text-align: right;">
-    <b style="color:#c0cfe0;">מה המודל עושה?</b><br>
-    המודל מנתח אינדיקטורים טכניים (RSI, MACD, EMA, ATR, OBV ועוד) ומנסה לחזות
-    האם המניה תעלה או תרד <b>ב-5 הימים הקרובים</b> בלבד. אין כאן ניתוח פונדמנטלי.
+<div style="margin-top: 10px; color: #8a9bb5; font-size: 0.85rem; line-height: 1.7;">
+    <b style="color:#c0cfe0;">What does the model do?</b><br>
+    The model analyzes technical indicators (RSI, MACD, EMA, ATR, OBV and more) and predicts
+    whether a stock will rise or fall <b>in the next 5 trading days</b>. It does not consider
+    fundamentals, earnings, or news.
     <br><br>
-    <b style="color:#c0cfe0;">למה מניה שעלתה מקבלת SELL?</b><br>
-    עלייה חדה מביאה RSI גבוה, מחיר מעל פס בולינגר, ומומנטום קצר-טווח שמיצה את עצמו —
-    דפוסים שהמודל לומד לקשר לתיקון של 3%+ בשבוע הקרוב. <b>SELL ≠ מניה גרועה</b>,
-    אלא "תיקון טכני צפוי בטווח הקצר".
+    <b style="color:#c0cfe0;">Why does a rising stock get a SELL signal?</b><br>
+    A sharp rally pushes RSI high, price above the Bollinger Band, and short-term momentum
+    into exhaustion territory — patterns the model has learned to associate with a 3%+ pullback
+    in the coming week. <b>SELL does not mean the stock is bad</b> — it means a short-term
+    technical correction is likely.
     <br><br>
     <b style="color:#c0cfe0;">Confidence vs Accuracy</b><br>
-    <b>Confidence</b> — כמה המודל בטוח בחיזוי הנוכחי.<br>
-    <b>Accuracy</b> — כמה % מהחיזויים ההיסטוריים של המניה הזו היו נכונים.
-    מומלץ להסתמך רק על תוצאות עם Accuracy &gt; 55%.
+    <b>Confidence</b> — how certain the model is about the current prediction.<br>
+    <b>Accuracy</b> — what % of past predictions for this stock were correct.
+    Only rely on signals where Accuracy &gt; 55%.
     <br><br>
     <span style="color:#6b7a99; font-size:0.78rem;">
-    &#9888; אין בכלי זה ייעוץ השקעות. המידע מיועד למטרות לימודיות בלבד.
+    &#9888; This tool does not constitute financial advice. For educational purposes only.
     </span>
 </div>
 </details>
