@@ -2,8 +2,9 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import yfinance as yf
-from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score
+from sklearn.preprocessing import LabelEncoder
+from xgboost import XGBClassifier
 
 import requests
 from io import StringIO
@@ -29,16 +30,17 @@ def load_nasdaq100():
     return NASDAQ100
 
 # ── constants ────────────────────────────────────────────────
-PERIOD       = "5y"
+PERIOD       = "10y"
 FORWARD_DAYS = 5
-THRESHOLD    = 0.02
-N_ESTIMATORS = 200
+THRESHOLD    = 0.03
+N_ESTIMATORS = 300
 TRAIN_RATIO  = 0.8
 
 FEATURES = [
     "ema9", "ema21", "ema50", "ema_cross",
     "rsi", "macd_gap", "bb_pos",
     "vol_ratio", "ret_3d", "ret_5d", "ret_10d",
+    "atr_ratio", "obv_ratio",
 ]
 
 PRESET_STOCKS = {
@@ -231,6 +233,16 @@ def build_features(df):
     df["ret_3d"]    = df["Close"].pct_change(3)
     df["ret_5d"]    = df["Close"].pct_change(5)
     df["ret_10d"]   = df["Close"].pct_change(10)
+    # ATR (normalized by price)
+    high_low   = df["High"] - df["Low"]
+    high_close = (df["High"] - df["Close"].shift()).abs()
+    low_close  = (df["Low"]  - df["Close"].shift()).abs()
+    atr        = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    df["atr_ratio"] = atr.rolling(14).mean() / df["Close"]
+    # OBV (normalized vs rolling mean)
+    df["obv"]       = (np.sign(df["Close"].diff()) * df["Volume"]).fillna(0).cumsum()
+    obv_mean        = df["obv"].rolling(20).mean().replace(0, np.nan)
+    df["obv_ratio"] = df["obv"] / obv_mean
     return df
 
 def build_labels(df):
@@ -256,14 +268,25 @@ def run_prediction(ticker):
     split = int(len(clean) * TRAIN_RATIO)
     train, test = clean.iloc[:split], clean.iloc[split:]
 
-    clf = RandomForestClassifier(n_estimators=N_ESTIMATORS, random_state=42, n_jobs=-1)
-    clf.fit(train[FEATURES], train["label"])
+    le = LabelEncoder().fit(["BUY", "HOLD", "SELL"])
+    clf = XGBClassifier(
+        n_estimators=N_ESTIMATORS,
+        max_depth=5,
+        learning_rate=0.05,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        eval_metric="mlogloss",
+        random_state=42,
+        n_jobs=-1,
+        verbosity=0,
+    )
+    clf.fit(train[FEATURES], le.transform(train["label"]))
 
-    accuracy = accuracy_score(test["label"], clf.predict(test[FEATURES]))
+    accuracy = accuracy_score(test["label"], le.inverse_transform(clf.predict(test[FEATURES])))
 
     latest     = df[FEATURES].dropna().iloc[[-1]]
     proba      = clf.predict_proba(latest)[0]
-    pred_class = clf.classes_[np.argmax(proba)]
+    pred_class = le.inverse_transform([np.argmax(proba)])[0]
     confidence = np.max(proba)
 
     importance = pd.Series(clf.feature_importances_, index=FEATURES).sort_values(ascending=True)
