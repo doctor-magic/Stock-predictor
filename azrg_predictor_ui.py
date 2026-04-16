@@ -445,7 +445,48 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("📈 Stock Swing Predictor")
-st.caption("Random Forest · 3-5 day outlook · No cloud calls · Free data")
+st.caption("XGBoost · 3-5 day outlook · 10y data · Free data")
+
+st.markdown("""
+<details style="
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 12px;
+    padding: 12px 18px;
+    margin-bottom: 18px;
+    font-family: Fira Sans, sans-serif;
+">
+<summary style="
+    color: #a0aec0;
+    font-size: 0.88rem;
+    cursor: pointer;
+    user-select: none;
+    list-style: none;
+">
+    &#9432;&nbsp; איך המודל עובד? (לחץ להרחבה)
+</summary>
+<div style="margin-top: 10px; color: #8a9bb5; font-size: 0.85rem; line-height: 1.7; direction: rtl; text-align: right;">
+    <b style="color:#c0cfe0;">מה המודל עושה?</b><br>
+    המודל מנתח אינדיקטורים טכניים (RSI, MACD, EMA, ATR, OBV ועוד) ומנסה לחזות
+    האם המניה תעלה או תרד <b>ב-5 הימים הקרובים</b> בלבד. אין כאן ניתוח פונדמנטלי.
+    <br><br>
+    <b style="color:#c0cfe0;">למה מניה שעלתה מקבלת SELL?</b><br>
+    עלייה חדה מביאה RSI גבוה, מחיר מעל פס בולינגר, ומומנטום קצר-טווח שמיצה את עצמו —
+    דפוסים שהמודל לומד לקשר לתיקון של 3%+ בשבוע הקרוב. <b>SELL ≠ מניה גרועה</b>,
+    אלא "תיקון טכני צפוי בטווח הקצר".
+    <br><br>
+    <b style="color:#c0cfe0;">Confidence vs Accuracy</b><br>
+    <b>Confidence</b> — כמה המודל בטוח בחיזוי הנוכחי.<br>
+    <b>Accuracy</b> — כמה % מהחיזויים ההיסטוריים של המניה הזו היו נכונים.
+    מומלץ להסתמך רק על תוצאות עם Accuracy &gt; 55%.
+    <br><br>
+    <span style="color:#6b7a99; font-size:0.78rem;">
+    &#9888; אין בכלי זה ייעוץ השקעות. המידע מיועד למטרות לימודיות בלבד.
+    </span>
+</div>
+</details>
+""", unsafe_allow_html=True)
+
 
 tab1, tab2, tab3 = st.tabs(["🔍 מניה בודדת", "📊 סורק מניות", "📰 המלצות יומיות"])
 
