@@ -33,8 +33,9 @@ def load_nasdaq100():
 PERIOD       = "10y"
 FORWARD_DAYS = 5
 THRESHOLD    = 0.03
-N_ESTIMATORS = 300
-TRAIN_RATIO  = 0.8
+N_ESTIMATORS      = 300
+SCAN_N_ESTIMATORS = 100   # lighter model for batch scan
+TRAIN_RATIO       = 0.8
 
 FEATURES = [
     "ema9", "ema21", "ema50", "ema_cross",
@@ -255,11 +256,14 @@ def build_labels(df):
     return df
 
 @st.cache_data(show_spinner=False)
-def run_prediction(ticker):
-    raw = yf.download(ticker, period=PERIOD, progress=False)
-    if raw.empty:
-        return None
-    raw.columns = raw.columns.get_level_values(0)
+def run_prediction(ticker, raw_df=None, n_estimators=N_ESTIMATORS):
+    if raw_df is not None:
+        raw = raw_df
+    else:
+        raw = yf.download(ticker, period=PERIOD, progress=False)
+        if raw.empty:
+            return None
+        raw.columns = raw.columns.get_level_values(0)
     df = raw[["Open", "High", "Low", "Close", "Volume"]].copy()
     df = build_features(df)
     df = build_labels(df)
@@ -270,7 +274,7 @@ def run_prediction(ticker):
 
     le = LabelEncoder().fit(["BUY", "HOLD", "SELL"])
     clf = XGBClassifier(
-        n_estimators=N_ESTIMATORS,
+        n_estimators=n_estimators,
         max_depth=5,
         learning_rate=0.05,
         subsample=0.8,
@@ -303,6 +307,15 @@ def run_prediction(ticker):
         "last_price": last_price,
         "last_date":  last_date,
     }
+
+@st.cache_data(show_spinner=False)
+def download_batch(tickers_tuple, period):
+    """Download all tickers in one request — much faster than one-by-one."""
+    data = yf.download(
+        list(tickers_tuple), period=period,
+        progress=False, group_by="ticker", auto_adjust=True,
+    )
+    return data
 
 # ── split stocks by market ───────────────────────────────────
 TASE_STOCKS = {k: v for k, v in PRESET_STOCKS.items() if v.endswith(".TA")}
@@ -644,12 +657,23 @@ with tab2:
     btn_label = "עדכן סריקה" if os.path.exists(cache_file) else "סרוק מניות"
     if st.button(btn_label, type="primary"):
         rows = []
-        progress = st.progress(0, text="מוריד נתונים ומאמן מודלים...")
         tickers_list = list(scan_list.items())
+        all_syms = tuple(sym for _, sym in tickers_list)
+
+        progress = st.progress(0, text="מוריד נתונים של כל המניות בבת אחת...")
+        batch_data = download_batch(all_syms, PERIOD)
+        multi = len(all_syms) > 1
 
         for i, (name, sym) in enumerate(tickers_list):
-            progress.progress((i + 1) / len(tickers_list), text=f"מעבד {sym}...")
-            res = run_prediction(sym)
+            progress.progress((i + 1) / len(tickers_list), text=f"מאמן מודל: {sym}...")
+            try:
+                raw = batch_data[sym].copy() if multi else batch_data.copy()
+                raw = raw.dropna(how="all")
+                if raw.empty:
+                    continue
+                res = run_prediction(sym, raw_df=raw, n_estimators=SCAN_N_ESTIMATORS)
+            except Exception:
+                res = run_prediction(sym, n_estimators=SCAN_N_ESTIMATORS)
             if res:
                 rows.append({
                     "מניה":       name,
