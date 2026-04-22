@@ -2,7 +2,7 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import datetime
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.metrics import precision_score
 from cachetools import cached, TTLCache
 import requests
@@ -14,9 +14,10 @@ cache = TTLCache(maxsize=100, ttl=900)
 _options_cache: TTLCache = TTLCache(maxsize=50, ttl=900)  # 15-min TTL for option chains
 
 PERIOD = "5y"
-FORWARD_DAYS = 5
-THRESHOLD = 0.025
-CONFIDENCE_THRESHOLD = 0.65
+FORWARD_DAYS = 10
+THRESHOLD = 0.03
+CONFIDENCE_THRESHOLD = 0.68
+MIN_PRECISION = 0.36
 
 FEATURES = [
     "ema9", "ema21", "ema50", "ema_cross",
@@ -24,6 +25,14 @@ FEATURES = [
     "vol_ratio", "ret_3d", "ret_5d", "ret_10d",
     "sma200_dist"
 ]
+
+INTERACTION_GROUPS = [
+    [0, 1, 2, 3, 11],  # trend: ema9, ema21, ema50, ema_cross, sma200_dist
+    [4, 5, 6],          # momentum: rsi, macd_gap, bb_pos
+    [7, 8, 9, 10],      # returns+volume: vol_ratio, ret_3d, ret_5d, ret_10d
+]
+
+OPTION_FEATURES = {"pc_ratio", "iv_skew", "volume_shock"}
 
 PRESET_STOCKS = {
     "us": {
@@ -86,8 +95,6 @@ def compute_rsi(series, period=14):
     rs = avg_gain / avg_loss.replace(0, np.nan)
     return 100 - (100 / (1 + rs))
 
-OPTION_FEATURES = {"pc_ratio", "iv_skew", "volume_shock"}
-
 def fetch_options_features(ticker: str, spot: float) -> dict:
     """Fetch ATM option metrics with 15-min cache. spot comes from existing OHLCV data."""
     defaults = {"pc_ratio": None, "iv_skew": None, "volume_shock": None}
@@ -99,7 +106,7 @@ def fetch_options_features(ticker: str, spot: float) -> dict:
         if not expirations:
             return defaults
 
-        # Nearest expiry ≥ 14 days out to avoid gamma/pin distortion
+        # Nearest expiry >= 14 days out to avoid gamma/pin distortion
         today = datetime.date.today()
         target = next(
             (e for e in expirations if (datetime.date.fromisoformat(e) - today).days >= 14),
@@ -108,7 +115,7 @@ def fetch_options_features(ticker: str, spot: float) -> dict:
         chain = tk.option_chain(target)
         calls, puts = chain.calls.copy(), chain.puts.copy()
 
-        # ── PC Ratio: weighted over 3 strikes closest to ATM ──────────────
+        # PC Ratio: weighted over 3 strikes closest to ATM
         n = 3
         call_atm = calls.iloc[(calls["strike"] - spot).abs().argsort().iloc[:n]]
         put_atm  = puts.iloc[(puts["strike"]  - spot).abs().argsort().iloc[:n]]
@@ -116,7 +123,7 @@ def fetch_options_features(ticker: str, spot: float) -> dict:
         put_oi   = put_atm["openInterest"].fillna(0).sum()
         pc_ratio = (put_oi / call_oi) if call_oi > 0 else None
 
-        # ── IV Skew: 5% OTM strikes, bid>0 validates the IV isn't garbage ─
+        # IV Skew: 5% OTM strikes, bid>0 validates the IV isn't garbage
         liquid_puts  = puts[(puts["bid"]  > 0) & (puts["ask"]  > 0)]
         liquid_calls = calls[(calls["bid"] > 0) & (calls["ask"] > 0)]
         if liquid_puts.empty or liquid_calls.empty:
@@ -128,7 +135,7 @@ def fetch_options_features(ticker: str, spot: float) -> dict:
             iv_skew = (round(float(p_iv) - float(c_iv), 4)
                        if pd.notna(p_iv) and pd.notna(c_iv) else None)
 
-        # ── Volume Shock: option turnover ratio vs open interest ───────────
+        # Volume Shock: option turnover ratio vs open interest
         total_vol = float(calls["volume"].fillna(0).sum() + puts["volume"].fillna(0).sum())
         total_oi  = float(calls["openInterest"].fillna(0).sum() + puts["openInterest"].fillna(0).sum())
         vol_shock = round(total_vol / total_oi, 4) if total_oi > 0 else None
@@ -144,7 +151,6 @@ def fetch_options_features(ticker: str, spot: float) -> dict:
 
     _options_cache[ticker] = result
     return result
-
 
 def build_features(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -191,24 +197,30 @@ def fetch_stock_data(ticker: str, period=PERIOD) -> pd.DataFrame:
     return raw[["Open", "High", "Low", "Close", "Volume"]].copy()
 
 def train_and_evaluate(df: pd.DataFrame, light_mode=False):
+    from sklearn.metrics import classification_report
     clean = df.dropna(subset=FEATURES + ["label"])
     split = int(len(clean) * 0.8)
     train, test = clean.iloc[:split], clean.iloc[split:]
     X_train, y_train = train[FEATURES], train["label"]
     X_test, y_test = test[FEATURES], test["label"]
-    
-    clf = RandomForestClassifier(
-        n_estimators=100 if light_mode else 300,
-        max_depth=5,
-        min_samples_leaf=5,
+
+    clf = HistGradientBoostingClassifier(
+        max_iter=100 if light_mode else 300,
+        max_leaf_nodes=31,
+        min_samples_leaf=50,
+        l2_regularization=0.1,
+        learning_rate=0.01,
+        interaction_cst=INTERACTION_GROUPS,
+        early_stopping=True,
+        validation_fraction=0.1,
+        n_iter_no_change=20,
         random_state=42,
-        n_jobs=-1,
-        class_weight="balanced"
     )
     clf.fit(X_train, y_train)
     y_pred = clf.predict(X_test)
-    precision = precision_score(y_test, y_pred, average="macro", zero_division=0)
-    return clf, precision
+    rpt = classification_report(y_test, y_pred, output_dict=True, zero_division=0)
+    buy_precision = rpt.get("BUY", {}).get("precision", 0.0)
+    return clf, buy_precision
 
 def get_prediction(ticker: str, light_mode=False):
     df_raw = fetch_stock_data(ticker)
@@ -218,7 +230,7 @@ def get_prediction(ticker: str, light_mode=False):
     df = build_labels(df)
     clf, precision = train_and_evaluate(df, light_mode=light_mode)
     latest = df[FEATURES].ffill().iloc[[-1]]
-    
+
     proba = clf.predict_proba(latest)[0]
     classes = clf.classes_
     pred_idx = np.argmax(proba)
@@ -226,9 +238,27 @@ def get_prediction(ticker: str, light_mode=False):
     confidence = proba[pred_idx]
 
     final_signal = raw_signal if confidence >= CONFIDENCE_THRESHOLD else "HOLD"
-    importances = pd.Series(clf.feature_importances_, index=FEATURES).sort_values(ascending=False).to_dict()
+    try:
+        importances = pd.Series(clf.feature_importances_, index=FEATURES).sort_values(ascending=False).to_dict()
+    except AttributeError:
+        # HGBDT + CalibratedClassifierCV don't expose feature_importances_ — use permutation importance
+        try:
+            from sklearn.inspection import permutation_importance as perm_imp
+            clean = df.dropna(subset=FEATURES + ["label"])
+            eval_size = min(200, len(clean) // 5)
+            X_eval = clean[FEATURES].iloc[-eval_size:]
+            y_eval = clean["label"].iloc[-eval_size:]
+            perm = perm_imp(clf, X_eval, y_eval, n_repeats=3, scoring="neg_log_loss", random_state=42)
+            importances = {
+                FEATURES[i]: float(perm.importances_mean[i])
+                for i in range(len(FEATURES))
+                if perm.importances_mean[i] > 0
+            }
+            importances = dict(sorted(importances.items(), key=lambda x: x[1], reverse=True))
+        except Exception:
+            importances = {}
 
-    # spot comes from OHLCV — reliable fallback vs fast_info which fails after-hours
+    # spot from OHLCV close — reliable fallback vs fast_info which fails after-hours
     spot = float(df["Close"].iloc[-1])
     options_ctx = fetch_options_features(ticker, spot)
 
@@ -264,6 +294,8 @@ def _train_single(name, sym, raw_data, multi):
         confidence = np.max(proba)
         final_signal = confident_signal if confidence >= CONFIDENCE_THRESHOLD else "HOLD"
 
+        if precision < MIN_PRECISION and final_signal != "HOLD":
+            return None
         return {
             "symbol": sym,
             "symbol_name": name,
@@ -291,9 +323,9 @@ def run_market_scan(market_id: str, progress_callback=None):
     items = list(stocks.items())
     all_tickers = [sym for _, sym in items]
     total = len(all_tickers)
-    BATCH = 50  # download 50 tickers at a time
+    BATCH = 50
 
-    # ── Phase 1: Batch download ──────────────────────
+    # Phase 1: Batch download
     all_data = {}
     for batch_start in range(0, total, BATCH):
         batch_end = min(batch_start + BATCH, total)
@@ -305,7 +337,6 @@ def run_market_scan(market_id: str, progress_callback=None):
 
         chunk = yf.download(batch_syms, period=PERIOD, progress=False,
                             group_by="ticker", auto_adjust=False)
-        # Store reference
         for sym in batch_syms:
             try:
                 if len(batch_syms) > 1:
@@ -315,9 +346,9 @@ def run_market_scan(market_id: str, progress_callback=None):
             except Exception:
                 pass
 
-    # ── Phase 2: Parallel model training ─────────────
+    # Phase 2: Parallel model training
     if progress_callback:
-        progress_callback(0, total, "Training Random Forest models...")
+        progress_callback(0, total, "Training models...")
 
     done_count = 0
 
@@ -333,7 +364,6 @@ def run_market_scan(market_id: str, progress_callback=None):
             if sym not in all_data:
                 on_done(sym)
                 continue
-            # Build a tiny single-ticker DataFrame wrapper
             single_df = all_data[sym]
             fut = pool.submit(_train_single, name, sym, {sym: single_df}, True)
             futures[fut] = sym
