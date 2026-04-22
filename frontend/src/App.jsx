@@ -147,7 +147,7 @@ function PredictView() {
                   <BarChart data={Object.entries(result.importance).map(([name, val]) => ({name, value: val}))} layout="vertical">
                     <XAxis type="number" hide />
                     <YAxis dataKey="name" type="category" width={100} tick={{fill: '#a0aec0', fontSize: 13, fontFamily: 'Fira Code'}} axisLine={false} tickLine={false} />
-                    <Tooltip cursor={{fill: 'rgba(255,255,255,0.05)'}} content={<FeatureTooltip />} />
+                    <Tooltip cursor={{fill: 'rgba(255,255,255,0.05)'}} content={<FeatureTooltip descriptions={result?.importance_descriptions} />} />
                     <Bar dataKey="value" radius={[0, 4, 4, 0]}>
                       {Object.entries(result.importance).map((_, i) => <Cell key={i} fill={i % 2 === 0 ? '#00d2ff' : '#a200ff'} />)}
                     </Bar>
@@ -518,16 +518,21 @@ const FEATURE_DESCRIPTIONS = {
   ret_3d:      '3-day return — price change over the last 3 trading days.',
   ret_5d:      '5-day return — price change over the last 5 trading days.',
   ret_10d:     '10-day return — price change over the last 10 trading days.',
+  pc_ratio:     'ATM put/call OI ratio (3-strike weighted) — >1 signals hedging pressure.',
+  iv_skew:      "IV skew — 5% OTM put IV minus 5% OTM call IV; positive = fear premium on downside.",
+  volume_shock: "Option turnover ratio — today's option volume / total OI; spike = unusual positioning.",
 }
 
-function FeatureTooltip({ active, payload }) {
+const OPTION_METRICS = new Set(['pc_ratio', 'iv_skew', 'volume_shock'])
+
+function FeatureTooltip({ active, payload, descriptions }) {
   if (!active || !payload?.length) return null
   const { name, value } = payload[0].payload
-  const desc = FEATURE_DESCRIPTIONS[name]
+  const desc = descriptions?.[name] ?? FEATURE_DESCRIPTIONS[name]
   return (
     <div style={{ backgroundColor: '#1a1730', border: '1px solid #302b63', borderRadius: '8px', padding: '10px 14px', maxWidth: '260px' }}>
-      <p style={{ color: '#00d2ff', fontFamily: 'Fira Code', fontSize: '13px', marginBottom: '4px' }}>{name}</p>
-      <p style={{ color: '#e2e8f0', fontSize: '13px', marginBottom: desc ? '6px' : 0 }}>Score: {value.toFixed(4)}</p>
+      <p style={{ color: OPTION_METRICS.has(name) ? '#f5a623' : '#00d2ff', fontFamily: 'Fira Code', fontSize: '13px', marginBottom: '4px' }}>{name}</p>
+      <p style={{ color: '#e2e8f0', fontSize: '13px', marginBottom: desc ? '6px' : 0 }}>Score: {value != null ? value.toFixed(4) : 'N/A'}</p>
       {desc && <p style={{ color: '#a0aec0', fontSize: '12px', lineHeight: '1.5' }}>{desc}</p>}
     </div>
   )
