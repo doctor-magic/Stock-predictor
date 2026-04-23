@@ -167,7 +167,7 @@ function PredictView() {
 // VIEW 2: MARKET SCANNER
 // ----------------------------------------------------
 function ScannerView() {
-  const [market, setMarket] = useState('us')
+  const [market, setMarket] = useState('sp500')
   const [loading, setLoading] = useState(false)
   const [results, setResults] = useState([])
   const [error, setError] = useState(null)
@@ -178,6 +178,7 @@ function ScannerView() {
   const [fromCache, setFromCache] = useState(false)
 
   const fetchScan = useCallback(async (forceRefresh = false) => {
+    let backgroundStarted = false
     setLoading(true)
     setError(null)
     setSaveSuccess(false)
@@ -185,8 +186,8 @@ function ScannerView() {
 
     if (forceRefresh) {
       setResults([])
-      setTaskProgress({ current: 0, total: 100, message: "Initiating connection..." })
     }
+    setTaskProgress({ current: 0, total: 100, message: "Initiating connection..." })
 
     const taskId = Date.now().toString()
 
@@ -210,6 +211,7 @@ function ScannerView() {
 
       // Background scan started — poll for progress + results
       if (data.status === 'started') {
+        backgroundStarted = true
         const pollInterval = setInterval(async () => {
           try {
             const pRes = await fetch(`/api/scan/progress/${taskId}`)
@@ -245,7 +247,7 @@ function ScannerView() {
     } catch(err) {
       setError(err.message)
     } finally {
-      if (!forceRefresh) {
+      if (!backgroundStarted) {
         setTaskProgress(null)
         setLoading(false)
       }
