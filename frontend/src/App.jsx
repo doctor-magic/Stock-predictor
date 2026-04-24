@@ -292,6 +292,7 @@ function ScannerView() {
 
   return (
     <div className="w-full flex flex-col items-center animate-signal">
+      <MacroPulse />
       <div className="w-full max-w-4xl flex justify-between items-center mb-6">
         <select 
           className="glass-input cursor-pointer"
@@ -442,6 +443,72 @@ function ScannerView() {
 // ----------------------------------------------------
 // VIEW 3: DAILY REVIEWS (TELEGRAM)
 // ----------------------------------------------------
+
+// ----------------------------------------------------
+// MACRO PULSE STRIP
+// ----------------------------------------------------
+function MacroPulse() {
+  const [macro, setMacro] = useState(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    fetch('/api/macro')
+      .then(r => r.json())
+      .then(d => { setMacro(d); setLoading(false) })
+      .catch(() => setLoading(false))
+  }, [])
+
+  if (loading) return (
+    <div className="w-full max-w-4xl glass-card rounded-xl p-3 mb-5 flex items-center gap-2 text-gray-500 text-sm">
+      <Activity className="w-4 h-4 animate-pulse" />
+      Loading macro data...
+    </div>
+  )
+  if (!macro) return null
+
+  const vixColor = macro.vix == null ? 'text-gray-400' : macro.vix < 15 ? 'text-green-400' : macro.vix < 25 ? 'text-yellow-400' : 'text-red-400'
+  const ycColor = macro.yield_curve == null ? 'text-gray-400' : macro.yield_curve > 0.2 ? 'text-green-400' : macro.yield_curve > 0 ? 'text-yellow-400' : 'text-red-400'
+  const rateColor = macro.rate_10y == null ? 'text-gray-400' : macro.rate_10y < 3 ? 'text-green-400' : macro.rate_10y < 4.5 ? 'text-yellow-400' : 'text-red-400'
+  const spyColor = macro.spy_change == null ? 'text-gray-400' : macro.spy_change >= 0 ? 'text-green-400' : 'text-red-400'
+
+  const regimeBorder = macro.regime === 'risk-on' ? 'border-green-500/30'
+    : macro.regime === 'risk-off' ? 'border-red-500/30'
+    : macro.regime === 'caution' ? 'border-yellow-500/30'
+    : 'border-white/10'
+
+  const regimeColor = macro.regime === 'risk-on' ? 'text-green-400'
+    : macro.regime === 'risk-off' ? 'text-red-400'
+    : macro.regime === 'caution' ? 'text-yellow-400'
+    : 'text-gray-400'
+
+  const regimeIcon = macro.regime === 'risk-on' ? '✅' : macro.regime === 'risk-off' ? '🔴' : macro.regime === 'caution' ? '⚠️' : '○'
+
+  return (
+    <div className={`w-full max-w-4xl glass-card rounded-xl px-4 py-3 mb-5 border ${regimeBorder}`}>
+      <div className="flex flex-wrap items-center gap-5">
+        <span className="text-[10px] text-gray-500 font-mono uppercase tracking-widest shrink-0">Macro Pulse</span>
+        <MacroMetric label="VIX" value={macro.vix != null ? macro.vix.toFixed(1) : null} color={vixColor} />
+        <MacroMetric label="Yield Curve" value={macro.yield_curve != null ? (macro.yield_curve >= 0 ? '+' : '') + macro.yield_curve.toFixed(2) + '%' : null} color={ycColor} />
+        <MacroMetric label="10Y Rate" value={macro.rate_10y != null ? macro.rate_10y.toFixed(2) + '%' : null} color={rateColor} />
+        <MacroMetric label="SPY" value={macro.spy_change != null ? (macro.spy_change >= 0 ? '+' : '') + macro.spy_change.toFixed(2) + '%' : null} color={spyColor} />
+        <div className="ml-auto text-right shrink-0">
+          <span className={`text-xs font-semibold ${regimeColor}`}>{regimeIcon} {macro.regime_label}</span>
+          <p className="text-[10px] text-gray-500 mt-0.5 max-w-xs">{macro.regime_desc}</p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function MacroMetric({ label, value, color }) {
+  return (
+    <div className="flex flex-col min-w-[52px]">
+      <span className="text-[10px] text-gray-500 uppercase tracking-wider">{label}</span>
+      <span className={`text-sm font-mono font-semibold ${color}`}>{value ?? '—'}</span>
+    </div>
+  )
+}
+
 function ReviewView() {
   const [docs, setDocs] = useState([])
   const [loading, setLoading] = useState(true)
