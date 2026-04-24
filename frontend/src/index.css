@@ -36,3 +36,15 @@
 .animate-signal {
   animation: signal-fade 0.4s ease-out forwards;
 }
+
+/* Review markdown content */
+.review-md { direction: rtl; text-align: right; }
+.review-md h1 { font-size: 1.4rem; font-weight: 700; color: #00d2ff; margin-bottom: 1rem; margin-top: 0.5rem; }
+.review-md h2 { font-size: 1.2rem; font-weight: 700; color: #a200ff; margin-top: 2rem; margin-bottom: 0.75rem; padding-bottom: 0.4rem; border-bottom: 1px solid rgba(162,0,255,0.3); }
+.review-md h3 { font-size: 1.05rem; font-weight: 600; color: rgba(0,210,255,0.8); margin-top: 1.25rem; margin-bottom: 0.5rem; }
+.review-md p  { font-size: 1.05rem; color: #e5e7eb; line-height: 1.9; margin-bottom: 0.6rem; }
+.review-md strong { color: #ffffff; font-weight: 700; }
+.review-md ul, .review-md ol { list-style: none; padding: 0; margin: 0.25rem 0; }
+.review-md li { font-size: 1.05rem; color: #e5e7eb; line-height: 1.9; padding: 0.6rem 0; border-bottom: 1px solid rgba(255,255,255,0.05); }
+.review-md li::before { content: "◆ "; color: rgba(0,210,255,0.4); font-size: 0.7rem; margin-left: 0.4rem; }
+.review-md hr { border-color: rgba(255,255,255,0.1); margin: 1rem 0; }

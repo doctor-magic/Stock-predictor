@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Search, Activity, AlertCircle, BarChart3, TrendingUp, TrendingDown, Minus, BookOpen, ListFilter, RefreshCw, ExternalLink, Info } from 'lucide-react'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts'
+import ReactMarkdown from 'react-markdown'
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('predict') // predict | scanner | review
@@ -575,7 +576,7 @@ function ReviewView() {
           </button>
           {openIdx === idx && (
             <div className="px-6 pb-6 border-t border-white/5 mt-0">
-              <div className="mt-4">{renderMarkdown(doc.content)}</div>
+              <div className="review-md mt-4"><ReactMarkdown>{doc.content}</ReactMarkdown></div>
             </div>
           )}
         </div>
