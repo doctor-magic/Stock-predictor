@@ -509,9 +509,47 @@ function MacroMetric({ label, value, color }) {
   )
 }
 
+function renderMarkdown(text) {
+  const lines = text.split('\n')
+  const elements = []
+  let key = 0
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    const trimmed = line.trim()
+    if (!trimmed) { elements.push(<div key={key++} className="h-3" />); continue }
+    if (trimmed.startsWith('## ')) {
+      elements.push(<h3 key={key++} className="text-base font-bold text-neon-purple mt-6 mb-2 pb-1 border-b border-neon-purple/20 text-right" dir="rtl">{trimmed.slice(3)}</h3>)
+      continue
+    }
+    if (trimmed.startsWith('# ')) {
+      elements.push(<h2 key={key++} className="text-lg font-bold text-neon-blue mb-3 text-right" dir="rtl">{trimmed.slice(2)}</h2>)
+      continue
+    }
+    const parts = trimmed.split(/(\*\*[^*]+\*\*)/)
+    const inline = parts.map((part, idx) => {
+      if (part.startsWith('**') && part.endsWith('**'))
+        return <strong key={idx} className="text-white font-semibold">{part.slice(2, -2)}</strong>
+      return <span key={idx}>{part}</span>
+    })
+    const isStockLine = trimmed.startsWith('**')
+    if (isStockLine) {
+      elements.push(
+        <div key={key++} className="flex gap-3 py-2.5 border-b border-white/5 text-right" dir="rtl">
+          <span className="text-neon-blue/40 mt-0.5 shrink-0 text-xs">◆</span>
+          <p className="text-gray-300 leading-relaxed text-sm flex-1">{inline}</p>
+        </div>
+      )
+    } else {
+      elements.push(<p key={key++} className="text-gray-400 text-sm leading-relaxed text-right" dir="rtl">{inline}</p>)
+    }
+  }
+  return elements
+}
+
 function ReviewView() {
   const [docs, setDocs] = useState([])
   const [loading, setLoading] = useState(true)
+  const [openIdx, setOpenIdx] = useState(0)
 
   useEffect(() => {
     fetch('/api/recommendations')
@@ -523,24 +561,25 @@ function ReviewView() {
   if (loading) return <div className="animate-spin w-8 h-8 border-4 border-neon-blue border-t-transparent rounded-full mt-10"></div>
 
   return (
-    <div className="w-full max-w-4xl animate-signal flex flex-col gap-8">
+    <div className="w-full max-w-4xl animate-signal flex flex-col gap-3">
       {docs.length === 0 ? (
         <div className="text-center text-gray-400 mt-10">לא נמצאו קבצי סקירות (stock_recommendations_*.txt).</div>
-      ) : (
-        docs.map(doc => (
-          <div key={doc.id} className="glass-card p-6 md:p-8">
-            <h2 className="text-2xl font-bold text-neon-blue mb-4 border-b border-white/10 pb-4 text-right" dir="rtl">
-              סקירה יומית - {doc.date}
-            </h2>
-            <div 
-              className="text-gray-300 text-base leading-loose whitespace-pre-wrap text-right font-sans" 
-              dir="rtl"
-            >
-              {doc.content}
+      ) : docs.map((doc, idx) => (
+        <div key={doc.id} className="glass-card rounded-xl overflow-hidden">
+          <button
+            className="w-full flex items-center justify-between px-6 py-4 text-right hover:bg-white/5 transition-colors"
+            onClick={() => setOpenIdx(openIdx === idx ? -1 : idx)}
+          >
+            <span className={`text-lg transition-transform duration-200 ${openIdx === idx ? 'rotate-90' : ''}`}>›</span>
+            <h2 className="text-base font-bold text-neon-blue" dir="rtl">סקירה יומית — {doc.date}</h2>
+          </button>
+          {openIdx === idx && (
+            <div className="px-6 pb-6 border-t border-white/5 mt-0">
+              <div className="mt-4">{renderMarkdown(doc.content)}</div>
             </div>
-          </div>
-        ))
-      )}
+          )}
+        </div>
+      ))}
     </div>
   )
 }
