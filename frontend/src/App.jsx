@@ -518,11 +518,11 @@ function renderMarkdown(text) {
     const trimmed = line.trim()
     if (!trimmed) { elements.push(<div key={key++} className="h-3" />); continue }
     if (trimmed.startsWith('## ')) {
-      elements.push(<h3 key={key++} className="text-base font-bold text-neon-purple mt-6 mb-2 pb-1 border-b border-neon-purple/20 text-right" dir="rtl">{trimmed.slice(3)}</h3>)
+      elements.push(<h3 key={key++} className="text-lg font-bold text-neon-purple mt-6 mb-2 pb-1 border-b border-neon-purple/20 text-right" dir="rtl">{trimmed.slice(3)}</h3>)
       continue
     }
     if (trimmed.startsWith('# ')) {
-      elements.push(<h2 key={key++} className="text-lg font-bold text-neon-blue mb-3 text-right" dir="rtl">{trimmed.slice(2)}</h2>)
+      elements.push(<h2 key={key++} className="text-xl font-bold text-neon-blue mb-3 text-right" dir="rtl">{trimmed.slice(2)}</h2>)
       continue
     }
     const parts = trimmed.split(/(\*\*[^*]+\*\*)/)
@@ -534,13 +534,13 @@ function renderMarkdown(text) {
     const isStockLine = trimmed.startsWith('**')
     if (isStockLine) {
       elements.push(
-        <div key={key++} className="flex gap-3 py-2.5 border-b border-white/5 text-right" dir="rtl">
+        <div key={key++} className="flex gap-3 py-3 border-b border-white/5 text-right" dir="rtl">
           <span className="text-neon-blue/40 mt-0.5 shrink-0 text-xs">◆</span>
-          <p className="text-gray-300 leading-relaxed text-sm flex-1">{inline}</p>
+          <p className="text-gray-200 leading-loose text-base flex-1">{inline}</p>
         </div>
       )
     } else {
-      elements.push(<p key={key++} className="text-gray-400 text-sm leading-relaxed text-right" dir="rtl">{inline}</p>)
+      elements.push(<p key={key++} className="text-gray-400 text-base leading-loose text-right" dir="rtl">{inline}</p>)
     }
   }
   return elements
