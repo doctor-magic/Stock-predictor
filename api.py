@@ -97,15 +97,6 @@ async def scan_market(req: ScanRequest):
     threading.Thread(target=background_scan, daemon=True).start()
     return {"status": "started", "task_id": task_id}
 
-class SaveScanRequest(BaseModel):
-    market_id: str
-    results: List[Dict]
-
-@app.post("/api/scan/save")
-def save_scan(req: SaveScanRequest):
-    db.update_scan_results(req.market_id, req.results)
-    return {"status": "success"}
-
 
 @app.get("/api/recommendations")
 def get_recommendations():
