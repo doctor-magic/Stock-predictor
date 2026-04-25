@@ -493,6 +493,7 @@ function ReviewView() {
   const [docs, setDocs] = useState([])
   const [loading, setLoading] = useState(true)
   const [openIdx, setOpenIdx] = useState(0)
+  const [searchQuery, setSearchQuery] = useState('')
 
   useEffect(() => {
     fetch('/api/recommendations')
@@ -503,11 +504,30 @@ function ReviewView() {
 
   if (loading) return <div className="animate-spin w-8 h-8 border-4 border-neon-blue border-t-transparent rounded-full mt-10"></div>
 
+  const q = searchQuery.trim().toLowerCase()
+  const filteredDocs = q
+    ? docs.filter(doc =>
+        doc.content?.toLowerCase().includes(q) ||
+        doc.date?.toLowerCase().includes(q)
+      )
+    : docs
+
   return (
     <div className="w-full max-w-4xl animate-signal flex flex-col gap-3">
-      {docs.length === 0 ? (
-        <div className="text-center text-gray-400 mt-10">לא נמצאו קבצי סקירות (stock_recommendations_*.txt).</div>
-      ) : docs.map((doc, idx) => (
+      <div className="relative">
+        <input
+          type="text"
+          value={searchQuery}
+          onChange={e => { setSearchQuery(e.target.value); setOpenIdx(0) }}
+          placeholder="חיפוש מניה או נושא..."
+          dir="rtl"
+          className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 pr-10 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-neon-blue/50 transition-colors"
+        />
+        <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500 pointer-events-none" />
+      </div>
+      {filteredDocs.length === 0 ? (
+        <div className="text-center text-gray-400 mt-10">{q ? `לא נמצאו תוצאות עבור "${searchQuery}"` : 'לא נמצאו קבצי סקירות (stock_recommendations_*.txt).'}</div>
+      ) : filteredDocs.map((doc, idx) => (
         <div key={doc.id} className="glass-card rounded-xl overflow-hidden">
           <button
             className="w-full flex items-center justify-between px-6 py-4 text-right hover:bg-white/5 transition-colors"
