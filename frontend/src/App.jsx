@@ -20,7 +20,7 @@ export default function App() {
         </p>
         
         {/* Navigation Tabs */}
-        <div className="flex bg-white/5 p-1 rounded-xl glass-border border w-fit mx-auto">
+        <div className="flex flex-wrap justify-center bg-white/5 p-1 rounded-xl glass-border border w-full sm:w-fit mx-auto gap-1">
           <TabButton active={activeTab === 'predict'} onClick={() => setActiveTab('predict')} icon={Search}>חיזוי מניה אחת</TabButton>
           <TabButton active={activeTab === 'scanner'} onClick={() => setActiveTab('scanner')} icon={ListFilter}>סורק מניות</TabButton>
           <TabButton active={activeTab === 'review'} onClick={() => setActiveTab('review')} icon={BookOpen}>סקירה יומית</TabButton>
@@ -42,7 +42,7 @@ function TabButton({ active, onClick, children, icon: Icon }) {
   return (
     <button 
       onClick={onClick}
-      className={`flex items-center gap-2 px-6 py-2.5 outline-none rounded-lg font-medium transition-all ${
+      className={`flex items-center gap-1.5 px-3 sm:px-6 py-2 sm:py-2.5 text-sm outline-none rounded-lg font-medium transition-all ${
         active 
           ? 'bg-gradient-to-r from-neon-blue/20 to-neon-purple/20 text-white shadow-[0_0_10px_rgba(0,210,255,0.1)] border border-neon-blue/30' 
           : 'text-gray-400 hover:text-white hover:bg-white/5 border border-transparent'
@@ -295,7 +295,7 @@ function ScannerView() {
   return (
     <div className="w-full flex flex-col items-center animate-signal">
       <MacroPulse />
-      <div className="w-full max-w-4xl flex justify-between items-center mb-6">
+      <div className="w-full max-w-4xl flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-3">
         <select 
           className="glass-input cursor-pointer"
           value={market} 
@@ -370,12 +370,12 @@ function ScannerView() {
           <table className="w-full text-left border-collapse text-sm md:text-base">
             <thead>
               <tr className="bg-white/10 uppercase tracking-wider text-gray-400 font-mono text-xs md:text-sm">
-                <th className="p-4 px-6 border-b border-white/10">Symbol</th>
-                <th className="p-4 px-6 border-b border-white/10">Name</th>
-                <th className="p-4 px-6 border-b border-white/10 text-center">Signal</th>
-                <th className="p-4 px-6 border-b border-white/10 text-right">Conf.</th>
-                <th className="p-4 px-6 border-b border-white/10 text-right">Precision</th>
-                <th className="p-4 px-6 border-b border-white/10 text-right">Price</th>
+                <th className="p-3 sm:p-4 sm:px-6 border-b border-white/10">Symbol</th>
+                <th className="p-3 sm:p-4 sm:px-6 border-b border-white/10 hidden sm:table-cell">Name</th>
+                <th className="p-3 sm:p-4 sm:px-6 border-b border-white/10 text-center">Signal</th>
+                <th className="p-3 sm:p-4 sm:px-6 border-b border-white/10 text-right">Conf.</th>
+                <th className="p-3 sm:p-4 sm:px-6 border-b border-white/10 text-right hidden sm:table-cell">Precision</th>
+                <th className="p-3 sm:p-4 sm:px-6 border-b border-white/10 text-right">Price</th>
               </tr>
             </thead>
             <tbody>
@@ -393,14 +393,14 @@ function ScannerView() {
                       <ExternalLink className="w-4 h-4 opacity-40 group-hover:opacity-100 transition-opacity" />
                     </a>
                   </td>
-                  <td className="p-4 px-6">
+                  <td className="p-3 sm:p-4 sm:px-6 hidden sm:table-cell">
                     <input
                       value={row.symbol_name || ''}
                       onChange={(e) => handleEdit(index, 'symbol_name', e.target.value)}
                       className="bg-transparent border-none focus:ring-1 focus:ring-neon-blue rounded px-1 w-32 text-gray-300 outline-none cursor-text"
                     />
                   </td>
-                  <td className="p-4 px-6 text-center">
+                  <td className="p-3 sm:p-4 sm:px-6 text-center">
                     <input
                       value={row.signal}
                       onChange={(e) => handleEdit(index, 'signal', e.target.value.toUpperCase())}
@@ -409,7 +409,7 @@ function ScannerView() {
                       }`}
                     />
                   </td>
-                  <td className="p-4 px-6 text-right flex justify-end items-center">
+                  <td className="p-3 sm:p-4 sm:px-6 text-right flex justify-end items-center">
                     <input
                       value={!isNaN(row.confidence) && row.confidence !== '' ? Math.round(parseFloat(row.confidence) * 100) : ''}
                       onChange={(e) => {
@@ -420,10 +420,10 @@ function ScannerView() {
                     />
                     <span className="text-gray-400 font-mono">%</span>
                   </td>
-                  <td className="p-4 px-6 text-right font-mono text-gray-400">
+                  <td className="p-3 sm:p-4 sm:px-6 text-right font-mono text-gray-400 hidden sm:table-cell">
                      {(row.precision * 100).toFixed(1)}%
                   </td>
-                  <td className="p-4 px-6 text-right">
+                  <td className="p-3 sm:p-4 sm:px-6 text-right">
                     <input
                       value={row.last_price}
                       onChange={(e) => handleEdit(index, 'last_price', e.target.value)}
@@ -493,7 +493,7 @@ function MacroPulse() {
         <MacroMetric label="Yield Curve" value={macro.yield_curve != null ? (macro.yield_curve >= 0 ? '+' : '') + macro.yield_curve.toFixed(2) + '%' : null} color={ycColor} />
         <MacroMetric label="10Y Rate" value={macro.rate_10y != null ? macro.rate_10y.toFixed(2) + '%' : null} color={rateColor} />
         <MacroMetric label="SPY" value={macro.spy_change != null ? (macro.spy_change >= 0 ? '+' : '') + macro.spy_change.toFixed(2) + '%' : null} color={spyColor} />
-        <div className="ml-auto text-right shrink-0">
+        <div className="w-full sm:w-auto sm:ml-auto text-left sm:text-right mt-1 sm:mt-0">
           <span className={`text-xs font-semibold ${regimeColor}`}>{regimeIcon} {macro.regime_label}</span>
           <p className="text-[10px] text-gray-500 mt-0.5 max-w-xs">{macro.regime_desc}</p>
         </div>
@@ -695,7 +695,7 @@ function MacroDashboardView() {
 
   return (
     <div className="w-full max-w-5xl animate-signal">
-      <div className="flex justify-between items-center mb-6">
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-1">
         <h2 className="text-xl font-bold font-mono text-neon-blue">FRED Macro Dashboard</h2>
         <span className="text-xs text-gray-500 font-mono">עודכן: {updatedAt} · מטמון 6 שעות</span>
       </div>
