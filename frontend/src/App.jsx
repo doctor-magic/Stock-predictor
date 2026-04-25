@@ -173,8 +173,6 @@ function ScannerView() {
   const [loading, setLoading] = useState(false)
   const [results, setResults] = useState([])
   const [error, setError] = useState(null)
-  const [isSaving, setIsSaving] = useState(false)
-  const [saveSuccess, setSaveSuccess] = useState(false)
   const [filter, setFilter] = useState('ALL')
   const [taskProgress, setTaskProgress] = useState(null)
   const [fromCache, setFromCache] = useState(false)
@@ -183,7 +181,6 @@ function ScannerView() {
     let backgroundStarted = false
     setLoading(true)
     setError(null)
-    setSaveSuccess(false)
     setFromCache(false)
 
     if (forceRefresh) {
@@ -259,33 +256,7 @@ function ScannerView() {
   // Auto-load cached results on mount and when market changes
   useEffect(() => { fetchScan(false) }, [market, fetchScan])
 
-  const handleEdit = (rowIndex, columnKey, newValue) => {
-    const updatedData = [...results];
-    updatedData[rowIndex][columnKey] = newValue;
-    setResults(updatedData);
-    setSaveSuccess(false);
-  };
-
-  const handleSave = async () => {
-    setIsSaving(true)
-    setError(null)
-    setSaveSuccess(false)
-    try {
-      const response = await fetch('/api/scan/save', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ market_id: market, results })
-      })
-      if (!response.ok) throw new Error('Failed to save changes')
-      setSaveSuccess(true)
-    } catch (err) {
-      setError(err.message)
-    } finally {
-      setIsSaving(false)
-    }
-  }
-
-  // Helper row stying 
+  // Helper row stying
   const getRowStyle = (signal) => {
     if (signal === 'BUY') return 'bg-green-500/10 text-green-400'
     if (signal === 'SELL') return 'bg-red-500/5 text-red-500'
@@ -308,11 +279,6 @@ function ScannerView() {
         </select>
         
         <div className="flex gap-3 items-center">
-          {results.length > 0 && (
-            <button onClick={handleSave} disabled={isSaving} className="btn-primary px-6 bg-gradient-to-r from-neon-purple to-pink-500 shadow-[0_0_15px_rgba(162,0,255,0.3)]">
-              {isSaving ? 'שומר...' : 'שמור שינויים'}
-            </button>
-          )}
           <button onClick={() => fetchScan(true)} disabled={loading} className="btn-primary px-6 flex items-center gap-2">
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
             {loading ? 'סורק שוק...' : 'רענן סריקה'}
@@ -345,7 +311,6 @@ function ScannerView() {
       )}
 
       {error && <p className="text-red-400 mb-4">{error}</p>}
-      {saveSuccess && <p className="text-green-400 mb-4 text-center font-bold">השינויים נשמרו בהצלחה למסד הנתונים!</p>}
 
       {results.length > 0 && (
         <div className="w-full max-w-5xl flex justify-start gap-2 mb-4">
@@ -393,43 +358,19 @@ function ScannerView() {
                       <ExternalLink className="w-4 h-4 opacity-40 group-hover:opacity-100 transition-opacity" />
                     </a>
                   </td>
-                  <td className="p-3 sm:p-4 sm:px-6 hidden sm:table-cell">
-                    <input
-                      value={row.symbol_name || ''}
-                      onChange={(e) => handleEdit(index, 'symbol_name', e.target.value)}
-                      className="bg-transparent border-none focus:ring-1 focus:ring-neon-blue rounded px-1 w-32 text-gray-300 outline-none cursor-text"
-                    />
+                  <td className="p-3 sm:p-4 sm:px-6 hidden sm:table-cell text-gray-300">{row.symbol_name || '—'}</td>
+                  <td className="p-3 sm:p-4 sm:px-6 text-center font-mono font-bold">
+                    <span className={row.signal === 'BUY' ? 'text-green-400' : row.signal === 'SELL' ? 'text-red-500' : 'text-yellow-500'}>
+                      {row.signal}
+                    </span>
                   </td>
-                  <td className="p-3 sm:p-4 sm:px-6 text-center">
-                    <input
-                      value={row.signal}
-                      onChange={(e) => handleEdit(index, 'signal', e.target.value.toUpperCase())}
-                      className={`bg-transparent border-none focus:ring-1 focus:ring-neon-blue rounded px-1 w-16 text-center font-mono font-bold outline-none cursor-text uppercase ${
-                        row.signal === 'BUY' ? 'text-green-400' : row.signal === 'SELL' ? 'text-red-500' : 'text-yellow-500'
-                      }`}
-                    />
-                  </td>
-                  <td className="p-3 sm:p-4 sm:px-6 text-right flex justify-end items-center">
-                    <input
-                      value={!isNaN(row.confidence) && row.confidence !== '' ? Math.round(parseFloat(row.confidence) * 100) : ''}
-                      onChange={(e) => {
-                        const val = parseFloat(e.target.value);
-                        handleEdit(index, 'confidence', isNaN(val) ? 0 : val / 100);
-                      }}
-                      className="bg-transparent border-none focus:ring-1 focus:ring-neon-blue rounded px-1 w-10 text-right font-mono text-gray-200 outline-none cursor-text"
-                    />
-                    <span className="text-gray-400 font-mono">%</span>
+                  <td className="p-3 sm:p-4 sm:px-6 text-right font-mono text-gray-200">
+                    {!isNaN(row.confidence) && row.confidence !== '' ? Math.round(parseFloat(row.confidence) * 100) : '—'}%
                   </td>
                   <td className="p-3 sm:p-4 sm:px-6 text-right font-mono text-gray-400 hidden sm:table-cell">
-                     {(row.precision * 100).toFixed(1)}%
+                    {(row.precision * 100).toFixed(1)}%
                   </td>
-                  <td className="p-3 sm:p-4 sm:px-6 text-right">
-                    <input
-                      value={row.last_price}
-                      onChange={(e) => handleEdit(index, 'last_price', e.target.value)}
-                      className="bg-transparent border-none focus:ring-1 focus:ring-neon-blue rounded px-1 w-20 text-right text-gray-300 outline-none cursor-text"
-                    />
-                  </td>
+                  <td className="p-3 sm:p-4 sm:px-6 text-right text-gray-300 font-mono">{row.last_price}</td>
                 </tr>
               ))}
             </tbody>
