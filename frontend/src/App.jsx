@@ -505,11 +505,24 @@ function ReviewView() {
   if (loading) return <div className="animate-spin w-8 h-8 border-4 border-neon-blue border-t-transparent rounded-full mt-10"></div>
 
   const q = searchQuery.trim().toLowerCase()
+
+  const extractSection = (content) => {
+    if (!q) return content
+    const paragraphs = content.split(/\n\n+/)
+    const out = []
+    for (let i = 0; i < paragraphs.length; i++) {
+      if (paragraphs[i].toLowerCase().includes(q)) {
+        if (i > 0 && out[out.length - 1] !== paragraphs[i - 1]) out.push(paragraphs[i - 1])
+        out.push(paragraphs[i])
+      }
+    }
+    return out.join('\n\n')
+  }
+
   const filteredDocs = q
-    ? docs.filter(doc =>
-        doc.content?.toLowerCase().includes(q) ||
-        doc.date?.toLowerCase().includes(q)
-      )
+    ? docs
+        .map(doc => ({ ...doc, _section: extractSection(doc.content) }))
+        .filter(doc => doc._section)
     : docs
 
   return (
@@ -536,9 +549,9 @@ function ReviewView() {
             <span className={`text-lg transition-transform duration-200 ${openIdx === idx ? 'rotate-90' : ''}`}>›</span>
             <h2 className="text-base font-bold text-neon-blue" dir="rtl">סקירה יומית — {doc.date}</h2>
           </button>
-          {openIdx === idx && (
+          {(q || openIdx === idx) && (
             <div className="px-6 pb-6 border-t border-white/5 mt-0">
-              <div className="review-md mt-4"><ReactMarkdown>{doc.content}</ReactMarkdown></div>
+              <div className="review-md mt-4"><ReactMarkdown>{q ? doc._section : doc.content}</ReactMarkdown></div>
             </div>
           )}
         </div>
