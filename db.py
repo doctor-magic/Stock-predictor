@@ -1,7 +1,6 @@
 import sqlite3
-import json
 import os
-from datetime import datetime, date
+from datetime import date
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "scanner_cache.db")
 
@@ -48,7 +47,8 @@ def save_scan_results(market_id: str, results: list):
     conn.commit()
     conn.close()
 
-def get_latest_scan(market_id: str, min_confidence: float = 0.65, top_n: int = 10):
+def get_latest_scan(market_id: str):
+    """Return all cached results for market_id from today, or empty list."""
     today = date.today().isoformat()
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -56,12 +56,19 @@ def get_latest_scan(market_id: str, min_confidence: float = 0.65, top_n: int = 1
     
     cursor.execute("""
         SELECT * FROM scan_results 
-        WHERE market_id = ? AND scan_date = ? AND confidence >= ?
+        WHERE market_id = ? AND scan_date = ?
         ORDER BY confidence DESC
-        LIMIT ?
-    """, (market_id, today, min_confidence, top_n))
+    """, (market_id, today))
     
     rows = cursor.fetchall()
     conn.close()
     
-    return [dict(row) for row in rows]
+    return [{
+        "symbol": r["symbol"],
+        "symbol_name": r["symbol_name"],
+        "signal": r["signal"],
+        "confidence": r["confidence"],
+        "precision": r["precision_score"],
+        "last_price": r["last_price"]
+    } for r in rows]
+
