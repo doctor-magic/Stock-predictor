@@ -1,10 +1,9 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Search, Activity, AlertCircle, BarChart3, TrendingUp, TrendingDown, Minus, BookOpen, ListFilter, RefreshCw, ExternalLink, Info } from 'lucide-react'
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts'
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, LineChart, Line, ReferenceLine } from 'recharts'
 import ReactMarkdown from 'react-markdown'
-
 export default function App() {
-  const [activeTab, setActiveTab] = useState('predict') // predict | scanner | review
+  const [activeTab, setActiveTab] = useState('predict') // predict | scanner | review | macro
 
   return (
     <div className="min-h-screen px-4 py-8 flex flex-col items-center">
@@ -25,6 +24,7 @@ export default function App() {
           <TabButton active={activeTab === 'predict'} onClick={() => setActiveTab('predict')} icon={Search}>חיזוי מניה אחת</TabButton>
           <TabButton active={activeTab === 'scanner'} onClick={() => setActiveTab('scanner')} icon={ListFilter}>סורק מניות</TabButton>
           <TabButton active={activeTab === 'review'} onClick={() => setActiveTab('review')} icon={BookOpen}>סקירה יומית</TabButton>
+          <TabButton active={activeTab === 'macro'} onClick={() => setActiveTab('macro')} icon={BarChart3}>מאקרו FRED</TabButton>
         </div>
       </header>
 
@@ -32,6 +32,7 @@ export default function App() {
         {activeTab === 'predict' && <PredictView />}
         {activeTab === 'scanner' && <ScannerView />}
         {activeTab === 'review'  && <ReviewView />}
+        {activeTab === 'macro'   && <MacroDashboardView />}
       </main>
     </div>
   )
@@ -667,6 +668,101 @@ function MetricBox({ label, value, highlight = false }) {
     <div className="bg-white/5 border border-white/5 rounded-xl p-4 flex flex-col justify-center">
       <span className="text-xs font-mono text-gray-500 mb-1 uppercase tracking-wider">{label}</span>
       <span className={`text-2xl font-bold ${highlight ? 'text-neon-blue' : 'text-gray-100'}`}>{value}</span>
+    </div>
+  )
+}
+
+// ----------------------------------------------------
+// VIEW 4: FRED MACRO DASHBOARD
+// ----------------------------------------------------
+function MacroDashboardView() {
+  const [data, setData] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
+
+  useEffect(() => {
+    fetch('/api/macro-dashboard')
+      .then(r => { if (!r.ok) throw new Error('API error'); return r.json() })
+      .then(d => { setData(d); setLoading(false) })
+      .catch(e => { setError(e.message); setLoading(false) })
+  }, [])
+
+  if (loading) return <div className="animate-spin w-8 h-8 border-4 border-neon-blue border-t-transparent rounded-full mt-10"></div>
+  if (error)   return <div className="glass-card bg-red-500/10 border-red-500/30 p-4 text-red-200 mt-10">{error}</div>
+  if (!data)   return null
+
+  const updatedAt = new Date(data.updated_at).toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' })
+
+  return (
+    <div className="w-full max-w-5xl animate-signal">
+      <div className="flex justify-between items-center mb-6">
+        <h2 className="text-xl font-bold font-mono text-neon-blue">FRED Macro Dashboard</h2>
+        <span className="text-xs text-gray-500 font-mono">עודכן: {updatedAt} · מטמון 6 שעות</span>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        {data.indicators.map(ind => <MacroCard key={ind.id} ind={ind} />)}
+      </div>
+    </div>
+  )
+}
+
+function MacroCard({ ind }) {
+  const isGood = ind.good === 'up'
+    ? ind.trend === 'up'
+    : ind.good === 'down'
+    ? ind.trend === 'down'
+    : null
+  const trendColor = isGood === null ? '#00d2ff' : isGood ? '#4ade80' : '#f87171'
+  const TrendIcon = ind.trend === 'up' ? TrendingUp : ind.trend === 'down' ? TrendingDown : Minus
+
+  const fmtVal = (v, unit) => {
+    if (v === null || v === undefined) return '—'
+    if (unit === '%') return `${v.toFixed(2)}%`
+    if (unit === 'idx') return v.toFixed(1)
+    if (unit === 'K') return `${v > 0 ? '+' : ''}${v.toLocaleString()}K`
+    if (unit === '') return v.toFixed(2)
+    return `${v.toFixed(2)}${unit}`
+  }
+
+  const fmtDelta = (d, unit) => {
+    if (d === null || d === undefined) return null
+    const sign = d > 0 ? '+' : ''
+    if (unit === '%') return `${sign}${d.toFixed(2)}%`
+    if (unit === 'K') return `${sign}${d.toLocaleString()}K`
+    return `${sign}${d.toFixed(2)}`
+  }
+
+  const delta = fmtDelta(ind.delta, ind.unit)
+
+  return (
+    <div className="glass-card p-4 flex flex-col gap-3">
+      <div className="flex justify-between items-start">
+        <div>
+          <p className="text-xs font-mono text-gray-500 uppercase tracking-wider">{ind.id}</p>
+          <p className="text-base font-semibold text-white">{ind.label}</p>
+        </div>
+        <TrendIcon className="w-5 h-5 mt-1 flex-shrink-0" style={{ color: trendColor }} />
+      </div>
+
+      <div className="flex items-end justify-between">
+        <span className="text-2xl font-bold font-mono" style={{ color: trendColor }}>
+          {fmtVal(ind.current, ind.unit)}
+        </span>
+        {delta && (
+          <span className="text-xs font-mono text-gray-400">
+            {delta} MoM
+          </span>
+        )}
+      </div>
+
+      {ind.series && ind.series.length > 1 && (
+        <ResponsiveContainer width="100%" height={56}>
+          <LineChart data={ind.series} margin={{ top: 2, right: 2, left: 2, bottom: 2 }}>
+            <ReferenceLine y={0} stroke="#ffffff18" strokeDasharray="3 3" />
+            <Line type="monotone" dataKey="value" stroke={trendColor} strokeWidth={1.5} dot={false} />
+          </LineChart>
+        </ResponsiveContainer>
+      )}
     </div>
   )
 }
