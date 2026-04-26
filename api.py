@@ -40,6 +40,9 @@ IMPORTANCE_DESCRIPTIONS: dict[str, str] = {
     "pc_ratio":     "ATM put/call OI ratio (3-strike weighted) — >1 signals hedging pressure.",
     "iv_skew":      "IV skew — 5% OTM put IV minus 5% OTM call IV; positive = fear premium on downside.",
     "volume_shock": "Option turnover ratio — today's option volume / total OI; spike = unusual positioning.",
+    "vix":          "CBOE VIX — implied volatility of S&P 500; >30 = high fear, model becomes more conservative on BUY signals.",
+    "dgs10":        "10-Year Treasury yield — rising yield tightens financial conditions and pressures growth stocks.",
+    "t10y2y":       "Yield curve (10Y minus 2Y) — negative = inverted curve, historically precedes slowdowns.",
 }
 
 app = FastAPI(title="Stock Predictor Pro API")

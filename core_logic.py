@@ -1,9 +1,11 @@
+import os
+import json
+import urllib.request
 import yfinance as yf
 import pandas as pd
 import numpy as np
 import datetime
 from sklearn.ensemble import HistGradientBoostingClassifier
-from sklearn.metrics import precision_score
 from cachetools import cached, TTLCache
 import requests
 from io import StringIO
@@ -12,6 +14,7 @@ import warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
 cache = TTLCache(maxsize=100, ttl=900)
 _options_cache: TTLCache = TTLCache(maxsize=50, ttl=900)  # 15-min TTL for option chains
+_macro_cache: TTLCache = TTLCache(maxsize=1, ttl=3600)    # 1h TTL for macro timeseries
 
 PERIOD = "5y"
 FORWARD_DAYS = 10
@@ -20,16 +23,18 @@ CONFIDENCE_THRESHOLD = 0.68
 MIN_PRECISION = 0.36
 
 FEATURES = [
-    "ema9", "ema21", "ema50", "ema_cross",
-    "rsi", "macd_gap", "bb_pos",
-    "vol_ratio", "ret_3d", "ret_5d", "ret_10d",
-    "sma200_dist"
+    "ema9", "ema21", "ema50", "ema_cross",       # 0-3  trend
+    "rsi", "macd_gap", "bb_pos",                  # 4-6  momentum
+    "vol_ratio", "ret_3d", "ret_5d", "ret_10d",   # 7-10 returns+volume
+    "sma200_dist",                                 # 11   long-term trend
+    "vix", "dgs10", "t10y2y",                     # 12-14 macro regime
 ]
 
 INTERACTION_GROUPS = [
-    [0, 1, 2, 3, 11],  # trend: ema9, ema21, ema50, ema_cross, sma200_dist
-    [4, 5, 6],          # momentum: rsi, macd_gap, bb_pos
-    [7, 8, 9, 10],      # returns+volume: vol_ratio, ret_3d, ret_5d, ret_10d
+    [0, 1, 2, 3, 11],        # trend: ema9, ema21, ema50, ema_cross, sma200_dist
+    [4, 5, 6],                # momentum: rsi, macd_gap, bb_pos
+    [7, 8, 9, 10],            # returns+volume: vol_ratio, ret_3d, ret_5d, ret_10d
+    [4, 5, 6, 12, 13, 14],   # momentum × macro: RSI/MACD conditioned on VIX + yield curve
 ]
 
 OPTION_FEATURES = {"pc_ratio", "iv_skew", "volume_shock"}
@@ -152,6 +157,57 @@ def fetch_options_features(ticker: str, spot: float) -> dict:
     _options_cache[ticker] = result
     return result
 
+def fetch_macro_timeseries() -> pd.DataFrame:
+    """Return a tz-naive daily DataFrame with columns: vix, dgs10, t10y2y.
+    Cached for 1 hour — shared across all per-stock model fits in a scan."""
+    if "macro" in _macro_cache:
+        return _macro_cache["macro"]
+
+    frames: list[pd.DataFrame] = []
+
+    # VIX via yfinance
+    try:
+        raw = yf.download("^VIX", period=PERIOD, progress=False, auto_adjust=False)
+        if isinstance(raw.columns, pd.MultiIndex):
+            raw.columns = raw.columns.get_level_values(0)
+        vix = raw[["Close"]].rename(columns={"Close": "vix"})
+        vix.index = pd.to_datetime(vix.index).tz_localize(None)
+        frames.append(vix)
+    except Exception as e:
+        print(f"VIX fetch error: {e}")
+
+    # DGS10 + T10Y2Y via FRED
+    fred_key = os.environ.get("FRED_API_KEY", "")
+    if fred_key:
+        for series_id, col in [("DGS10", "dgs10"), ("T10Y2Y", "t10y2y")]:
+            try:
+                url = (
+                    "https://api.stlouisfed.org/fred/series/observations"
+                    f"?series_id={series_id}&limit=2000&sort_order=desc"
+                    f"&api_key={fred_key}&file_type=json"
+                )
+                with urllib.request.urlopen(url, timeout=10) as r:
+                    data = json.loads(r.read())
+                obs = pd.DataFrame(data["observations"])
+                obs = obs[obs["value"] != "."].copy()
+                obs.index = pd.to_datetime(obs["date"])
+                obs[col] = pd.to_numeric(obs["value"], errors="coerce")
+                frames.append(obs[[col]])
+            except Exception as e:
+                print(f"FRED {series_id} error: {e}")
+
+    if not frames:
+        return pd.DataFrame(columns=["vix", "dgs10", "t10y2y"])
+
+    macro = frames[0]
+    for f in frames[1:]:
+        macro = macro.join(f, how="outer")
+    macro = macro.sort_index().ffill().bfill()
+
+    _macro_cache["macro"] = macro
+    return macro
+
+
 def build_features(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df["ema9"] = df["Close"].ewm(span=9, adjust=False).mean()
@@ -176,6 +232,20 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     df["ret_3d"] = df["Close"].pct_change(3)
     df["ret_5d"] = df["Close"].pct_change(5)
     df["ret_10d"] = df["Close"].pct_change(10)
+
+    # Macro regime features (VIX, 10Y yield, yield curve)
+    try:
+        macro = fetch_macro_timeseries()
+        idx = df.index.tz_localize(None) if df.index.tz is not None else df.index
+        df.index = idx
+        df = df.join(macro[["vix", "dgs10", "t10y2y"]], how="left")
+        df[["vix", "dgs10", "t10y2y"]] = df[["vix", "dgs10", "t10y2y"]].ffill()
+    except Exception as e:
+        print(f"Macro join error: {e}")
+        df["vix"] = np.nan
+        df["dgs10"] = np.nan
+        df["t10y2y"] = np.nan
+
     return df
 
 def build_labels(df: pd.DataFrame) -> pd.DataFrame:
