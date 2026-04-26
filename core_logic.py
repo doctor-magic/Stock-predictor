@@ -126,7 +126,9 @@ def fetch_options_features(ticker: str, spot: float) -> dict:
         put_atm  = puts.iloc[(puts["strike"]  - spot).abs().argsort().iloc[:n]]
         call_oi  = call_atm["openInterest"].fillna(0).sum()
         put_oi   = put_atm["openInterest"].fillna(0).sum()
-        pc_ratio = (put_oi / call_oi) if call_oi > 0 else None
+        if call_oi < 500 or put_oi < 500:  # illiquid market — data not trustworthy
+            return defaults
+        pc_ratio = put_oi / call_oi
 
         # IV Skew: 5% OTM strikes, bid>0 validates the IV isn't garbage
         liquid_puts  = puts[(puts["bid"]  > 0) & (puts["ask"]  > 0)]
