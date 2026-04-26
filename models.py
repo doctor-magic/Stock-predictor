@@ -12,6 +12,7 @@ class PredictionResult(BaseModel):
     importance: Optional[Dict[str, float]] = None
     options_context: Optional[Dict[str, Optional[float]]] = None
     importance_descriptions: Optional[Dict[str, str]] = None
+    options_filtered: bool = False
 
 class ScanRequest(BaseModel):
     market_id: str

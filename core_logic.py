@@ -308,6 +308,33 @@ def get_prediction(ticker: str, light_mode=False):
     confidence = proba[pred_idx]
 
     final_signal = raw_signal if confidence >= CONFIDENCE_THRESHOLD else "HOLD"
+
+    # Fetch options before filter so they can adjust confidence
+    spot = float(df["Close"].iloc[-1])
+    options_ctx = fetch_options_features(ticker, spot)
+
+    # Options post-prediction filter: bearish options reduce BUY confidence; bullish reduce SELL
+    options_filtered = False
+    if final_signal != "HOLD":
+        pc = options_ctx.get("pc_ratio")
+        skew = options_ctx.get("iv_skew")
+        adj = confidence
+        if final_signal == "BUY":
+            if pc is not None and pc > 1.2:    # more puts than calls — hedging pressure
+                adj *= 0.85
+            if skew is not None and skew > 0.05:  # fear premium on downside
+                adj *= 0.90
+        elif final_signal == "SELL":
+            if pc is not None and pc < 0.8:    # call-heavy — market positioning bullish
+                adj *= 0.85
+            if skew is not None and skew < -0.02:  # call IV > put IV — bullish skew
+                adj *= 0.90
+        if adj < confidence:
+            options_filtered = True
+            confidence = adj
+            if confidence < CONFIDENCE_THRESHOLD:
+                final_signal = "HOLD"
+
     try:
         importances = pd.Series(clf.feature_importances_, index=FEATURES).sort_values(ascending=False).to_dict()
     except AttributeError:
@@ -328,14 +355,11 @@ def get_prediction(ticker: str, light_mode=False):
         except Exception:
             importances = {}
 
-    # spot from OHLCV close — reliable fallback vs fast_info which fails after-hours
-    spot = float(df["Close"].iloc[-1])
-    options_ctx = fetch_options_features(ticker, spot)
-
     return {
         "symbol": ticker,
         "signal": final_signal,
         "confidence": float(confidence),
+        "options_filtered": options_filtered,
         "precision_score": float(precision),
         "last_price": spot,
         "last_date": str(df.index[-1].date()),
