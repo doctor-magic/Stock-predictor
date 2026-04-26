@@ -126,7 +126,7 @@ def fetch_options_features(ticker: str, spot: float) -> dict:
         put_atm  = puts.iloc[(puts["strike"]  - spot).abs().argsort().iloc[:n]]
         call_oi  = call_atm["openInterest"].fillna(0).sum()
         put_oi   = put_atm["openInterest"].fillna(0).sum()
-        if call_oi < 500 or put_oi < 500:  # illiquid market — data not trustworthy
+        if call_oi < 100 or put_oi < 100:  # illiquid market — data not trustworthy
             return defaults
         pc_ratio = put_oi / call_oi
 
