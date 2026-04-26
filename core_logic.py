@@ -368,6 +368,32 @@ def get_prediction(ticker: str, light_mode=False):
         "options_context": options_ctx,
     }
 
+def _apply_options_filter(result: dict):
+    """Fetch options for a scan result and apply the same confidence adjustment
+    as get_prediction(). Returns None if the signal downgrades to HOLD."""
+    signal = result["signal"]
+    if signal == "HOLD":
+        return result
+    try:
+        opts = fetch_options_features(result["symbol"], result["last_price"])
+        pc   = opts.get("pc_ratio")
+        skew = opts.get("iv_skew")
+        conf = result["confidence"]
+        if signal == "BUY":
+            if pc   is not None and pc   > 1.2:  conf *= 0.85
+            if skew is not None and skew > 0.05: conf *= 0.90
+        elif signal == "SELL":
+            if pc   is not None and pc   < 0.8:   conf *= 0.85
+            if skew is not None and skew < -0.02:  conf *= 0.90
+        if conf < result["confidence"]:
+            if conf < CONFIDENCE_THRESHOLD:
+                return None  # downgraded to HOLD — drop from scanner results
+            result = {**result, "confidence": conf, "options_filtered": True}
+    except Exception as e:
+        print(f"Options filter error [{result['symbol']}]: {e}")
+    return result
+
+
 def _train_single(name, sym, raw_data, multi):
     """Train a single model — designed to run in a thread."""
     try:
@@ -468,5 +494,11 @@ def run_market_scan(market_id: str, progress_callback=None):
             res = fut.result()
             if res:
                 results.append(res)
+
+    # Apply options filter only to the small set of BUY/SELL results
+    if results:
+        with ThreadPoolExecutor(max_workers=min(len(results), 8)) as pool:
+            filtered = list(pool.map(_apply_options_filter, results))
+        results = [r for r in filtered if r is not None]
 
     return sorted(results, key=lambda x: x["confidence"], reverse=True)
