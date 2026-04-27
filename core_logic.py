@@ -309,8 +309,13 @@ def train_and_evaluate(df: pd.DataFrame, light_mode=False):
     clf.fit(X_train, y_train)
     y_pred = clf.predict(X_test)
     rpt = classification_report(y_test, y_pred, output_dict=True, zero_division=0)
-    buy_precision = rpt.get("BUY", {}).get("precision", 0.0)
-    return clf, buy_precision
+
+    MIN_SUPPORT = 10  # fewer predictions → precision is noise
+    def _prec(label):
+        info = rpt.get(label, {})
+        return info.get("precision", 0.0) if info.get("support", 0) >= MIN_SUPPORT else 0.0
+
+    return clf, _prec("BUY"), _prec("SELL")
 
 def get_prediction(ticker: str, light_mode=False):
     df_raw = fetch_stock_data(ticker)
@@ -330,7 +335,7 @@ def get_prediction(ticker: str, light_mode=False):
         }
 
     df = build_labels(df)
-    clf, precision = train_and_evaluate(df, light_mode=light_mode)
+    clf, buy_prec, sell_prec = train_and_evaluate(df, light_mode=light_mode)
     latest = df[FEATURES].ffill().iloc[[-1]]
 
     proba = clf.predict_proba(latest)[0]
@@ -340,6 +345,7 @@ def get_prediction(ticker: str, light_mode=False):
     confidence = proba[pred_idx]
 
     final_signal = raw_signal if confidence >= CONFIDENCE_THRESHOLD else "HOLD"
+    precision = sell_prec if final_signal == "SELL" else buy_prec
 
     # Fetch options before filter so they can adjust confidence
     spot = float(df["Close"].iloc[-1])
@@ -446,7 +452,7 @@ def _train_single(name, sym, raw_data, multi):
             return None
 
         df = build_labels(df)
-        clf, precision = train_and_evaluate(df, light_mode=True)
+        clf, buy_prec, sell_prec = train_and_evaluate(df, light_mode=True)
 
         latest = df[FEATURES].ffill().iloc[[-1]]
         proba = clf.predict_proba(latest)[0]
@@ -454,6 +460,7 @@ def _train_single(name, sym, raw_data, multi):
         confidence = np.max(proba)
         final_signal = confident_signal if confidence >= CONFIDENCE_THRESHOLD else "HOLD"
 
+        precision = sell_prec if final_signal == "SELL" else buy_prec
         if precision < MIN_PRECISION and final_signal != "HOLD":
             return None
         return {
