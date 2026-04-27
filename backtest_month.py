@@ -1,5 +1,5 @@
 """
-Backtest — updated model with ATR normalization, MIN_PRECISION=0.52, 5 interaction groups.
+Backtest — updated model with ATR normalization, low52w_dist, asymmetric precision, VIX-adaptive chaos filter.
 Windows:
   1. May 2025 - July 2025
   2. Jan 2026 - Apr 2026 (includes April Black Swan)
@@ -22,8 +22,9 @@ PERIODS = [
     (date(2026,  3, 26), date(2026,  4,  9), "Mar 2026 (Black Swan)"),
 ]
 
-CONFIDENCE_THRESHOLD = 0.68
-MIN_PRECISION        = 0.52
+CONFIDENCE_THRESHOLD = 0.65
+MIN_PRECISION_BUY    = 0.48
+MIN_PRECISION_SELL   = 0.52
 THRESHOLD            = 0.03
 FORWARD_DAYS         = 10
 
@@ -154,15 +155,23 @@ def train_predict(df):
         n_iter_no_change=20, random_state=42,
     )
     clf.fit(train[FEATURES], train["label"])
-    rpt       = classification_report(test["label"], clf.predict(test[FEATURES]),
-                                      output_dict=True, zero_division=0)
-    precision = rpt.get("BUY", {}).get("precision", 0.0)
-    proba     = clf.predict_proba(df[FEATURES].ffill().iloc[[-1]])[0]
-    pred_idx  = np.argmax(proba)
-    signal    = clf.classes_[pred_idx]
-    conf      = float(proba[pred_idx])
+    rpt = classification_report(test["label"], clf.predict(test[FEATURES]),
+                                output_dict=True, zero_division=0)
+
+    MIN_SUPPORT = 5
+    def _prec(label):
+        info = rpt.get(label, {})
+        if info.get("support", 0) < MIN_SUPPORT:
+            return 0.0
+        return min(info.get("precision", 0.0), 0.90)
+
+    proba    = clf.predict_proba(df[FEATURES].ffill().iloc[[-1]])[0]
+    pred_idx = np.argmax(proba)
+    signal   = clf.classes_[pred_idx]
+    conf     = float(proba[pred_idx])
     if conf < CONFIDENCE_THRESHOLD:
         signal = "HOLD"
+    precision = _prec("SELL") if signal == "SELL" else _prec("BUY")
     return signal, conf, precision
 
 # ── Run one period ────────────────────────────────────────────────────────────
@@ -205,13 +214,16 @@ def run_period(backtest_date, check_date, label):
             df = build_features(raw, macro)
 
             avg_atr = df["atr_pct"].dropna().tail(30).mean()
-            if avg_atr > 0.05:
+            current_vix = df["vix"].dropna().iloc[-1] if "vix" in df.columns and not df["vix"].dropna().empty else 20
+            chaos_threshold = 0.05 if current_vix < 15 else (0.07 if current_vix < 25 else 0.10)
+            if avg_atr > chaos_threshold:
                 continue  # chaos filter
 
             df = build_labels(df)
             signal, conf, prec = train_predict(df)
 
-            if signal is None or signal == "HOLD" or prec < MIN_PRECISION:
+            min_prec = MIN_PRECISION_SELL if signal == "SELL" else MIN_PRECISION_BUY
+            if signal is None or signal == "HOLD" or prec < min_prec:
                 continue
 
             price_then = float(raw["Close"].iloc[-1])
