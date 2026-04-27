@@ -36,14 +36,16 @@ FEATURES = [
     "low52w_dist",
     "atr_pct",
     "vix", "dgs10", "t10y2y",
+    "rel_strength_spy",
+    "cmf",
 ]
 
 INTERACTION_GROUPS = [
-    [0, 1, 2, 3, 11, 12],
-    [4, 5, 6],
-    [7, 8, 9, 10, 13],
+    [0, 1, 2, 3, 11, 12, 17],
+    [4, 5, 6, 18],
+    [7, 8, 9, 10, 13, 18],
     [4, 5, 6, 14, 15, 16],
-    [8, 9, 10, 13, 14, 15, 16],
+    [8, 9, 10, 13, 14, 15, 16, 17],
     [4, 6, 12],
 ]
 
@@ -106,6 +108,12 @@ def build_features(df, macro):
     vol_mean        = df["Volume"].rolling(20).mean().replace(0, np.nan)
     df["vol_ratio"] = df["Volume"] / vol_mean
 
+    high_low_diff = (df["High"] - df["Low"]).replace(0, np.nan)
+    mfm = ((df["Close"] - df["Low"]) - (df["High"] - df["Close"])) / high_low_diff
+    mfm = mfm.fillna(0)
+    mfv = mfm * df["Volume"]
+    df["cmf"] = mfv.rolling(20).sum() / df["Volume"].rolling(20).sum().replace(0, np.nan)
+
     # ATR(14)
     prev_close = df["Close"].shift(1)
     tr = pd.concat([
@@ -121,15 +129,22 @@ def build_features(df, macro):
 
     # ATR-normalized returns
     atr_d = df["atr_pct"].replace(0, np.nan)
-    df["ret_3d_atr"]  = df["Close"].pct_change(3)  / atr_d
-    df["ret_5d_atr"]  = df["Close"].pct_change(5)  / atr_d
-    df["ret_10d_atr"] = df["Close"].pct_change(10) / atr_d
+    ret_3d = df["Close"].pct_change(3)
+    ret_5d = df["Close"].pct_change(5)
+    ret_10d = df["Close"].pct_change(10)
+    
+    df["ret_3d_atr"]  = ret_3d  / atr_d
+    df["ret_5d_atr"]  = ret_5d  / atr_d
+    df["ret_10d_atr"] = ret_10d / atr_d
 
     # Macro join
     idx = df.index.tz_localize(None) if df.index.tz is not None else df.index
     df.index = idx
     df = df.join(macro, how="left")
-    df[["vix", "dgs10", "t10y2y"]] = df[["vix", "dgs10", "t10y2y"]].ffill()
+    df[["vix", "dgs10", "t10y2y", "spy_close"]] = df[["vix", "dgs10", "t10y2y", "spy_close"]].ffill()
+    
+    df["spy_ret_5d"] = df["spy_close"].pct_change(5)
+    df["rel_strength_spy"] = ret_5d - df["spy_ret_5d"]
     return df
 
 def build_labels(df):
@@ -189,6 +204,14 @@ def run_period(backtest_date, check_date, label):
         vix_raw.columns = vix_raw.columns.get_level_values(0)
     macro = vix_raw[["Close"]].rename(columns={"Close": "vix"})
     macro.index = pd.to_datetime(macro.index).tz_localize(None)
+    
+    spy_raw = yf.download("SPY", start=str(start), end=str(backtest_date),
+                           progress=False, auto_adjust=False)
+    if isinstance(spy_raw.columns, pd.MultiIndex):
+        spy_raw.columns = spy_raw.columns.get_level_values(0)
+    spy_close = spy_raw[["Close"]].rename(columns={"Close": "spy_close"})
+    spy_close.index = pd.to_datetime(spy_close.index).tz_localize(None)
+    macro = macro.join(spy_close, how="left")
     try:
         macro = macro.join(fetch_fred("DGS10",  "dgs10",  backtest_date), how="left")
         macro = macro.join(fetch_fred("T10Y2Y", "t10y2y", backtest_date), how="left")
@@ -262,7 +285,7 @@ def run_period(backtest_date, check_date, label):
                 print(f"  {sig}: {int(sub['correct'].sum())}/{len(sub)}  avg ret {sub['ret_pct'].mean():+.1f}%")
         return n_ok, n, df_r
     else:
-        print("No signals passed MIN_PRECISION=0.52 filter.")
+        print(f"No signals passed MIN_PRECISION filter (BUY={MIN_PRECISION_BUY}, SELL={MIN_PRECISION_SELL}).")
         return 0, 0, pd.DataFrame()
 
 # ── Main ──────────────────────────────────────────────────────────────────────

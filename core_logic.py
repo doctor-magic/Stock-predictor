@@ -32,14 +32,16 @@ FEATURES = [
     "low52w_dist",                                        # 12   distance from 52-week low (bounce detector)
     "atr_pct",                                            # 13   volatility regime
     "vix", "dgs10", "t10y2y",                            # 14-16 macro regime
+    "rel_strength_spy",                                   # 17   relative strength to SPY
+    "cmf",                                                # 18   Chaikin Money Flow
 ]
 
 INTERACTION_GROUPS = [
-    [0, 1, 2, 3, 11, 12],           # trend + distance: EMAs, sma200_dist, low52w_dist
-    [4, 5, 6],                       # momentum: rsi, macd_gap, bb_pos
-    [7, 8, 9, 10, 13],              # returns+volume+atr: vol_ratio, ret_*_atr, atr_pct
+    [0, 1, 2, 3, 11, 12, 17],           # trend + distance + relative strength
+    [4, 5, 6, 18],                       # momentum + cmf
+    [7, 8, 9, 10, 13, 18],              # returns+volume+atr + cmf
     [4, 5, 6, 14, 15, 16],          # momentum × macro
-    [8, 9, 10, 13, 14, 15, 16],     # returns_atr × macro
+    [8, 9, 10, 13, 14, 15, 16, 17],     # returns_atr × macro + relative strength
     [4, 6, 12],                      # RSI + bb_pos + low52w_dist (oversold bounce detector)
 ]
 
@@ -166,7 +168,7 @@ def fetch_options_features(ticker: str, spot: float) -> dict:
     return result
 
 def fetch_macro_timeseries() -> pd.DataFrame:
-    """Return a tz-naive daily DataFrame with columns: vix, dgs10, t10y2y.
+    """Return a tz-naive daily DataFrame with columns: vix, dgs10, t10y2y, spy_close.
     Cached for 1 hour — shared across all per-stock model fits in a scan."""
     if "macro" in _macro_cache:
         return _macro_cache["macro"]
@@ -183,6 +185,17 @@ def fetch_macro_timeseries() -> pd.DataFrame:
         frames.append(vix)
     except Exception as e:
         print(f"VIX fetch error: {e}")
+
+    # SPY via yfinance
+    try:
+        raw_spy = yf.download("SPY", period=PERIOD, progress=False, auto_adjust=False)
+        if isinstance(raw_spy.columns, pd.MultiIndex):
+            raw_spy.columns = raw_spy.columns.get_level_values(0)
+        spy_close = raw_spy[["Close"]].rename(columns={"Close": "spy_close"})
+        spy_close.index = pd.to_datetime(spy_close.index).tz_localize(None)
+        frames.append(spy_close)
+    except Exception as e:
+        print(f"SPY fetch error: {e}")
 
     # DGS10 + T10Y2Y via FRED
     fred_key = os.environ.get("FRED_API_KEY", "")
@@ -205,7 +218,7 @@ def fetch_macro_timeseries() -> pd.DataFrame:
                 print(f"FRED {series_id} error: {e}")
 
     if not frames:
-        return pd.DataFrame(columns=["vix", "dgs10", "t10y2y"])
+        return pd.DataFrame(columns=["vix", "dgs10", "t10y2y", "spy_close"])
 
     macro = frames[0]
     for f in frames[1:]:
@@ -238,6 +251,13 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     vol_mean = df["Volume"].rolling(20).mean().replace(0, np.nan)
     df["vol_ratio"] = df["Volume"] / vol_mean
 
+    # Chaikin Money Flow (CMF) 20-period
+    high_low_diff = (df["High"] - df["Low"]).replace(0, np.nan)
+    mfm = ((df["Close"] - df["Low"]) - (df["High"] - df["Close"])) / high_low_diff
+    mfm = mfm.fillna(0)
+    mfv = mfm * df["Volume"]
+    df["cmf"] = mfv.rolling(20).sum() / df["Volume"].rolling(20).sum().replace(0, np.nan)
+
     # ATR(14): True Range = max(H-L, |H-Cprev|, |L-Cprev|)
     prev_close = df["Close"].shift(1)
     tr = pd.concat([
@@ -261,18 +281,22 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     df["ret_5d_atr"]  = ret_5d  / atr_denom
     df["ret_10d_atr"] = ret_10d / atr_denom
 
-    # Macro regime features (VIX, 10Y yield, yield curve)
+    # Macro regime features (VIX, 10Y yield, yield curve) + SPY for relative strength
     try:
         macro = fetch_macro_timeseries()
         idx = df.index.tz_localize(None) if df.index.tz is not None else df.index
         df.index = idx
-        df = df.join(macro[["vix", "dgs10", "t10y2y"]], how="left")
-        df[["vix", "dgs10", "t10y2y"]] = df[["vix", "dgs10", "t10y2y"]].ffill()
+        df = df.join(macro[["vix", "dgs10", "t10y2y", "spy_close"]], how="left")
+        df[["vix", "dgs10", "t10y2y", "spy_close"]] = df[["vix", "dgs10", "t10y2y", "spy_close"]].ffill()
+        
+        df["spy_ret_5d"] = df["spy_close"].pct_change(5)
+        df["rel_strength_spy"] = ret_5d - df["spy_ret_5d"]
     except Exception as e:
         print(f"Macro join error: {e}")
         df["vix"] = np.nan
         df["dgs10"] = np.nan
         df["t10y2y"] = np.nan
+        df["rel_strength_spy"] = np.nan
 
     return df
 
