@@ -293,6 +293,159 @@ def get_macro_dashboard():
     return data
 
 
+# ── Macro Bull Score ─────────────────────────────────────────────────────────
+
+_macro_score_cache: dict = {"ts": 0, "data": None}
+_MACRO_SCORE_TTL = 7200  # 2 h
+
+
+def _bull_score_item(iid, val):
+    if val is None:
+        return None
+    tiers = {
+        "VIX":        [(12,80),(16,70),(18,50),(22,20),(25,0),(30,-40),(38,-70),(999,-100)],
+        "YIELD_CURVE":[(-1.0,-100),(-0.5,-60),(-0.25,-30),(0,-10),(0.25,20),(0.5,50),(1.0,80),(99,100)],
+        "CPI":        [(2.0,80),(2.5,60),(3.0,20),(3.5,0),(4.5,-40),(6.0,-70),(99,-100)],
+        "PCE":        [(2.0,80),(2.5,60),(2.8,20),(3.2,-20),(3.8,-60),(99,-90)],
+        "FED_FUNDS":  [(2.0,70),(3.0,50),(4.0,20),(4.5,0),(5.0,-20),(5.5,-50),(99,-80)],
+        "CORE_CPI":   [(2.0,70),(2.5,50),(3.0,10),(3.5,-20),(4.0,-60),(99,-90)],
+        "UNRATE":     [(3.5,30),(4.0,70),(4.5,50),(5.0,10),(5.5,-30),(6.5,-70),(99,-100)],
+        "10Y":        [(3.0,60),(3.5,40),(4.0,20),(4.5,0),(5.0,-30),(5.5,-60),(99,-90)],
+        "CFNAI":      [(-0.7,-80),(-0.35,-40),(0,-10),(0.2,30),(0.5,70),(99,100)],
+        "PAYROLLS":   [(-200,-100),(-50,-60),(0,-20),(75,10),(150,50),(250,80),(999,100)],
+        "SENTIMENT":  [(50,-70),(55,-40),(60,-10),(70,20),(75,40),(80,60),(90,80),(999,100)],
+        "BTC_PCT_50": [(-20,-80),(-10,-40),(0,-10),(5,40),(15,70),(99,100)],
+        "OIL":        [(50,-60),(60,-20),(75,30),(85,10),(95,-30),(110,-60),(999,-90)],
+        "GOLD_CHG":   [(-5,30),(-2,15),(2,5),(5,-10),(10,-30),(20,-60),(999,-80)],
+    }
+    t = tiers.get(iid, [])
+    for max_v, score in t:
+        if val <= max_v:
+            return score
+    return t[-1][1] if t else None
+
+
+@app.get("/api/macro-score")
+def get_macro_score():
+    now = time.time()
+    if _macro_score_cache["data"] and now - _macro_score_cache["ts"] < _MACRO_SCORE_TTL:
+        return _macro_score_cache["data"]
+
+    import yfinance as yf
+
+    # FRED dashboard (reuse existing cache if fresh)
+    if not (_macro_dash_cache["data"] and now - _macro_dash_cache["ts"] < _MACRO_DASH_TTL):
+        try:
+            get_macro_dashboard()
+        except Exception:
+            pass
+    dash = _macro_dash_cache.get("data") or {}
+    fred_by_id = {ind["id"]: ind.get("current") for ind in dash.get("indicators", [])}
+
+    # VIX from macro strip (reuse existing cache)
+    if not (_macro_cache["data"] and now - _macro_cache["ts"] < _MACRO_TTL):
+        try:
+            get_macro()
+        except Exception:
+            pass
+    vix = (_macro_cache.get("data") or {}).get("vix")
+
+    # Yield curve: 10Y − 2Y
+    y10 = fred_by_id.get("10Y")
+    y2  = fred_by_id.get("2Y")
+    yield_curve = round(y10 - y2, 3) if (y10 is not None and y2 is not None) else None
+
+    # BTC, OIL, GOLD via yfinance
+    btc_pct_50 = oil_price = gold_chg = None
+    try:
+        raw = yf.download("BTC-USD BZ=F GC=F", period="70d", progress=False, auto_adjust=True)
+        cl = raw["Close"]
+        btc_s = cl["BTC-USD"].dropna()
+        if len(btc_s) >= 50:
+            ma50 = float(btc_s.iloc[-50:].mean())
+            btc_pct_50 = round((float(btc_s.iloc[-1]) - ma50) / ma50 * 100, 2)
+        oil_s = cl["BZ=F"].dropna()
+        if len(oil_s) >= 1:
+            oil_price = round(float(oil_s.iloc[-1]), 2)
+        gold_s = cl["GC=F"].dropna()
+        if len(gold_s) >= 2:
+            n = min(63, len(gold_s) - 1)
+            gold_chg = round((float(gold_s.iloc[-1]) / float(gold_s.iloc[-n]) - 1) * 100, 2)
+    except Exception:
+        pass
+
+    def _fv(v, fmt):
+        return "—" if v is None else fmt % v
+
+    cpi  = fred_by_id.get("CPI")
+    pce  = fred_by_id.get("PCE")
+    ff   = fred_by_id.get("FED_FUNDS")
+    cc   = fred_by_id.get("CORE_CPI")
+    ur   = fred_by_id.get("UNRATE")
+    t10  = fred_by_id.get("10Y")
+    cfn  = fred_by_id.get("CFNAI")
+    pay  = fred_by_id.get("PAYROLLS")
+    sent = fred_by_id.get("SENTIMENT")
+
+    INDICATORS = [
+        {"id": "VIX",        "label": "Market Fear Index (VIX)",    "category": "Sentiment",   "weight": 12, "raw": vix,         "value_fmt": _fv(vix,        "%.1f")},
+        {"id": "YIELD_CURVE","label": "Yield Curve (10Y−2Y)",  "category": "Rates",       "weight": 12, "raw": yield_curve, "value_fmt": _fv(yield_curve, "%+.2f%%")},
+        {"id": "CPI",        "label": "CPI Inflation (YoY)",        "category": "Inflation",   "weight": 12, "raw": cpi,         "value_fmt": _fv(cpi,        "%.1f%%")},
+        {"id": "PCE",        "label": "PCE Inflation (YoY)",        "category": "Inflation",   "weight": 9,  "raw": pce,         "value_fmt": _fv(pce,        "%.1f%%")},
+        {"id": "FED_FUNDS",  "label": "Fed Funds Rate",             "category": "Rates",       "weight": 9,  "raw": ff,          "value_fmt": _fv(ff,         "%.2f%%")},
+        {"id": "CORE_CPI",   "label": "Core CPI (ex Food/Energy)",  "category": "Inflation",   "weight": 7,  "raw": cc,          "value_fmt": _fv(cc,         "%.1f%%")},
+        {"id": "UNRATE",     "label": "Unemployment Rate",          "category": "Labor",       "weight": 8,  "raw": ur,          "value_fmt": _fv(ur,         "%.1f%%")},
+        {"id": "10Y",        "label": "10Y Treasury Yield",         "category": "Rates",       "weight": 8,  "raw": t10,         "value_fmt": _fv(t10,        "%.2f%%")},
+        {"id": "CFNAI",      "label": "Chicago Activity Index",     "category": "Activity",    "weight": 5,  "raw": cfn,         "value_fmt": _fv(cfn,        "%.2f")},
+        {"id": "PAYROLLS",   "label": "Non-Farm Payrolls (MoM)",    "category": "Labor",       "weight": 5,  "raw": pay,         "value_fmt": ("—" if pay is None else "%+.0fK" % pay)},
+        {"id": "SENTIMENT",  "label": "Consumer Sentiment (UMich)", "category": "Sentiment",   "weight": 5,  "raw": sent,        "value_fmt": _fv(sent,       "%.0f")},
+        {"id": "BTC_PCT_50", "label": "Bitcoin vs 50-Day MA",       "category": "Crypto",      "weight": 4,  "raw": btc_pct_50,  "value_fmt": _fv(btc_pct_50, "%+.1f%%")},
+        {"id": "OIL",        "label": "Brent Oil Price",            "category": "Commodities", "weight": 2,  "raw": oil_price,   "value_fmt": _fv(oil_price,  "$%.1f")},
+        {"id": "GOLD_CHG",   "label": "Gold (3M Change)",           "category": "Commodities", "weight": 2,  "raw": gold_chg,    "value_fmt": _fv(gold_chg,   "%+.1f%%")},
+    ]
+
+    scored = []
+    weighted_sum = 0
+    total_weight = 0
+    for m in INDICATORS:
+        score = _bull_score_item(m["id"], m["raw"])
+        impact = "positive" if (score or 0) >= 20 else "negative" if (score or 0) <= -20 else "neutral"
+        scored.append({
+            "id": m["id"], "label": m["label"], "category": m["category"],
+            "weight": m["weight"], "value_fmt": m["value_fmt"],
+            "score": score, "impact": impact,
+        })
+        if score is not None:
+            weighted_sum += score * m["weight"]
+            total_weight += m["weight"]
+
+    raw_avg = weighted_sum / total_weight if total_weight else 0
+    bull_score = max(0, min(100, round((raw_avg + 100) / 2)))
+
+    if bull_score >= 75:
+        regime, regime_label, regime_desc = "strong_bull",   "Strong Bull",   "Strong macro tailwinds — broad-based favorable conditions for equities."
+    elif bull_score >= 60:
+        regime, regime_label, regime_desc = "moderate_bull", "Moderate Bull", "Moderate tailwinds — most indicators support risk-on positioning."
+    elif bull_score >= 45:
+        regime, regime_label, regime_desc = "neutral",       "Neutral",       "Mixed signals — proceed selectively with caution."
+    elif bull_score >= 30:
+        regime, regime_label, regime_desc = "caution",       "Caution",       "Macro headwinds outweigh tailwinds — defensive posture advised."
+    else:
+        regime, regime_label, regime_desc = "bear",          "Bear Warning",  "Strong macro headwinds — conditions historically unfavorable for equities."
+
+    data = {
+        "bull_score": bull_score,
+        "regime": regime,
+        "regime_label": regime_label,
+        "regime_desc": regime_desc,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "indicators": scored,
+    }
+    _macro_score_cache["ts"] = now
+    _macro_score_cache["data"] = data
+    return data
+
+
 # ── Static frontend ──────────────────────────────────────────────────────────
 
 from fastapi.staticfiles import StaticFiles

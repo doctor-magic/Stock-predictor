@@ -3,7 +3,7 @@ import { Search, Activity, AlertCircle, BarChart3, TrendingUp, TrendingDown, Min
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, LineChart, Line, ReferenceLine } from 'recharts'
 import ReactMarkdown from 'react-markdown'
 export default function App() {
-  const [activeTab, setActiveTab] = useState('predict') // predict | scanner | review | macro
+  const [activeTab, setActiveTab] = useState('predict') // predict | scanner | review | macro | macro-score
 
   return (
     <div className="min-h-screen px-4 py-8 flex flex-col items-center">
@@ -25,6 +25,7 @@ export default function App() {
           <TabButton active={activeTab === 'scanner'} onClick={() => setActiveTab('scanner')} icon={ListFilter}>סורק מניות</TabButton>
           <TabButton active={activeTab === 'review'} onClick={() => setActiveTab('review')} icon={BookOpen}>סקירה יומית</TabButton>
           <TabButton active={activeTab === 'macro'} onClick={() => setActiveTab('macro')} icon={BarChart3}>מאקרו FRED</TabButton>
+          <TabButton active={activeTab === 'macro-score'} onClick={() => setActiveTab('macro-score')} icon={TrendingUp}>MACRO PREDICTED</TabButton>
         </div>
       </header>
 
@@ -32,7 +33,8 @@ export default function App() {
         {activeTab === 'predict' && <PredictView />}
         {activeTab === 'scanner' && <ScannerView />}
         {activeTab === 'review'  && <ReviewView />}
-        {activeTab === 'macro'   && <MacroDashboardView />}
+        {activeTab === 'macro'        && <MacroDashboardView />}
+        {activeTab === 'macro-score'  && <MacroPredictedView />}
       </main>
     </div>
   )
@@ -737,6 +739,98 @@ function MacroCard({ ind }) {
           </LineChart>
         </ResponsiveContainer>
       )}
+    </div>
+  )
+}
+
+// ----------------------------------------------------
+// VIEW 5: MACRO PREDICTED (Bull Score)
+// ----------------------------------------------------
+function MacroPredictedView() {
+  const [data, setData] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
+
+  useEffect(() => {
+    fetch('/api/macro-score')
+      .then(r => { if (!r.ok) throw new Error('API error'); return r.json() })
+      .then(d => { setData(d); setLoading(false) })
+      .catch(e => { setError(e.message); setLoading(false) })
+  }, [])
+
+  if (loading) return <div className="animate-spin w-8 h-8 border-4 border-neon-blue border-t-transparent rounded-full mt-10"></div>
+  if (error)   return <div className="glass-card bg-red-500/10 border-red-500/30 p-4 text-red-200 mt-10">{error}</div>
+  if (!data)   return null
+
+  const score = data.bull_score
+  const scoreColor = score >= 70 ? '#4ade80' : score >= 55 ? '#86efac' : score >= 45 ? '#facc15' : score >= 30 ? '#fb923c' : '#f87171'
+  const updatedAt = new Date(data.updated_at).toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' })
+
+  return (
+    <div className="w-full max-w-5xl animate-signal">
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-1">
+        <h2 className="text-xl font-bold font-mono text-neon-blue">Macro Bull Score</h2>
+        <span className="text-xs text-gray-500 font-mono">updated: {updatedAt} · cache 2h</span>
+      </div>
+
+      {/* Main Score Panel */}
+      <div className="glass-card p-8 text-center mb-6">
+        <p className="text-xs font-mono text-gray-500 uppercase tracking-widest mb-3">Macro Predicted Score</p>
+        <div className="text-8xl font-bold font-mono mb-2" style={{ color: scoreColor }}>{score}</div>
+        <div className="text-xl font-semibold mb-2" style={{ color: scoreColor }}>{data.regime_label}</div>
+        <p className="text-sm text-gray-400 max-w-md mx-auto">{data.regime_desc}</p>
+
+        {/* Score gauge bar */}
+        <div className="mt-6 max-w-lg mx-auto">
+          <div className="relative h-3 rounded-full overflow-hidden" style={{ background: 'linear-gradient(90deg, #f87171 0%, #fb923c 25%, #facc15 50%, #86efac 75%, #4ade80 100%)' }}>
+            <div className="absolute top-0 h-full rounded-r-full" style={{ left: `${score}%`, right: 0, background: 'rgba(0,0,0,0.55)' }} />
+            <div className="absolute top-1/2 -translate-y-1/2 w-4 h-4 bg-white rounded-full shadow-lg border-2 border-gray-800" style={{ left: `calc(${score}% - 8px)` }} />
+          </div>
+          <div className="flex justify-between text-xs text-gray-600 font-mono mt-1.5 px-1">
+            <span>BEAR</span><span>NEUTRAL</span><span>BULL</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Indicator Grid */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        {data.indicators.map(ind => <MacroScoreCard key={ind.id} ind={ind} />)}
+      </div>
+    </div>
+  )
+}
+
+function MacroScoreCard({ ind }) {
+  const score = ind.score
+  const barPct = score !== null ? Math.round((score + 100) / 2) : 50
+  const color = score === null ? '#6b7280'
+    : score >= 50 ? '#4ade80'
+    : score >= 20 ? '#86efac'
+    : score >= -20 ? '#facc15'
+    : score >= -50 ? '#fb923c'
+    : '#f87171'
+
+  return (
+    <div className="glass-card p-4 flex flex-col gap-2">
+      <div className="flex justify-between items-start">
+        <div>
+          <p className="text-xs font-mono uppercase tracking-wider" style={{ color: color + 'bb' }}>{ind.category}</p>
+          <p className="text-sm font-semibold text-white leading-tight mt-0.5">{ind.label}</p>
+        </div>
+        <span className="text-xs font-mono text-gray-500 mt-0.5 flex-shrink-0">w:{ind.weight}%</span>
+      </div>
+
+      <div className="flex items-center justify-between mt-1">
+        <span className="text-2xl font-bold font-mono text-gray-100">{ind.value_fmt}</span>
+        <span className="text-lg font-bold font-mono" style={{ color }}>
+          {score !== null ? `${score > 0 ? '+' : ''}${score}` : '—'}
+        </span>
+      </div>
+
+      <div className="relative h-1.5 bg-white/10 rounded-full overflow-hidden">
+        <div className="h-full rounded-full transition-all duration-500"
+          style={{ width: `${barPct}%`, backgroundColor: color }} />
+      </div>
     </div>
   )
 }
