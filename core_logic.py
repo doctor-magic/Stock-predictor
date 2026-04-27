@@ -20,21 +20,23 @@ PERIOD = "5y"
 FORWARD_DAYS = 10
 THRESHOLD = 0.03
 CONFIDENCE_THRESHOLD = 0.68
-MIN_PRECISION = 0.36
+MIN_PRECISION = 0.52
 
 FEATURES = [
-    "ema9", "ema21", "ema50", "ema_cross",       # 0-3  trend
-    "rsi", "macd_gap", "bb_pos",                  # 4-6  momentum
-    "vol_ratio", "ret_3d", "ret_5d", "ret_10d",   # 7-10 returns+volume
-    "sma200_dist",                                 # 11   long-term trend
-    "vix", "dgs10", "t10y2y",                     # 12-14 macro regime
+    "ema9", "ema21", "ema50", "ema_cross",              # 0-3  trend
+    "rsi", "macd_gap", "bb_pos",                         # 4-6  momentum
+    "vol_ratio", "ret_3d_atr", "ret_5d_atr", "ret_10d_atr",  # 7-10 ATR-normalized returns+volume
+    "sma200_dist",                                        # 11   long-term trend
+    "atr_pct",                                            # 12   volatility regime
+    "vix", "dgs10", "t10y2y",                            # 13-15 macro regime
 ]
 
 INTERACTION_GROUPS = [
-    [0, 1, 2, 3, 11],        # trend: ema9, ema21, ema50, ema_cross, sma200_dist
-    [4, 5, 6],                # momentum: rsi, macd_gap, bb_pos
-    [7, 8, 9, 10],            # returns+volume: vol_ratio, ret_3d, ret_5d, ret_10d
-    [4, 5, 6, 12, 13, 14],   # momentum × macro: RSI/MACD conditioned on VIX + yield curve
+    [0, 1, 2, 3, 11],              # trend: ema9, ema21, ema50, ema_cross, sma200_dist
+    [4, 5, 6],                      # momentum: rsi, macd_gap, bb_pos
+    [7, 8, 9, 10, 12],              # returns+volume+atr: vol_ratio, ret_*_atr, atr_pct
+    [4, 5, 6, 13, 14, 15],          # momentum × macro: RSI/MACD conditioned on VIX + yield curve
+    [8, 9, 10, 12, 13, 14, 15],     # returns_atr × macro: ATR-normalized moves in macro context
 ]
 
 OPTION_FEATURES = {"pc_ratio", "iv_skew", "volume_shock"}
@@ -231,9 +233,25 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     df["bb_pos"] = (df["Close"] - lower) / bb_range
     vol_mean = df["Volume"].rolling(20).mean().replace(0, np.nan)
     df["vol_ratio"] = df["Volume"] / vol_mean
-    df["ret_3d"] = df["Close"].pct_change(3)
-    df["ret_5d"] = df["Close"].pct_change(5)
-    df["ret_10d"] = df["Close"].pct_change(10)
+
+    # ATR(14): True Range = max(H-L, |H-Cprev|, |L-Cprev|)
+    prev_close = df["Close"].shift(1)
+    tr = pd.concat([
+        df["High"] - df["Low"],
+        (df["High"] - prev_close).abs(),
+        (df["Low"]  - prev_close).abs(),
+    ], axis=1).max(axis=1)
+    atr14 = tr.rolling(14).mean()
+    df["atr_pct"] = atr14 / df["Close"].replace(0, np.nan)
+
+    # ATR-normalized returns: express moves in units of daily ATR
+    ret_3d  = df["Close"].pct_change(3)
+    ret_5d  = df["Close"].pct_change(5)
+    ret_10d = df["Close"].pct_change(10)
+    atr_denom = df["atr_pct"].replace(0, np.nan)
+    df["ret_3d_atr"]  = ret_3d  / atr_denom
+    df["ret_5d_atr"]  = ret_5d  / atr_denom
+    df["ret_10d_atr"] = ret_10d / atr_denom
 
     # Macro regime features (VIX, 10Y yield, yield curve)
     try:
