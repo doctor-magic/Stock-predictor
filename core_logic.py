@@ -19,7 +19,7 @@ _macro_cache: TTLCache = TTLCache(maxsize=1, ttl=3600)    # 1h TTL for macro tim
 PERIOD = "5y"
 FORWARD_DAYS = 10
 THRESHOLD = 0.03
-CONFIDENCE_THRESHOLD = 0.68
+CONFIDENCE_THRESHOLD = 0.65
 MIN_PRECISION = 0.52
 
 FEATURES = [
@@ -310,10 +310,12 @@ def train_and_evaluate(df: pd.DataFrame, light_mode=False):
     y_pred = clf.predict(X_test)
     rpt = classification_report(y_test, y_pred, output_dict=True, zero_division=0)
 
-    MIN_SUPPORT = 10  # fewer predictions → precision is noise
+    MIN_SUPPORT = 5  # fewer predictions → precision is noise
     def _prec(label):
         info = rpt.get(label, {})
-        return info.get("precision", 0.0) if info.get("support", 0) >= MIN_SUPPORT else 0.0
+        if info.get("support", 0) < MIN_SUPPORT:
+            return 0.0
+        return min(info.get("precision", 0.0), 0.90)  # cap at 90% — 100% = tiny sample
 
     return clf, _prec("BUY"), _prec("SELL")
 
