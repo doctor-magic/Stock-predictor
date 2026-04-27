@@ -1,0 +1,327 @@
+Stock Predictor Pro — Project Handoff Brief
+===========================================
+You are taking over an active production project. Read this fully before touching anything.
+
+
+WHAT THIS IS
+------------
+A stock prediction website called Stock Predictor Pro. It uses a machine learning model
+(HistGradientBoosting) trained on technical indicators + options data to predict whether
+a stock will move +-5% within 10 trading days. There's also a market scanner, a daily
+Telegram-based analyst report, and a FRED macro dashboard.
+
+Live URL: stock-predictor.online
+GitHub:   doctor-magic/Stock-predictor (branch: main)
+
+
+SERVER ACCESS
+-------------
+SSH:
+  ssh -i ~/.ssh/gcp_stock_rsa elimaoz99@35.239.74.178
+
+SCP (copy file to server):
+  scp -i ~/.ssh/gcp_stock_rsa <local_path> elimaoz99@35.239.74.178:<remote_path>
+
+- GCP VM, Ubuntu, IP: 35.239.74.178
+- SSH user: elimaoz99 (NOT elima_oz, NOT root)
+- SSH key: ~/.ssh/gcp_stock_rsa (Windows: /c/Users/elima/.ssh/gcp_stock_rsa)
+- Sudo: elimaoz99 has passwordless sudo ONLY for "systemctl restart stock-app.service".
+  For anything else (editing system files, changing service unit) ask the user to do it manually.
+
+
+CRITICAL: TWO APP DIRECTORIES EXIST — ONLY ONE IS ACTIVE
+----------------------------------------------------------
+  /home/elimaoz99/stock_predictor/   <-- ACTIVE, edit this
+  /home/elimaoz99/stock_app/         <-- INACTIVE, do NOT touch
+
+The systemd service stock-app.service runs stock_predictor, not stock_app.
+This has caused bugs before when the wrong file was edited.
+Always confirm the active path before editing.
+
+
+SYSTEMD SERVICE
+---------------
+Restart (after deploying backend changes):
+  ssh -i ~/.ssh/gcp_stock_rsa elimaoz99@35.239.74.178 "sudo systemctl restart stock-app.service"
+
+Live logs:
+  ssh -i ~/.ssh/gcp_stock_rsa elimaoz99@35.239.74.178 "sudo journalctl -u stock-app.service -f"
+
+Check status:
+  ssh -i ~/.ssh/gcp_stock_rsa elimaoz99@35.239.74.178 "sudo systemctl is-active stock-app"
+
+The service runs: python3 -m uvicorn api:app --host 0.0.0.0 --port 8000
+Working directory: /home/elimaoz99/stock_predictor/
+
+
+BACKEND (api.py)
+----------------
+Local copy:  C:\Users\elima\OneDrive\Desktop\api.py
+Server copy: /home/elimaoz99/stock_predictor/api.py
+
+Deploy backend change:
+  scp -i ~/.ssh/gcp_stock_rsa /c/Users/elima/OneDrive/Desktop/api.py \
+    elimaoz99@35.239.74.178:/home/elimaoz99/stock_predictor/api.py
+  # then restart service
+
+Endpoints:
+  GET  /api/predict/{ticker}          single stock prediction
+  POST /api/scan                      market scan (async, background thread)
+  GET  /api/scan/progress/{task_id}   poll scan progress
+  GET  /api/recommendations           daily Telegram report text files
+  GET  /api/macro                     MacroPulse strip (VIX, 10Y, SPY, regime); 1h cache
+  GET  /api/macro-dashboard           FRED 11-indicator dashboard; 6h cache; needs FRED_API_KEY
+
+IMPORTANT: api.py self-loads api_data.env at startup (reads the file directly via Python,
+not via systemd EnvironmentFile). Adding a key to api_data.env takes effect on next restart
+— no service unit changes needed.
+
+Environment file: /home/elimaoz99/stock_predictor/api_data.env
+Contains: TG_API_ID, TG_API_HASH, TG_PHONE, GEMINI_KEY, FRED_API_KEY
+
+Other backend modules:
+  core_logic.py  ML model training and prediction logic
+  db.py          SQLite cache (scanner_cache.db), parameterized queries throughout
+  models.py      Pydantic schemas
+
+
+FRONTEND (App.jsx)
+------------------
+Source:        C:\Users\elima\OneDrive\Desktop\frontend\src\App.jsx (also on GitHub)
+Compiled dist: /home/elimaoz99/stock_predictor/frontend/dist/
+
+4 tabs:
+  1. Single stock prediction
+  2. Market scanner with MacroPulse strip at top
+  3. Daily Telegram report (rendered as markdown via react-markdown)
+  4. FRED macro dashboard (11 indicators with sparklines)
+
+Deploy frontend changes (from Desktop\frontend\):
+  npm run build
+  scp -i ~/.ssh/gcp_stock_rsa -r dist/assets/* \
+    elimaoz99@35.239.74.178:/home/elimaoz99/stock_predictor/frontend/dist/assets/
+  scp -i ~/.ssh/gcp_stock_rsa dist/index.html \
+    elimaoz99@35.239.74.178:/home/elimaoz99/stock_predictor/frontend/dist/
+
+Frontend uses RELATIVE URLs for API calls (fetch('/api/...')).
+NEVER hardcode http://localhost:8000.
+
+UI rules:
+  - Tailwind dark theme
+  - All new components need sm: breakpoints for mobile
+  - Do NOT put JSX inside module-level object literals — causes Vite/Rolldown parse error
+  - Review tab uses react-markdown with CSS class "review-md" (styles in index.css)
+
+
+FRED MACRO DASHBOARD
+--------------------
+/api/macro-dashboard fetches 11 FRED series in parallel via ThreadPoolExecutor(max_workers=6).
+
+FRED API call format:
+  https://api.stlouisfed.org/fred/series/observations
+    ?series_id=CPIAUCSL&frequency=m&aggregation_method=eop&limit=26&sort_order=desc
+    &api_key=<FRED_API_KEY>&file_type=json
+
+Uses urllib.request (stdlib only) — no external library needed.
+
+11 indicators:
+  CPI        CPIAUCSL   %    yoy    good=down
+  CORE_CPI   CPILFESL   %    yoy    good=down
+  PCE        PCEPI      %    yoy    good=down
+  UNRATE     UNRATE     %    raw    good=down
+  PAYROLLS   PAYEMS     K    mom    good=up
+  10Y        DGS10      %    raw    good=neutral
+  2Y         DGS2       %    raw    good=neutral
+  M2         M2SL       %    yoy    good=neutral
+  FED_FUNDS  FEDFUNDS   %    raw    good=neutral
+  CFNAI      CFNAI      idx  raw    good=up
+  SENTIMENT  UMCSENT    idx  raw    good=up
+
+Cache gotcha: Results cached in-memory for 6h. If a restart happens mid-request,
+None values can get cached. Fix: restart service again. Second restart always gets clean data.
+
+
+GIT WORKFLOW
+------------
+cd /c/Users/elima/OneDrive/Desktop
+git add <files>
+git commit -m "message"
+git push
+
+The Desktop folder IS the git repo (branch: main).
+After changes, git push keeps GitHub in sync, but the running server needs
+files scp'd manually AND a service restart.
+
+
+IN-MEMORY CACHES (reset on service restart)
+--------------------------------------------
+  _macro_cache       1h    /api/macro
+  _macro_dash_cache  6h    /api/macro-dashboard
+
+Scanner results cache IS persistent (SQLite scanner_cache.db).
+No Redis — a restart clears the in-memory caches.
+
+
+PRE-SCAN CRON (05:00 daily)
+----------------------------
+Script: /home/elimaoz99/stock_predictor/pre_scan.py
+Scans sp500, nasdaq100, tase — stores results in SQLite for instant scanner results.
+Log: cat /home/elimaoz99/stock_predictor/pre_scan.log
+
+
+SECURITY RULES (enforced — do not revert)
+------------------------------------------
+- No CORS — frontend is co-hosted, same origin
+- Scanner is read-only — no edit inputs, no save endpoint
+- /api/scan rate limited — force_refresh once per 5 min per IP (HTTP 429)
+- Ticker validated by regex ^[A-Z0-9.\-]{1,15}$
+- Error messages generic — never expose exception details to client
+
+
+KEYS (local .env at C:\Users\elima\OneDrive\Desktop\.env)
+-----------------------------------------------------------
+  FRED_API_KEY       FRED macroeconomic data
+  GEMINI_KEY         report generation
+  ANTHROPIC_API_KEY  Claude API
+  TG_API_ID / TG_API_HASH / TG_PHONE   Telegram scraping
+
+
+COMMON FAILURE MODES & FIXES
+------------------------------
+Symptom: Endpoint returns 404
+Cause:   Frontend updated but backend endpoint missing
+Fix:     Add endpoint to api.py, scp, restart
+
+Symptom: API error after restart
+Cause:   In-memory cache populated with None (transient parallel fetch failure)
+Fix:     Restart service again
+
+Symptom: Changes not live
+Cause:   scp ran but service not restarted
+Fix:     sudo systemctl restart stock-app.service
+
+Symptom: Key not picked up
+Cause:   Key added to api_data.env but service not restarted
+Fix:     Restart service
+
+Symptom: Wrong file edited
+Cause:   Edited stock_app/ instead of stock_predictor/
+Fix:     Always verify path before editing
+
+
+ML MODEL STATE (as of 2026-04-27)
+-----------------------------------
+File: core_logic.py (local: Desktop, server: /home/elimaoz99/stock_predictor/)
+
+Config:
+  PERIOD             = "5y"
+  FORWARD_DAYS       = 10
+  THRESHOLD          = 0.03   (3% move = BUY or SELL label)
+  CONFIDENCE_THRESHOLD = 0.65
+  MIN_PRECISION      = 0.52
+
+FEATURES (17 total, order matters — indices used in INTERACTION_GROUPS):
+  0  ema9          short-term EMA
+  1  ema21         crossover signal
+  2  ema50         institutional trend
+  3  ema_cross     ema9 > ema21 flag (0/1)
+  4  rsi           RSI(14)
+  5  macd_gap      MACD histogram
+  6  bb_pos        Bollinger Band position (0=lower, 1=upper)
+  7  vol_ratio     today volume / 20d avg
+  8  ret_3d_atr    3d return / ATR — cross-stock normalized
+  9  ret_5d_atr    5d return / ATR
+  10 ret_10d_atr   10d return / ATR
+  11 sma200_dist   (Close - SMA200) / SMA200
+  12 low52w_dist   (Close - 52w_low) / 52w_low  ← bounce detector (added Apr 27)
+  13 atr_pct       ATR(14) / Close — volatility regime
+  14 vix           CBOE VIX (from yfinance ^VIX)
+  15 dgs10         10Y Treasury yield (FRED DGS10)
+  16 t10y2y        Yield curve 10Y-2Y (FRED T10Y2Y)
+
+INTERACTION_GROUPS (6 groups — passed as interaction_cst to HistGBT):
+  [0,1,2,3,11,12]      trend + distance features
+  [4,5,6]              momentum
+  [7,8,9,10,13]        returns + volume + ATR
+  [4,5,6,14,15,16]     momentum × macro
+  [8,9,10,13,14,15,16] returns_atr × macro
+  [4,6,12]             RSI + bb_pos + low52w_dist  ← oversold bounce detector (added Apr 27)
+
+Classifier: HistGradientBoostingClassifier
+  max_iter=300 (full), 100 (scanner light_mode)
+  max_leaf_nodes=31, min_samples_leaf=50
+  l2_regularization=0.1, learning_rate=0.01
+  early_stopping=True, n_iter_no_change=20
+
+Precision reporting:
+  - Uses signal-specific precision: SELL signal → SELL precision, BUY signal → BUY precision
+  - MIN_SUPPORT = 5: if test set has fewer than 5 predictions for that class → precision = 0
+  - Precision capped at 90% to prevent 1-sample 100% display artifact
+
+
+CHAOS FILTER (meme/high-vol stock exclusion)
+---------------------------------------------
+Applied in both _train_single() (scanner) and get_prediction() (single lookup).
+Rule: avg ATR over last 30 trading days > 7% → skip
+  - Scanner: silently returns None
+  - Single lookup: returns signal="EXCLUDED" with excluded_reason field
+Rationale: 10-day swing model is structurally wrong fit for meme stocks (HOOD, GME, etc.)
+Prior threshold was 5% — raised to 7% on Apr 27 because post-Black Swan ATR spiked
+across legitimate stocks too.
+
+
+MACRO PREDICTED PAGE (5th tab)
+--------------------------------
+Endpoint: GET /api/macro-score  (cache: 2h)
+Returns a bull_score 0–100 derived from 14 macro indicators:
+  VIX, YIELD_CURVE, CPI, CORE_CPI, PCE, UNRATE, PAYROLLS,
+  FED_FUNDS, M2, CFNAI, SENTIMENT, BTC, OIL, GOLD
+
+Scoring: each indicator scored -100 to +100 via tier lookup (_bull_score_item).
+Weights sum to 100. Final: (weighted_avg + 100) / 2 → [0, 100].
+Regime labels: ≥75 Strong Bull, ≥60 Moderate Bull, ≥45 Neutral,
+               ≥30 Cautious Bear, else Strong Bear.
+
+Known bug: BZ=F (Brent crude) sometimes returns stale/wrong price via yfinance.
+           Not yet fixed.
+
+Frontend: MacroPredictedView + MacroScoreCard components at end of App.jsx.
+Gauge: gradient bar red→green with needle at score position.
+
+
+DEPLOY SHORTCUT (server has no git — use curl)
+------------------------------------------------
+The server directory is NOT a git repo. Deploy via curl, not git pull:
+
+  curl -o /home/elimaoz99/stock_predictor/core_logic.py \
+    "https://raw.githubusercontent.com/doctor-magic/Stock-predictor/main/core_logic.py"
+
+  curl -o /home/elimaoz99/stock_predictor/api.py \
+    "https://raw.githubusercontent.com/doctor-magic/Stock-predictor/main/api.py"
+
+  sudo systemctl restart stock-app.service
+
+SSH does not work with direct IP — server uses GCP IAP tunnel.
+Connect via: gcloud compute ssh instance-20260417-083125 --zone=<zone>
+Or: user must be already SSHed in; Claude cannot initiate the connection.
+
+
+BACKTEST SCRIPT
+---------------
+File: C:\Users\elima\OneDrive\Desktop\backtest_month.py
+Run:  py backtest_month.py
+
+3 test periods:
+  May 2025 (calm bull):   train up to 2025-05-30, check 2025-06-16
+  Jan 2026 (normal):      train up to 2026-01-31, check 2026-02-14
+  Mar 2026 (Black Swan):  train up to 2026-03-26, check 2026-04-09
+
+Last backtest results (2026-04-27, with low52w_dist feature):
+  Combined: 6 signals, 3/6=50% hit rate, avg precision 79.6%
+  Jan 2026:  5 signals, 3/5=60% — best window
+  Black Swan: 0 signals — all filtered by MIN_PRECISION
+  AAPL/NVDA: no signals in any period (below precision threshold)
+  SELL dominates — no BUY signals appeared in any window
+
+Script mirrors core_logic.py exactly (same FEATURES, INTERACTION_GROUPS,
+MIN_PRECISION, chaos filter). Keep them in sync when updating the model.
