@@ -317,6 +317,18 @@ def get_prediction(ticker: str, light_mode=False):
     if df_raw.empty:
         return None
     df = build_features(df_raw)
+
+    avg_atr = df["atr_pct"].dropna().tail(30).mean()
+    if avg_atr > 0.05:
+        return {
+            "symbol": ticker, "signal": "EXCLUDED", "confidence": 0.0,
+            "options_filtered": False, "precision_score": 0.0,
+            "last_price": float(df_raw["Close"].iloc[-1]),
+            "last_date": str(df_raw.index[-1].date()),
+            "rows_trained": 0, "importance": {}, "options_context": {},
+            "excluded_reason": "avg_atr_30d > 5% (high-volatility / meme stock)",
+        }
+
     df = build_labels(df)
     clf, precision = train_and_evaluate(df, light_mode=light_mode)
     latest = df[FEATURES].ffill().iloc[[-1]]
@@ -425,6 +437,14 @@ def _train_single(name, sym, raw_data, multi):
             return None
 
         df = build_features(raw)
+
+        # Chaos filter: skip high-volatility meme/speculative stocks.
+        # avg ATR >5% over last 30 sessions means the stock is too noisy for
+        # a 10-day swing model — signals would be random noise regardless of precision.
+        avg_atr = df["atr_pct"].dropna().tail(30).mean()
+        if avg_atr > 0.05:
+            return None
+
         df = build_labels(df)
         clf, precision = train_and_evaluate(df, light_mode=True)
 
