@@ -360,13 +360,13 @@ def get_macro_score():
     # BTC, OIL, GOLD via yfinance
     btc_pct_50 = oil_price = gold_chg = None
     try:
-        raw = yf.download("BTC-USD BZ=F GC=F", period="70d", progress=False, auto_adjust=True)
+        raw = yf.download("BTC-USD CL=F GC=F", period="70d", progress=False, auto_adjust=True)
         cl = raw["Close"]
         btc_s = cl["BTC-USD"].dropna()
         if len(btc_s) >= 50:
             ma50 = float(btc_s.iloc[-50:].mean())
             btc_pct_50 = round((float(btc_s.iloc[-1]) - ma50) / ma50 * 100, 2)
-        oil_s = cl["BZ=F"].dropna()
+        oil_s = cl["CL=F"].dropna()
         if len(oil_s) >= 1:
             oil_price = round(float(oil_s.iloc[-1]), 2)
         gold_s = cl["GC=F"].dropna()
@@ -402,7 +402,7 @@ def get_macro_score():
         {"id": "PAYROLLS",   "label": "Non-Farm Payrolls (MoM)",    "category": "Labor",       "weight": 5,  "raw": pay,         "value_fmt": ("—" if pay is None else "%+.0fK" % pay)},
         {"id": "SENTIMENT",  "label": "Consumer Sentiment (UMich)", "category": "Sentiment",   "weight": 5,  "raw": sent,        "value_fmt": _fv(sent,       "%.0f")},
         {"id": "BTC_PCT_50", "label": "Bitcoin vs 50-Day MA",       "category": "Crypto",      "weight": 4,  "raw": btc_pct_50,  "value_fmt": _fv(btc_pct_50, "%+.1f%%")},
-        {"id": "OIL",        "label": "Brent Oil Price",            "category": "Commodities", "weight": 2,  "raw": oil_price,   "value_fmt": _fv(oil_price,  "$%.1f")},
+        {"id": "OIL",        "label": "WTI Oil Price",              "category": "Commodities", "weight": 2,  "raw": oil_price,   "value_fmt": _fv(oil_price,  "$%.1f")},
         {"id": "GOLD_CHG",   "label": "Gold (3M Change)",           "category": "Commodities", "weight": 2,  "raw": gold_chg,    "value_fmt": _fv(gold_chg,   "%+.1f%%")},
     ]
 

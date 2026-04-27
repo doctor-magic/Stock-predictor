@@ -19,8 +19,10 @@ _macro_cache: TTLCache = TTLCache(maxsize=1, ttl=3600)    # 1h TTL for macro tim
 PERIOD = "5y"
 FORWARD_DAYS = 10
 THRESHOLD = 0.03
-CONFIDENCE_THRESHOLD = 0.65
-MIN_PRECISION = 0.52
+CONFIDENCE_THRESHOLD  = 0.65
+MIN_PRECISION_BUY     = 0.48  # BUY precision harder to achieve — lower floor
+MIN_PRECISION_SELL    = 0.52  # SELL precision easier in volatile markets
+MIN_PRECISION         = MIN_PRECISION_SELL  # default used in backtest imports
 
 FEATURES = [
     "ema9", "ema21", "ema50", "ema_cross",              # 0-3  trend
@@ -332,14 +334,16 @@ def get_prediction(ticker: str, light_mode=False):
     df = build_features(df_raw)
 
     avg_atr = df["atr_pct"].dropna().tail(30).mean()
-    if avg_atr > 0.07:
+    current_vix = df["vix"].dropna().iloc[-1] if "vix" in df.columns and not df["vix"].dropna().empty else 20
+    chaos_threshold = 0.05 if current_vix < 15 else (0.07 if current_vix < 25 else 0.10)
+    if avg_atr > chaos_threshold:
         return {
             "symbol": ticker, "signal": "EXCLUDED", "confidence": 0.0,
             "options_filtered": False, "precision_score": 0.0,
             "last_price": float(df_raw["Close"].iloc[-1]),
             "last_date": str(df_raw.index[-1].date()),
             "rows_trained": 0, "importance": {}, "options_context": {},
-            "excluded_reason": "avg_atr_30d > 7% (high-volatility / meme stock)",
+            "excluded_reason": f"avg_atr_30d > {chaos_threshold:.0%} at VIX={current_vix:.0f} (high-volatility / meme stock)",
         }
 
     df = build_labels(df)
@@ -456,7 +460,9 @@ def _train_single(name, sym, raw_data, multi):
         # avg ATR >5% over last 30 sessions means the stock is too noisy for
         # a 10-day swing model — signals would be random noise regardless of precision.
         avg_atr = df["atr_pct"].dropna().tail(30).mean()
-        if avg_atr > 0.07:
+        current_vix = df["vix"].dropna().iloc[-1] if "vix" in df.columns and not df["vix"].dropna().empty else 20
+        chaos_threshold = 0.05 if current_vix < 15 else (0.07 if current_vix < 25 else 0.10)
+        if avg_atr > chaos_threshold:
             return None
 
         df = build_labels(df)
@@ -469,7 +475,8 @@ def _train_single(name, sym, raw_data, multi):
         final_signal = confident_signal if confidence >= CONFIDENCE_THRESHOLD else "HOLD"
 
         precision = sell_prec if final_signal == "SELL" else buy_prec
-        if precision < MIN_PRECISION and final_signal != "HOLD":
+        min_prec = MIN_PRECISION_SELL if final_signal == "SELL" else MIN_PRECISION_BUY
+        if precision < min_prec and final_signal != "HOLD":
             return None
         return {
             "symbol": sym,
