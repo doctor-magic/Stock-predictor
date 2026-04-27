@@ -27,16 +27,18 @@ FEATURES = [
     "rsi", "macd_gap", "bb_pos",                         # 4-6  momentum
     "vol_ratio", "ret_3d_atr", "ret_5d_atr", "ret_10d_atr",  # 7-10 ATR-normalized returns+volume
     "sma200_dist",                                        # 11   long-term trend
-    "atr_pct",                                            # 12   volatility regime
-    "vix", "dgs10", "t10y2y",                            # 13-15 macro regime
+    "low52w_dist",                                        # 12   distance from 52-week low (bounce detector)
+    "atr_pct",                                            # 13   volatility regime
+    "vix", "dgs10", "t10y2y",                            # 14-16 macro regime
 ]
 
 INTERACTION_GROUPS = [
-    [0, 1, 2, 3, 11],              # trend: ema9, ema21, ema50, ema_cross, sma200_dist
-    [4, 5, 6],                      # momentum: rsi, macd_gap, bb_pos
-    [7, 8, 9, 10, 12],              # returns+volume+atr: vol_ratio, ret_*_atr, atr_pct
-    [4, 5, 6, 13, 14, 15],          # momentum × macro: RSI/MACD conditioned on VIX + yield curve
-    [8, 9, 10, 12, 13, 14, 15],     # returns_atr × macro: ATR-normalized moves in macro context
+    [0, 1, 2, 3, 11, 12],           # trend + distance: EMAs, sma200_dist, low52w_dist
+    [4, 5, 6],                       # momentum: rsi, macd_gap, bb_pos
+    [7, 8, 9, 10, 13],              # returns+volume+atr: vol_ratio, ret_*_atr, atr_pct
+    [4, 5, 6, 14, 15, 16],          # momentum × macro
+    [8, 9, 10, 13, 14, 15, 16],     # returns_atr × macro
+    [4, 6, 12],                      # RSI + bb_pos + low52w_dist (oversold bounce detector)
 ]
 
 OPTION_FEATURES = {"pc_ratio", "iv_skew", "volume_shock"}
@@ -243,6 +245,10 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     ], axis=1).max(axis=1)
     atr14 = tr.rolling(14).mean()
     df["atr_pct"] = atr14 / df["Close"].replace(0, np.nan)
+
+    # 52-week low distance: how far above the annual low the stock is sitting
+    low52 = df["Close"].rolling(252).min()
+    df["low52w_dist"] = (df["Close"] - low52) / low52.replace(0, np.nan)
 
     # ATR-normalized returns: express moves in units of daily ATR
     ret_3d  = df["Close"].pct_change(3)

@@ -34,6 +34,7 @@ IMPORTANCE_DESCRIPTIONS: dict[str, str] = {
     "ema_cross":    "EMA9 > EMA21 flag — 1 = bullish momentum, 0 = bearish.",
     "macd_gap":     "MACD histogram — gap between MACD line and its signal line.",
     "vol_ratio":    "Volume ratio — today's volume vs 20-day avg; >1.5 signals accumulation.",
+    "low52w_dist":  "Distance from 52-week low — 0 = at annual low, 0.5 = 50% above it; low values flag potential bounce setups.",
     "atr_pct":      "ATR(14) as % of price — measures stock volatility regime; high = stressed/hyped market.",
     "ret_3d_atr":   "3-day return in ATR units — how many daily ranges the stock moved in 3 days.",
     "ret_5d_atr":   "5-day return in ATR units — weekly momentum normalised by the stock's own volatility.",
