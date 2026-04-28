@@ -428,6 +428,11 @@ def get_prediction(ticker: str, light_mode=False):
     confidence = proba[pred_idx]
 
     final_signal = raw_signal if confidence >= CONFIDENCE_THRESHOLD else "HOLD"
+    
+    # Hard filter: prevent 'Falling Knife' buys if institutional money is flowing out
+    if final_signal == "BUY" and df["cmf"].iloc[-1] < 0:
+        final_signal = "HOLD"
+
     precision = sell_prec if final_signal == "SELL" else buy_prec
 
     # Fetch options before filter so they can adjust confidence
@@ -545,6 +550,10 @@ def _train_single(name, sym, raw_data, multi):
         confident_signal = clf.classes_[np.argmax(proba)]
         confidence = np.max(proba)
         final_signal = confident_signal if confidence >= CONFIDENCE_THRESHOLD else "HOLD"
+
+        # Hard filter: prevent 'Falling Knife' buys if institutional money is flowing out
+        if final_signal == "BUY" and df["cmf"].iloc[-1] < 0:
+            final_signal = "HOLD"
 
         precision = sell_prec if final_signal == "SELL" else buy_prec
         min_prec = MIN_PRECISION_SELL if final_signal == "SELL" else MIN_PRECISION_BUY
