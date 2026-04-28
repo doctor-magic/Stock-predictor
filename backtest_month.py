@@ -38,16 +38,40 @@ FEATURES = [
     "vix", "dgs10", "t10y2y",
     "rel_strength_spy",
     "cmf",
+    "rel_strength_sector",
 ]
 
 INTERACTION_GROUPS = [
-    [0, 1, 2, 3, 11, 12, 17],
+    [0, 1, 2, 3, 11, 12, 17, 19],
     [4, 5, 6, 18],
     [7, 8, 9, 10, 13, 18],
     [4, 5, 6, 14, 15, 16],
-    [8, 9, 10, 13, 14, 15, 16, 17],
+    [8, 9, 10, 13, 14, 15, 16, 17, 19],
     [4, 6, 12],
+    [4, 17, 19],
 ]
+
+SECTOR_ETF_MAP = {
+    "Technology": "XLK", "Financial Services": "XLF",
+    "Energy": "XLE", "Consumer Cyclical": "XLY",
+    "Consumer Defensive": "XLP", "Healthcare": "XLV",
+    "Industrials": "XLI", "Basic Materials": "XLB",
+    "Real Estate": "XLRE", "Utilities": "XLU",
+    "Communication Services": "XLC",
+}
+_sector_cache: dict = {}
+
+def get_sector_etf(ticker: str) -> str:
+    if ticker in _sector_cache:
+        return _sector_cache[ticker]
+    try:
+        sector = yf.Ticker(ticker).info.get("sector", "")
+        etf = SECTOR_ETF_MAP.get(sector, "")
+        col = f"sect_{etf}" if etf else "spy_close"
+    except Exception:
+        col = "spy_close"
+    _sector_cache[ticker] = col
+    return col
 
 TICKERS = [
     "AAPL", "NVDA", "TSLA", "MSFT", "META", "GOOGL", "AMZN", "SPY",
@@ -88,7 +112,7 @@ def fetch_fred(series_id, col, end_date):
     obs[col] = pd.to_numeric(obs["value"], errors="coerce")
     return obs[[col]][obs.index <= pd.Timestamp(end_date)]
 
-def build_features(df, macro):
+def build_features(df, macro, sector_col="spy_close"):
     df = df.copy()
     df["ema9"]        = df["Close"].ewm(span=9,  adjust=False).mean()
     df["ema21"]       = df["Close"].ewm(span=21, adjust=False).mean()
@@ -141,10 +165,13 @@ def build_features(df, macro):
     idx = df.index.tz_localize(None) if df.index.tz is not None else df.index
     df.index = idx
     df = df.join(macro, how="left")
-    df[["vix", "dgs10", "t10y2y", "spy_close"]] = df[["vix", "dgs10", "t10y2y", "spy_close"]].ffill()
-    
+    macro_cols = [c for c in ["vix", "dgs10", "t10y2y", "spy_close"] + [f"sect_{e}" for e in SECTOR_ETF_MAP.values()] if c in df.columns]
+    df[macro_cols] = df[macro_cols].ffill()
+
     df["spy_ret_5d"] = df["spy_close"].pct_change(5)
     df["rel_strength_spy"] = ret_5d - df["spy_ret_5d"]
+    sect_close = df[sector_col] if sector_col in df.columns else df["spy_close"]
+    df["rel_strength_sector"] = ret_5d - sect_close.pct_change(5)
     return df
 
 def build_labels(df):
@@ -212,6 +239,17 @@ def run_period(backtest_date, check_date, label):
     spy_close = spy_raw[["Close"]].rename(columns={"Close": "spy_close"})
     spy_close.index = pd.to_datetime(spy_close.index).tz_localize(None)
     macro = macro.join(spy_close, how="left")
+
+    try:
+        etf_tickers = list(SECTOR_ETF_MAP.values())
+        raw_sect = yf.download(etf_tickers, start=str(start), end=str(backtest_date),
+                               progress=False, auto_adjust=False)
+        sect_close = raw_sect["Close"].copy() if isinstance(raw_sect.columns, pd.MultiIndex) else raw_sect[["Close"]]
+        sect_close = sect_close.rename(columns={etf: f"sect_{etf}" for etf in etf_tickers})
+        sect_close.index = pd.to_datetime(sect_close.index).tz_localize(None)
+        macro = macro.join(sect_close, how="left")
+    except Exception as e:
+        print(f"  Sector ETF fetch error: {e}")
     try:
         macro = macro.join(fetch_fred("DGS10",  "dgs10",  backtest_date), how="left")
         macro = macro.join(fetch_fred("T10Y2Y", "t10y2y", backtest_date), how="left")
@@ -234,7 +272,8 @@ def run_period(backtest_date, check_date, label):
                 raw.columns = raw.columns.get_level_values(0)
             raw = raw[["Open", "High", "Low", "Close", "Volume"]]
 
-            df = build_features(raw, macro)
+            sector_col = get_sector_etf(ticker)
+            df = build_features(raw, macro, sector_col=sector_col)
 
             avg_atr = df["atr_pct"].dropna().tail(30).mean()
             current_vix = df["vix"].dropna().iloc[-1] if "vix" in df.columns and not df["vix"].dropna().empty else 20

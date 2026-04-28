@@ -34,18 +34,30 @@ FEATURES = [
     "vix", "dgs10", "t10y2y",                            # 14-16 macro regime
     "rel_strength_spy",                                   # 17   relative strength to SPY
     "cmf",                                                # 18   Chaikin Money Flow
+    "rel_strength_sector",                                # 19   relative strength to own sector ETF
 ]
 
 INTERACTION_GROUPS = [
-    [0, 1, 2, 3, 11, 12, 17],           # trend + distance + relative strength
+    [0, 1, 2, 3, 11, 12, 17, 19],       # trend + distance + relative strengths (SPY + sector)
     [4, 5, 6, 18],                       # momentum + cmf
     [7, 8, 9, 10, 13, 18],              # returns+volume+atr + cmf
-    [4, 5, 6, 14, 15, 16],          # momentum × macro
-    [8, 9, 10, 13, 14, 15, 16, 17],     # returns_atr × macro + relative strength
-    [4, 6, 12],                      # RSI + bb_pos + low52w_dist (oversold bounce detector)
+    [4, 5, 6, 14, 15, 16],              # momentum × macro
+    [8, 9, 10, 13, 14, 15, 16, 17, 19], # returns_atr × macro + relative strengths
+    [4, 6, 12],                          # RSI + bb_pos + low52w_dist (oversold bounce detector)
+    [4, 17, 19],                         # momentum + sector vs market divergence
 ]
 
 OPTION_FEATURES = {"pc_ratio", "iv_skew", "volume_shock"}
+
+SECTOR_ETF_MAP = {
+    "Technology": "XLK", "Financial Services": "XLF",
+    "Energy": "XLE", "Consumer Cyclical": "XLY",
+    "Consumer Defensive": "XLP", "Healthcare": "XLV",
+    "Industrials": "XLI", "Basic Materials": "XLB",
+    "Real Estate": "XLRE", "Utilities": "XLU",
+    "Communication Services": "XLC",
+}
+_sector_cache: dict = {}  # ticker → macro column name, e.g. "sect_XLK"
 
 PRESET_STOCKS = {
     "us": {
@@ -197,6 +209,17 @@ def fetch_macro_timeseries() -> pd.DataFrame:
     except Exception as e:
         print(f"SPY fetch error: {e}")
 
+    # Sector ETFs (XLK, XLF, XLE, etc.) — one batch call, cached with macro
+    try:
+        etf_tickers = list(SECTOR_ETF_MAP.values())
+        raw_sect = yf.download(etf_tickers, period=PERIOD, progress=False, auto_adjust=False)
+        sect_close = raw_sect["Close"].copy() if isinstance(raw_sect.columns, pd.MultiIndex) else raw_sect[["Close"]]
+        sect_close = sect_close.rename(columns={etf: f"sect_{etf}" for etf in etf_tickers})
+        sect_close.index = pd.to_datetime(sect_close.index).tz_localize(None)
+        frames.append(sect_close)
+    except Exception as e:
+        print(f"Sector ETF fetch error: {e}")
+
     # DGS10 + T10Y2Y via FRED
     fred_key = os.environ.get("FRED_API_KEY", "")
     if fred_key:
@@ -225,11 +248,30 @@ def fetch_macro_timeseries() -> pd.DataFrame:
         macro = macro.join(f, how="outer")
     macro = macro.sort_index().ffill().bfill()
 
+    sect_cols = [f"sect_{etf}" for etf in SECTOR_ETF_MAP.values()]
+    for col in ["vix", "dgs10", "t10y2y", "spy_close"] + sect_cols:
+        if col not in macro.columns:
+            macro[col] = np.nan
+
     _macro_cache["macro"] = macro
     return macro
 
 
-def build_features(df: pd.DataFrame) -> pd.DataFrame:
+def get_sector_etf(ticker: str) -> str:
+    """Return macro column name for ticker's sector ETF. Falls back to spy_close."""
+    if ticker in _sector_cache:
+        return _sector_cache[ticker]
+    try:
+        sector = yf.Ticker(ticker).info.get("sector", "")
+        etf = SECTOR_ETF_MAP.get(sector, "")
+        col = f"sect_{etf}" if etf else "spy_close"
+    except Exception:
+        col = "spy_close"
+    _sector_cache[ticker] = col
+    return col
+
+
+def build_features(df: pd.DataFrame, sector_col: str = "spy_close") -> pd.DataFrame:
     df = df.copy()
     df["ema9"] = df["Close"].ewm(span=9, adjust=False).mean()
     df["ema21"] = df["Close"].ewm(span=21, adjust=False).mean()
@@ -291,12 +333,15 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
         
         df["spy_ret_5d"] = df["spy_close"].pct_change(5)
         df["rel_strength_spy"] = ret_5d - df["spy_ret_5d"]
+        sect_close = df[sector_col] if sector_col in df.columns else df["spy_close"]
+        df["rel_strength_sector"] = ret_5d - sect_close.pct_change(5)
     except Exception as e:
         print(f"Macro join error: {e}")
         df["vix"] = np.nan
         df["dgs10"] = np.nan
         df["t10y2y"] = np.nan
         df["rel_strength_spy"] = np.nan
+        df["rel_strength_sector"] = np.nan
 
     return df
 
@@ -355,7 +400,8 @@ def get_prediction(ticker: str, light_mode=False):
     df_raw = fetch_stock_data(ticker)
     if df_raw.empty:
         return None
-    df = build_features(df_raw)
+    sector_col = get_sector_etf(ticker)
+    df = build_features(df_raw, sector_col=sector_col)
 
     avg_atr = df["atr_pct"].dropna().tail(30).mean()
     current_vix = df["vix"].dropna().iloc[-1] if "vix" in df.columns and not df["vix"].dropna().empty else 20
@@ -478,7 +524,8 @@ def _train_single(name, sym, raw_data, multi):
         if raw.empty:
             return None
 
-        df = build_features(raw)
+        sector_col = get_sector_etf(sym)
+        df = build_features(raw, sector_col=sector_col)
 
         # Chaos filter: skip high-volatility meme/speculative stocks.
         # avg ATR >5% over last 30 sessions means the stock is too noisy for
