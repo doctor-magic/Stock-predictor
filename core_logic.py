@@ -328,8 +328,9 @@ def build_features(df: pd.DataFrame, sector_col: str = "spy_close") -> pd.DataFr
         macro = fetch_macro_timeseries()
         idx = df.index.tz_localize(None) if df.index.tz is not None else df.index
         df.index = idx
-        df = df.join(macro[["vix", "dgs10", "t10y2y", "spy_close"]], how="left")
-        df[["vix", "dgs10", "t10y2y", "spy_close"]] = df[["vix", "dgs10", "t10y2y", "spy_close"]].ffill()
+        macro_cols = [c for c in macro.columns if c in ["vix", "dgs10", "t10y2y", "spy_close"] or c.startswith("sect_")]
+        df = df.join(macro[macro_cols], how="left")
+        df[macro_cols] = df[macro_cols].ffill()
         
         df["spy_ret_5d"] = df["spy_close"].pct_change(5)
         df["rel_strength_spy"] = ret_5d - df["spy_ret_5d"]
