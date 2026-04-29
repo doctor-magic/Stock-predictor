@@ -20,6 +20,7 @@ if os.path.exists(_env_path):
                 _k, _, _v = _line.partition("=")
                 os.environ.setdefault(_k.strip(), _v.strip())
 
+import threading
 import core_logic
 import db
 from models import PredictionResult, ScanRequest
@@ -56,9 +57,53 @@ TICKER_RE = re.compile(r'^[A-Z0-9.\-]{1,15}$')
 _scan_rate_limit: dict[str, float] = {}
 SCAN_COOLDOWN = 300  # seconds between force-refresh per IP
 
+HEALTH_STATUS: str = "ok"  # "ok" | "degraded"
+
+def _send_telegram_alert(text: str) -> None:
+    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
+        print(f"[health] Telegram not configured — alert skipped: {text}")
+        return
+    try:
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        payload = _json.dumps({"chat_id": chat_id, "text": text}).encode()
+        req = _req.Request(url, data=payload, headers={"Content-Type": "application/json"})
+        _req.urlopen(req, timeout=5)
+    except Exception as e:
+        print(f"[health] Telegram alert failed: {e}")
+
+def _run_post_deploy_check() -> None:
+    global HEALTH_STATUS
+    health = core_logic.check_feature_health("NVDA")
+    if "error" in health:
+        HEALTH_STATUS = "degraded"
+        _send_telegram_alert(f"[Stock Predictor] Deploy check FAILED: {health['error']}")
+        return
+    nan_features = [k for k, v in health.items() if v is None]
+    if nan_features:
+        HEALTH_STATUS = "degraded"
+        _send_telegram_alert(
+            f"[Stock Predictor] Deploy check FAILED — NaN in {nan_features}. "
+            f"Macro join broken. All scans will return HOLD."
+        )
+    else:
+        HEALTH_STATUS = "ok"
+        _send_telegram_alert(
+            f"[Stock Predictor] Deploy OK — "
+            f"vix={health['vix']:.1f}, "
+            f"rel_spy={health['rel_strength_spy']:.3f}, "
+            f"rel_sector={health['rel_strength_sector']:.3f}"
+        )
+
 @app.on_event("startup")
 def startup_event():
     db.init_db()
+    threading.Thread(target=_run_post_deploy_check, daemon=True).start()
+
+@app.get("/api/health")
+def health_check():
+    return {"status": HEALTH_STATUS}
 
 @app.get("/api/predict/{ticker}", response_model=PredictionResult)
 def predict_symbol(ticker: str):

@@ -494,6 +494,23 @@ def get_prediction(ticker: str, light_mode=False):
         "options_context": options_ctx,
     }
 
+def check_feature_health(symbol: str = "NVDA") -> dict:
+    """Returns last-row values of macro-join features for post-deploy health checks.
+    Returns {"error": str} on failure; None values indicate NaN (broken join)."""
+    try:
+        df_raw = fetch_stock_data(symbol)
+        if df_raw.empty:
+            return {"error": f"no price data for {symbol}"}
+        df = build_features(df_raw, sector_col=get_sector_etf(symbol))
+        last = df.iloc[-1]
+        result = {}
+        for col in ("vix", "rel_strength_spy", "rel_strength_sector"):
+            val = last[col] if col in df.columns else float("nan")
+            result[col] = None if pd.isna(val) else float(val)
+        return result
+    except Exception as e:
+        return {"error": str(e)}
+
 def _apply_options_filter(result: dict):
     """Fetch options for a scan result and apply the same confidence adjustment
     as get_prediction(). Returns None if the signal downgrades to HOLD."""
