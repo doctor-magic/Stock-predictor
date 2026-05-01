@@ -171,7 +171,7 @@ async def scan_market(req: ScanRequest, request: Request):
 @app.get("/api/recommendations")
 def get_recommendations():
     directory = os.path.dirname(os.path.abspath(__file__))
-    files = sorted(glob.glob(os.path.join(directory, "stock_recommendations_*.txt")), reverse=True)
+    files = sorted(glob.glob(os.path.join(directory, "stock_recommendations_*.txt")), key=os.path.getmtime, reverse=True)
 
     months = {
         "01": "ינואר", "02": "פברואר", "03": "מרץ",    "04": "אפריל",
