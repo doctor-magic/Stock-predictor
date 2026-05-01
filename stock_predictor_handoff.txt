@@ -96,12 +96,21 @@ Compiled dist: /home/elimaoz99/stock_predictor/frontend/dist/
   3. Daily Telegram report (rendered as markdown via react-markdown)
   4. FRED macro dashboard (11 indicators with sparklines)
 
+Google Analytics: Tag G-5KHC440K09 added to frontend\index.html (May 1 2026).
+  gtag script is in the <head> of index.html — do NOT remove it on future builds.
+
 Deploy frontend changes (from Desktop\frontend\):
   npm run build
-  scp -i ~/.ssh/gcp_stock_rsa -r dist/assets/* \
-    elimaoz99@35.239.74.178:/home/elimaoz99/stock_predictor/frontend/dist/assets/
-  scp -i ~/.ssh/gcp_stock_rsa dist/index.html \
-    elimaoz99@35.239.74.178:/home/elimaoz99/stock_predictor/frontend/dist/
+  scp -r -i "C:\Users\elima\.ssh\gcp_stock_rsa" "C:\Users\elima\OneDrive\Desktop\frontend\dist" \
+    elimaoz99@35.239.74.178:/home/elimaoz99/stock_predictor/
+  cp /home/elimaoz99/stock_predictor/dist/index.html \
+    /home/elimaoz99/stock_predictor/frontend/dist/index.html
+  sudo systemctl restart stock-app.service
+
+NOTE: Two dist folders exist on server:
+  /home/elimaoz99/stock_predictor/dist/          — uploaded via scp
+  /home/elimaoz99/stock_predictor/frontend/dist/ — ACTIVE (served by FastAPI)
+  Always cp index.html from dist/ to frontend/dist/ after uploading.
 
 Frontend uses RELATIVE URLs for API calls (fetch('/api/...')).
 NEVER hardcode http://localhost:8000.
@@ -167,6 +176,48 @@ PRE-SCAN CRON (05:00 daily)
 Script: /home/elimaoz99/stock_predictor/pre_scan.py
 Scans sp500, nasdaq100, tase — stores results in SQLite for instant scanner results.
 Log: cat /home/elimaoz99/stock_predictor/pre_scan.log
+
+
+DAILY TELEGRAM REPORT PIPELINE
+--------------------------------
+Scripts location: /home/elimaoz99/stock_predictor/
+Python:           /home/elimaoz99/stock_predictor/venv/bin/python3
+Cron log:         /home/elimaoz99/cron_log.txt
+
+Cron schedule (two runs per day):
+  14:00  fetch_raw_messages.py   — fetches Telegram messages
+  14:05  fetch_clal_48h.py       — fetches Clal Finance data
+  14:10  generate_report.py      — calls Claude, saves stock_recommendations_DD_MM_YYYY_Midday.txt
+  17:45  fetch_raw_messages.py
+  17:50  fetch_clal_48h.py
+  17:55  generate_report.py      — saves stock_recommendations_DD_MM_YYYY_Evening.txt
+
+generate_report.py uses model: claude-haiku-4-5-20251001
+
+Output files saved to /home/elimaoz99/stock_predictor/ (same dir as api.py).
+/api/recommendations reads all stock_recommendations_*.txt files from that directory.
+Sort order: by file mtime descending (newest first) — fixed May 1 2026.
+
+To re-run pipeline manually (on server):
+  cd /home/elimaoz99/stock_predictor
+  venv/bin/python3 fetch_raw_messages.py
+  venv/bin/python3 fetch_clal_48h.py
+  venv/bin/python3 generate_report.py
+
+IMPORTANT: fetch_daily_report.py does NOT exist on the server.
+It is a LOCAL Windows script at C:\Users\elima\.gemini\antigravity\scratch\fetch_daily_report.py
+The server uses generate_report.py for production report generation.
+
+Local Windows scripts (C:\Users\elima\.gemini\antigravity\scratch\):
+  fetch_daily_report.py  — standalone, saves to Desktop, model: claude-sonnet-4-6
+                           includes Telegram error alerts + SCP auto-upload to server
+  fetch_today_doc.py     — Google Doc format output
+  merge_clal.py          — merges report with Clal CSV
+
+Telegram credentials (local .env at Desktop):
+  TG_API_ID, TG_API_HASH, TG_PHONE, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+Telegram session file: C:\Users\elima\tg_session\session_v3
+Telegram sources: capitalflow_co_il, claltelegram
 
 
 SECURITY RULES (enforced — do not revert)
