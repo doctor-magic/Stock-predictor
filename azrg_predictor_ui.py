@@ -255,7 +255,7 @@ def build_labels(df):
     df.loc[df.index[-FORWARD_DAYS:], "label"] = np.nan
     return df
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=3600)
 def run_prediction(ticker, raw_df=None, n_estimators=N_ESTIMATORS):
     if raw_df is not None:
         raw = raw_df
