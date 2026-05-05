@@ -13,6 +13,8 @@ import warnings
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 cache = TTLCache(maxsize=100, ttl=900)
+_sp500_cache  = TTLCache(maxsize=1, ttl=900)
+_nasdaq_cache = TTLCache(maxsize=1, ttl=900)
 _options_cache: TTLCache = TTLCache(maxsize=50, ttl=900)  # 15-min TTL for option chains
 _macro_cache: TTLCache = TTLCache(maxsize=1, ttl=3600)    # 1h TTL for macro timeseries
 
@@ -86,7 +88,7 @@ PRESET_STOCKS = {
     }
 }
 
-@cached(cache)
+@cached(_sp500_cache)
 def load_sp500():
     try:
         url  = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
@@ -97,7 +99,7 @@ def load_sp500():
         print("SP500 Load Error:", e)
         return PRESET_STOCKS["us"]
 
-@cached(cache)
+@cached(_nasdaq_cache)
 def load_nasdaq100():
     try:
         url  = "https://en.wikipedia.org/wiki/Nasdaq-100"
@@ -220,25 +222,93 @@ def fetch_macro_timeseries() -> pd.DataFrame:
     except Exception as e:
         print(f"Sector ETF fetch error: {e}")
 
-    # DGS10 + T10Y2Y via FRED
+    # DGS10 + T10Y2Y via FRED, with yfinance fallback when FRED is down
     fred_key = os.environ.get("FRED_API_KEY", "")
+    _fred_dgs10_ok = False
+    _fred_t10y2y_ok = False
+    _dgs10_series = None
+
     if fred_key:
-        for series_id, col in [("DGS10", "dgs10"), ("T10Y2Y", "t10y2y")]:
-            try:
-                url = (
-                    "https://api.stlouisfed.org/fred/series/observations"
-                    f"?series_id={series_id}&limit=2000&sort_order=desc"
-                    f"&api_key={fred_key}&file_type=json"
-                )
-                with urllib.request.urlopen(url, timeout=10) as r:
-                    data = json.loads(r.read())
-                obs = pd.DataFrame(data["observations"])
-                obs = obs[obs["value"] != "."].copy()
-                obs.index = pd.to_datetime(obs["date"])
-                obs[col] = pd.to_numeric(obs["value"], errors="coerce")
-                frames.append(obs[[col]])
-            except Exception as e:
-                print(f"FRED {series_id} error: {e}")
+        # --- DGS10 ---
+        try:
+            url = (
+                "https://api.stlouisfed.org/fred/series/observations"
+                f"?series_id=DGS10&limit=2000&sort_order=desc"
+                f"&api_key={fred_key}&file_type=json"
+            )
+            with urllib.request.urlopen(url, timeout=10) as r:
+                data = json.loads(r.read())
+            obs = pd.DataFrame(data["observations"])
+            obs = obs[obs["value"] != "."].copy()
+            obs.index = pd.to_datetime(obs["date"])
+            obs["dgs10"] = pd.to_numeric(obs["value"], errors="coerce")
+            frames.append(obs[["dgs10"]])
+            _dgs10_series = obs[["dgs10"]]
+            _fred_dgs10_ok = True
+        except Exception as e:
+            print(f"FRED DGS10 error: {e}")
+
+        # --- T10Y2Y ---
+        try:
+            url = (
+                "https://api.stlouisfed.org/fred/series/observations"
+                f"?series_id=T10Y2Y&limit=2000&sort_order=desc"
+                f"&api_key={fred_key}&file_type=json"
+            )
+            with urllib.request.urlopen(url, timeout=10) as r:
+                data = json.loads(r.read())
+            obs = pd.DataFrame(data["observations"])
+            obs = obs[obs["value"] != "."].copy()
+            obs.index = pd.to_datetime(obs["date"])
+            obs["t10y2y"] = pd.to_numeric(obs["value"], errors="coerce")
+            frames.append(obs[["t10y2y"]])
+            _fred_t10y2y_ok = True
+        except Exception as e:
+            print(f"FRED T10Y2Y error: {e}")
+            # Sub-fallback: DGS10 - DGS2 (only if DGS10 was fetched)
+            if _fred_dgs10_ok and _dgs10_series is not None:
+                try:
+                    url2 = (
+                        "https://api.stlouisfed.org/fred/series/observations"
+                        f"?series_id=DGS2&limit=2000&sort_order=desc"
+                        f"&api_key={fred_key}&file_type=json"
+                    )
+                    with urllib.request.urlopen(url2, timeout=10) as r2:
+                        data2 = json.loads(r2.read())
+                    obs2 = pd.DataFrame(data2["observations"])
+                    obs2 = obs2[obs2["value"] != "."].copy()
+                    obs2.index = pd.to_datetime(obs2["date"])
+                    obs2["dgs2"] = pd.to_numeric(obs2["value"], errors="coerce")
+                    merged = _dgs10_series.join(obs2[["dgs2"]], how="inner")
+                    merged["t10y2y"] = merged["dgs10"] - merged["dgs2"]
+                    frames.append(merged[["t10y2y"]])
+                    _fred_t10y2y_ok = True
+                    print("T10Y2Y fallback: DGS10 - DGS2 OK")
+                except Exception as e2:
+                    print(f"T10Y2Y DGS2 fallback error: {e2}")
+
+    # Final yfinance fallback — fires whenever FRED is completely down
+    if not _fred_dgs10_ok or not _fred_t10y2y_ok:
+        try:
+            tnx = yf.download("^TNX", period=PERIOD, progress=False, auto_adjust=False)
+            irx = yf.download("^IRX", period=PERIOD, progress=False, auto_adjust=False)
+            if isinstance(tnx.columns, pd.MultiIndex):
+                tnx.columns = tnx.columns.get_level_values(0)
+            if isinstance(irx.columns, pd.MultiIndex):
+                irx.columns = irx.columns.get_level_values(0)
+            tnx_s = tnx["Close"].rename("tnx")
+            irx_s = irx["Close"].rename("irx")
+            spread = pd.DataFrame({"tnx": tnx_s, "irx": irx_s}).dropna()
+            spread.index = pd.to_datetime(spread.index).tz_localize(None)
+            if not _fred_dgs10_ok:
+                frames.append(spread[["tnx"]].rename(columns={"tnx": "dgs10"}))
+                print("DGS10 fallback: ^TNX OK")
+            if not _fred_t10y2y_ok:
+                spread["t10y2y"] = spread["tnx"] - spread["irx"]
+                frames.append(spread[["t10y2y"]])
+                print("T10Y2Y fallback: ^TNX - ^IRX OK")
+        except Exception as e:
+            print(f"yfinance FRED fallback error: {e}")
 
     if not frames:
         return pd.DataFrame(columns=["vix", "dgs10", "t10y2y", "spy_close"])
