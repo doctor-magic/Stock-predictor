@@ -488,6 +488,8 @@ def get_prediction(ticker: str, light_mode=False):
         }
 
     df = build_labels(df)
+    if df.dropna(subset=FEATURES + ["label"]).shape[0] < 60:
+        return None  # too few rows (e.g. recent IPO) — model would be meaningless
     clf, buy_prec, sell_prec = train_and_evaluate(df, light_mode=light_mode)
     latest = df[FEATURES].ffill().iloc[[-1]]
 

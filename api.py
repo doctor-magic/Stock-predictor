@@ -8,7 +8,7 @@ import time
 import json as _json
 import urllib.request as _req
 from datetime import datetime, timezone
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FuturesTimeout
 
 # self-load api_data.env so FRED_API_KEY is available without EnvironmentFile in systemd
 _env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "api_data.env")
@@ -53,9 +53,11 @@ app = FastAPI(title="Stock Predictor Pro API")
 # No CORS middleware — frontend is co-hosted on the same origin
 
 TICKER_RE = re.compile(r'^[A-Z0-9.\-]{1,15}$')
+TASK_ID_RE = re.compile(r'^[a-zA-Z0-9_-]{1,64}$')
 
 _scan_rate_limit: dict[str, float] = {}
-SCAN_COOLDOWN = 300  # seconds between force-refresh per IP
+SCAN_COOLDOWN = 300  # seconds between scan starts per IP
+_SCAN_SEMAPHORE = threading.Semaphore(3)  # max 3 concurrent full market scans
 
 HEALTH_STATUS: str = "ok"  # "ok" | "degraded"
 
@@ -124,38 +126,48 @@ GLOBAL_RESULTS = {}
 
 @app.get("/api/scan/progress/{task_id}")
 async def get_scan_progress(task_id: str):
+    if not TASK_ID_RE.match(task_id):
+        raise HTTPException(status_code=400, detail="Invalid task_id.")
     progress = GLOBAL_PROGRESS.get(task_id, {"current": 0, "total": 1, "message": "Initiating connection..."})
     if task_id in GLOBAL_RESULTS:
         progress = {**progress, "done": True, "results": GLOBAL_RESULTS.pop(task_id)}
+        GLOBAL_PROGRESS.pop(task_id, None)  # clean up once results are consumed
     return progress
 
 @app.post("/api/scan")
 async def scan_market(req: ScanRequest, request: Request):
-    import threading
-
     client_ip = request.client.host
 
-    if req.force_refresh:
-        now = time.time()
-        last = _scan_rate_limit.get(client_ip, 0)
-        if now - last < SCAN_COOLDOWN:
-            remaining = int(SCAN_COOLDOWN - (now - last))
-            raise HTTPException(status_code=429, detail=f"Too many requests. Wait {remaining} seconds before refreshing again.")
-        _scan_rate_limit[client_ip] = now
-
+    # Serve from cache first — no rate limit needed for cache hits
     if not req.force_refresh:
         cached = db.get_latest_scan(req.market_id)
         if cached:
             filtered = [r for r in cached if r['confidence'] >= req.min_confidence][:req.top_n]
             return {"status": "done", "results": filtered}
 
+    # Rate limit ALL background scan starts (force_refresh or cold cache miss)
+    now = time.time()
+    last = _scan_rate_limit.get(client_ip, 0)
+    if now - last < SCAN_COOLDOWN:
+        remaining = int(SCAN_COOLDOWN - (now - last))
+        raise HTTPException(status_code=429, detail=f"Too many requests. Wait {remaining} seconds before refreshing again.")
+    _scan_rate_limit[client_ip] = now
+
+    # Prune stale rate-limit entries to prevent unbounded dict growth
+    stale = [ip for ip, ts in list(_scan_rate_limit.items()) if now - ts > SCAN_COOLDOWN * 2]
+    for ip in stale:
+        _scan_rate_limit.pop(ip, None)
+
     task_id = req.task_id or str(id(req))
     GLOBAL_PROGRESS[task_id] = {"current": 0, "total": 1, "message": "Starting scan..."}
 
     def background_scan():
-        def update_progress(current, total, message):
-            GLOBAL_PROGRESS[task_id] = {"current": current, "total": total, "message": message}
+        if not _SCAN_SEMAPHORE.acquire(timeout=5):
+            GLOBAL_PROGRESS[task_id] = {"current": 0, "total": 1, "message": "Server busy. Try again shortly.", "error": True}
+            return
         try:
+            def update_progress(current, total, message):
+                GLOBAL_PROGRESS[task_id] = {"current": current, "total": total, "message": message}
             results = core_logic.run_market_scan(req.market_id, progress_callback=update_progress)
             db.save_scan_results(req.market_id, results)
             filtered = [r for r in results if r['confidence'] >= req.min_confidence][:req.top_n]
@@ -163,6 +175,8 @@ async def scan_market(req: ScanRequest, request: Request):
             GLOBAL_PROGRESS[task_id] = {"current": 1, "total": 1, "message": "Done!", "done": True}
         except Exception:
             GLOBAL_PROGRESS[task_id] = {"current": 0, "total": 1, "message": "Scan failed. Please try again.", "error": True}
+        finally:
+            _SCAN_SEMAPHORE.release()
 
     threading.Thread(target=background_scan, daemon=True).start()
     return {"status": "started", "task_id": task_id}
@@ -491,6 +505,134 @@ def get_macro_score():
     _macro_score_cache["ts"] = now
     _macro_score_cache["data"] = data
     return data
+
+
+# ── Volume Leaders ───────────────────────────────────────────────────────────
+
+_volume_leaders_cache: dict = {"ts": 0, "data": None}
+_VOLUME_LEADERS_TTL = 1800  # 30 min
+
+
+def _compute_verdict(ml_signal: str, ml_confidence, rsi, vol_ratio: float, ret_5d: float) -> str:
+    is_buy = ml_signal == "BUY" and (ml_confidence or 0) >= 0.65
+    is_sell = ml_signal == "SELL"
+    if rsi is not None and rsi > 75:
+        return "OVEREXTENDED"
+    if is_buy:
+        return "STRONG BUY" if vol_ratio >= 2.0 and ret_5d > 0 else "BUY"
+    if is_sell:
+        return "SELL"
+    if rsi is not None and rsi < 35 and vol_ratio >= 2.0:
+        return "WATCH"
+    return "HOLD"
+
+
+@app.get("/api/volume-leaders")
+def get_volume_leaders(min_market_cap: int = 200_000_000, force: bool = False):
+    now = time.time()
+    if not force and _volume_leaders_cache["data"] and now - _volume_leaders_cache["ts"] < _VOLUME_LEADERS_TTL:
+        return _volume_leaders_cache["data"]
+
+    try:
+        url = (
+            "https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved"
+            "?formatted=false&scrIds=most_actives&count=50&corsDomain=finance.yahoo.com"
+        )
+        headers = {"User-Agent": "Mozilla/5.0 (compatible; StockPredictor/1.0)"}
+        request = _req.Request(url, headers=headers)
+        with _req.urlopen(request, timeout=15) as resp:
+            raw = _json.loads(resp.read())
+        quotes = raw["finance"]["result"][0]["quotes"]
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to fetch volume leaders: {e}")
+
+    filtered = [q for q in quotes if q.get("marketCap", 0) >= min_market_cap][:20]
+    if not filtered:
+        return []
+
+    sp500_map = {r["symbol"]: r for r in db.get_latest_scan("sp500")}
+    nasdaq_map = {r["symbol"]: r for r in db.get_latest_scan("nasdaq100")}
+
+    # On-demand ML for stocks not covered by the daily pre-scan
+    uncached = [q["symbol"] for q in filtered
+                if q["symbol"] not in sp500_map and q["symbol"] not in nasdaq_map]
+    live_predictions: dict = {}
+    if uncached:
+        def _predict_live(sym):
+            try:
+                result = core_logic.get_prediction(sym, light_mode=True)
+                if result and result.get("signal") not in ("EXCLUDED", None):
+                    return sym, {"signal": result["signal"], "confidence": result["confidence"]}
+            except Exception:
+                pass
+            return sym, None
+
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            try:
+                for sym, pred in executor.map(_predict_live, uncached, timeout=25):
+                    if pred:
+                        live_predictions[sym] = pred
+            except _FuturesTimeout:
+                pass  # return partial results; remaining stocks get N/A
+
+    import yfinance as yf
+    tickers = [q["symbol"] for q in filtered]
+    hist = yf.download(tickers, period="1mo", interval="1d", progress=False, auto_adjust=True)
+
+    results = []
+    for quote in filtered:
+        sym = quote["symbol"]
+        ml = sp500_map.get(sym) or nasdaq_map.get(sym)
+        ml_live = False
+        if not ml and sym in live_predictions:
+            ml = live_predictions[sym]
+            ml_live = True
+        ml_signal = ml["signal"] if ml else "N/A"
+        ml_conf = ml["confidence"] if ml else None
+
+        vol_today = quote.get("regularMarketVolume", 0)
+        vol_avg3m = quote.get("averageDailyVolume3Month", 0)
+        vol_ratio = round(vol_today / vol_avg3m, 1) if vol_avg3m > 0 else 1.0
+
+        rsi = None
+        ret_5d = None
+        try:
+            closes = hist["Close"][sym].dropna() if len(tickers) > 1 else hist["Close"].dropna()
+            if len(closes) >= 15:
+                delta = closes.diff()
+                gain = delta.clip(lower=0).rolling(14).mean()
+                loss = (-delta.clip(upper=0)).rolling(14).mean()
+                rs = gain.iloc[-1] / loss.iloc[-1]
+                rsi = round(float(100 - 100 / (1 + rs)), 1)
+            if len(closes) >= 6:
+                ret_5d = round(float((closes.iloc[-1] / closes.iloc[-6] - 1) * 100), 1)
+        except Exception:
+            pass
+
+        verdict = _compute_verdict(ml_signal, ml_conf, rsi, vol_ratio, ret_5d or 0.0)
+        results.append({
+            "symbol": sym,
+            "name": quote.get("shortName", sym),
+            "price": quote.get("regularMarketPrice"),
+            "market_cap": quote.get("marketCap"),
+            "volume": vol_today,
+            "vol_ratio": vol_ratio,
+            "ret_5d": ret_5d,
+            "rsi": rsi,
+            "ml_signal": ml_signal,
+            "ml_confidence": round(ml_conf * 100, 1) if ml_conf else None,
+            "ml_live": ml_live,
+            "verdict": verdict,
+        })
+
+    results.sort(key=lambda x: x["volume"] or 0, reverse=True)
+    payload = {
+        "results": results,
+        "fetched_at": datetime.fromtimestamp(now, tz=timezone.utc).isoformat(),
+    }
+    _volume_leaders_cache["ts"] = now
+    _volume_leaders_cache["data"] = payload
+    return payload
 
 
 # ── Static frontend ──────────────────────────────────────────────────────────
