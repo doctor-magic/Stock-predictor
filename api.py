@@ -544,11 +544,13 @@ def get_volume_leaders(min_market_cap: int = 200_000_000, force: bool = False):
             raw = _json.loads(resp.read())
         quotes = raw["finance"]["result"][0]["quotes"]
     except Exception as e:
+        if _volume_leaders_cache["data"]:
+            return _volume_leaders_cache["data"]  # serve stale cache rather than failing
         raise HTTPException(status_code=502, detail=f"Failed to fetch volume leaders: {e}")
 
     filtered = [q for q in quotes if q.get("marketCap", 0) >= min_market_cap][:20]
     if not filtered:
-        return []
+        return _volume_leaders_cache["data"] or []
 
     sp500_map = {r["symbol"]: r for r in db.get_latest_scan("sp500")}
     nasdaq_map = {r["symbol"]: r for r in db.get_latest_scan("nasdaq100")}
