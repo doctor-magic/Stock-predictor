@@ -513,17 +513,27 @@ _volume_leaders_cache: dict = {"ts": 0, "data": None}
 _VOLUME_LEADERS_TTL = 1800  # 30 min
 
 
-def _compute_verdict(ml_signal: str, ml_confidence, rsi, vol_ratio: float, ret_5d: float) -> str:
-    is_buy = ml_signal == "BUY" and (ml_confidence or 0) >= 0.65
-    is_sell = ml_signal == "SELL"
+def _compute_momentum(rsi, vol_ratio: float, ret_5d: float) -> str:
+    """Short-term signal: RSI + volume surge only. No ML."""
     if rsi is not None and rsi > 75:
         return "OVEREXTENDED"
-    if is_buy:
-        return "STRONG BUY" if vol_ratio >= 2.0 and ret_5d > 0 else "BUY"
-    if is_sell:
-        return "SELL"
     if rsi is not None and rsi < 35 and vol_ratio >= 2.0:
         return "WATCH"
+    if vol_ratio >= 3.0 and (ret_5d or 0) > 1.0:
+        return "SURGING"
+    if (ret_5d or 0) < -4.0 and vol_ratio >= 2.0:
+        return "SELLING OFF"
+    return "NEUTRAL"
+
+
+def _compute_verdict(ml_signal: str, ml_confidence) -> str:
+    """10-day ML outlook only."""
+    if ml_signal == "BUY" and (ml_confidence or 0) >= 0.65:
+        return "BUY"
+    if ml_signal == "SELL":
+        return "SELL"
+    if ml_signal in (None, "N/A"):
+        return "N/A"
     return "HOLD"
 
 
@@ -611,7 +621,8 @@ def get_volume_leaders(min_market_cap: int = 200_000_000, force: bool = False):
         except Exception:
             pass
 
-        verdict = _compute_verdict(ml_signal, ml_conf, rsi, vol_ratio, ret_5d or 0.0)
+        momentum = _compute_momentum(rsi, vol_ratio, ret_5d or 0.0)
+        verdict  = _compute_verdict(ml_signal, ml_conf)
         results.append({
             "symbol": sym,
             "name": quote.get("shortName", sym),
@@ -624,6 +635,7 @@ def get_volume_leaders(min_market_cap: int = 200_000_000, force: bool = False):
             "ml_signal": ml_signal,
             "ml_confidence": round(ml_conf * 100, 1) if ml_conf else None,
             "ml_live": ml_live,
+            "momentum": momentum,
             "verdict": verdict,
         })
 

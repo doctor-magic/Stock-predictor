@@ -1,9 +1,9 @@
 ﻿import { useState, useEffect, useCallback } from 'react'
-import { Search, Activity, AlertCircle, BarChart3, TrendingUp, TrendingDown, Minus, BookOpen, ListFilter, RefreshCw, ExternalLink, Info, Calculator } from 'lucide-react'
+import { Search, Activity, AlertCircle, BarChart3, TrendingUp, TrendingDown, Minus, BookOpen, ListFilter, RefreshCw, ExternalLink, Info, Calculator, Zap } from 'lucide-react'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, LineChart, Line, ReferenceLine } from 'recharts'
 import ReactMarkdown from 'react-markdown'
 export default function App() {
-  const [activeTab, setActiveTab] = useState('predict') // predict | scanner | review | macro | macro-score
+  const [activeTab, setActiveTab] = useState('predict') // predict | scanner | review | macro | macro-score | options | volume-leaders
   const [predictTicker, setPredictTicker] = useState('')
 
   return (
@@ -28,6 +28,7 @@ export default function App() {
           <TabButton active={activeTab === 'macro'} onClick={() => setActiveTab('macro')} icon={BarChart3}>מאקרו FRED</TabButton>
           <TabButton active={activeTab === 'macro-score'} onClick={() => setActiveTab('macro-score')} icon={TrendingUp}>MACRO PREDICTED</TabButton>
           <TabButton active={activeTab === 'options'} onClick={() => setActiveTab('options')} icon={Calculator}>אופציות לאומי</TabButton>
+          <TabButton active={activeTab === 'volume-leaders'} onClick={() => setActiveTab('volume-leaders')} icon={Zap}>Volume Leaders</TabButton>
         </div>
       </header>
 
@@ -38,6 +39,7 @@ export default function App() {
         {activeTab === 'macro'        && <MacroDashboardView />}
         {activeTab === 'macro-score'  && <MacroPredictedView />}
         {activeTab === 'options'      && <LeumiOptionsView />}
+        {activeTab === 'volume-leaders' && <VolumeLeadersView />}
       </main>
     </div>
   )
@@ -1138,6 +1140,175 @@ function OptionsStat({ label, val, sub, color }) {
       <p className="text-xs text-gray-500 font-mono mb-1">{label}</p>
       <p className={`text-xl font-bold font-mono ${c}`}>{val}</p>
       {sub && <p className="text-xs text-gray-600 mt-1">{sub}</p>}
+    </div>
+  )
+}
+
+function VolumeLeadersView() {
+  const [data, setData] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState(null)
+  const [fetchedAt, setFetchedAt] = useState(null)
+
+  const fetchData = useCallback(async (force = false) => {
+    setLoading(true)
+    setError(null)
+    try {
+      const url = force ? '/api/volume-leaders?force=true' : '/api/volume-leaders'
+      const res = await fetch(url, { cache: 'no-store' })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const json = await res.json()
+      setData(json.results)
+      setFetchedAt(json.fetched_at)
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => { fetchData() }, [fetchData])
+
+  const momentumClass = (m) => {
+    if (m === 'OVEREXTENDED') return 'text-orange-400 font-bold'
+    if (m === 'WATCH')        return 'text-yellow-400 font-bold'
+    if (m === 'SURGING')      return 'text-emerald-400 font-bold'
+    if (m === 'SELLING OFF')  return 'text-red-400 font-bold'
+    return 'text-gray-500'
+  }
+
+  const verdictClass = (v) => {
+    if (v === 'BUY')  return 'text-green-400 font-bold'
+    if (v === 'SELL') return 'text-red-400 font-bold'
+    if (v === 'HOLD') return 'text-gray-400'
+    return 'text-gray-600'
+  }
+
+  const fmtCap = (n) => {
+    if (!n) return '—'
+    if (n >= 1e12) return `$${(n / 1e12).toFixed(1)}T`
+    if (n >= 1e9) return `$${(n / 1e9).toFixed(1)}B`
+    return `$${(n / 1e6).toFixed(0)}M`
+  }
+
+  const fmtVol = (n) => {
+    if (!n) return '—'
+    if (n >= 1e9) return `${(n / 1e9).toFixed(1)}B`
+    if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`
+    return `${(n / 1e3).toFixed(0)}K`
+  }
+
+  return (
+    <div className="w-full max-w-6xl">
+      <div className="glass-card rounded-2xl p-6">
+        <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
+          <div>
+            <h2 className="text-xl font-bold font-mono text-neon-blue">Volume Leaders</h2>
+            <p className="text-gray-400 text-sm mt-1">Most active US stocks · Mkt cap &gt; $200M · ML signal + momentum</p>
+          </div>
+          <div className="flex items-center gap-3">
+            {fetchedAt && (() => {
+              const d = new Date(fetchedAt)
+              const isToday = d.toDateString() === new Date().toDateString()
+              const timeStr = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+              const dateStr = isToday ? timeStr : `${d.toLocaleDateString()} ${timeStr}`
+              return (
+                <span className={`text-xs ${isToday ? 'text-gray-500' : 'text-yellow-500'}`}>
+                  Data from {dateStr}{!isToday && ' ⚠ market closed'}
+                </span>
+              )
+            })()}
+            <button
+              onClick={() => fetchData(true)}
+              disabled={loading}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-neon-blue/10 border border-neon-blue/30 text-neon-blue text-sm hover:bg-neon-blue/20 transition disabled:opacity-50"
+            >
+              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+              Refresh
+            </button>
+          </div>
+        </div>
+
+        {error && (
+          <div className="flex items-center gap-2 text-red-400 text-sm mb-4">
+            <AlertCircle className="w-4 h-4" />{error}
+          </div>
+        )}
+
+        {loading && !data && (
+          <div className="text-center text-gray-400 py-12">Fetching volume leaders...</div>
+        )}
+
+        {data && (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse text-sm">
+              <thead>
+                <tr className="text-gray-500 text-xs uppercase tracking-wider">
+                  <th className="p-3 border-b border-white/10">Ticker</th>
+                  <th className="p-3 border-b border-white/10 hidden md:table-cell">Name</th>
+                  <th className="p-3 border-b border-white/10 text-right">Price</th>
+                  <th className="p-3 border-b border-white/10 text-right hidden sm:table-cell">Mkt Cap</th>
+                  <th className="p-3 border-b border-white/10 text-right">Volume</th>
+                  <th className="p-3 border-b border-white/10 text-right hidden sm:table-cell">Vol/Avg</th>
+                  <th className="p-3 border-b border-white/10 text-right hidden sm:table-cell">5d Ret</th>
+                  <th className="p-3 border-b border-white/10 text-right hidden sm:table-cell">RSI</th>
+                  <th className="p-3 border-b border-white/10 text-center">Signal</th>
+                  <th className="p-3 border-b border-white/10 text-center hidden lg:table-cell">ML (10d)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.map((row, i) => (
+                  <tr key={row.symbol} className={`border-b border-white/5 hover:bg-white/5 transition ${i % 2 === 0 ? '' : 'bg-white/[0.02]'}`}>
+                    <td className="p-3 font-mono font-bold">
+                      <a href={`https://finance.yahoo.com/quote/${row.symbol}`} target="_blank" rel="noreferrer" className="text-neon-blue hover:underline flex items-center gap-1">
+                        {row.symbol}<ExternalLink className="w-3 h-3 opacity-50" />
+                      </a>
+                    </td>
+                    <td className="p-3 text-gray-300 text-xs hidden md:table-cell">{row.name}</td>
+                    <td className="p-3 text-right font-mono">${row.price?.toFixed(2) ?? '—'}</td>
+                    <td className="p-3 text-right font-mono text-gray-400 hidden sm:table-cell">{fmtCap(row.market_cap)}</td>
+                    <td className="p-3 text-right font-mono">{fmtVol(row.volume)}</td>
+                    <td className="p-3 text-right font-mono hidden sm:table-cell">
+                      {row.vol_ratio >= 3
+                        ? <span className="text-orange-400 font-bold">{row.vol_ratio}x 🔥</span>
+                        : <span className={row.vol_ratio >= 2 ? 'text-yellow-400' : 'text-gray-300'}>{row.vol_ratio}x</span>}
+                    </td>
+                    <td className="p-3 text-right font-mono hidden sm:table-cell">
+                      {row.ret_5d != null
+                        ? <span className={row.ret_5d > 0 ? 'text-green-400' : 'text-red-400'}>{row.ret_5d > 0 ? '+' : ''}{row.ret_5d}%</span>
+                        : '—'}
+                    </td>
+                    <td className="p-3 text-right font-mono hidden sm:table-cell">
+                      {row.rsi != null
+                        ? <span className={row.rsi > 70 ? 'text-orange-400' : row.rsi < 35 ? 'text-green-400' : 'text-gray-300'}>{row.rsi}</span>
+                        : '—'}
+                    </td>
+                    <td className="p-3 text-center">
+                      <span className={`text-xs font-bold font-mono ${momentumClass(row.momentum)}`}>
+                        {row.momentum || 'NEUTRAL'}
+                      </span>
+                    </td>
+                    <td className="p-3 text-center hidden lg:table-cell">
+                      {row.verdict !== 'N/A'
+                        ? <span className={`text-xs font-mono ${verdictClass(row.verdict)}`}>
+                            {row.verdict}{row.ml_confidence ? ` ${row.ml_confidence}%` : ''}
+                            {row.ml_live && <span title="Signal computed live — stock is outside the regular S&P 500 / NASDAQ 100 watchlist" className="ml-1 cursor-help">⚡</span>}
+                          </span>
+                        : <span className="text-gray-600 text-xs">—</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        <p className="text-gray-600 text-xs mt-4">
+          <b>Signal</b> (now): OVEREXTENDED = RSI &gt; 75 · WATCH = RSI &lt; 35 + 2× vol · SURGING = 3× vol + ret &gt; 1% · SELLING OFF = vol spike + ret &lt; −4%.{' '}
+          <b>ML (10d)</b>: model prediction for next 10 trading days (≥65% confidence threshold). Cached 30 min.{' '}
+          ⚡ = signal computed live on-demand — stock is outside the regular S&amp;P 500 / NASDAQ 100 watchlist.
+        </p>
+      </div>
     </div>
   )
 }
