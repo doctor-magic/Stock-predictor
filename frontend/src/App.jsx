@@ -1178,9 +1178,10 @@ function VolumeLeadersView() {
   }
 
   const verdictClass = (v) => {
-    if (v === 'BUY')  return 'text-green-400 font-bold'
-    if (v === 'SELL') return 'text-red-400 font-bold'
-    if (v === 'HOLD') return 'text-gray-400'
+    if (v === 'BUY')         return 'text-green-400 font-bold'
+    if (v === 'VOL BREAKOUT') return 'text-cyan-300 font-bold'
+    if (v === 'SELL')        return 'text-red-400 font-bold'
+    if (v === 'HOLD')        return 'text-gray-400'
     return 'text-gray-600'
   }
 
@@ -1305,7 +1306,7 @@ function VolumeLeadersView() {
 
         <p className="text-gray-600 text-xs mt-4">
           <b>Signal</b> (now): OVEREXTENDED = RSI &gt; 75 · WATCH = RSI &lt; 35 + 2× vol · SURGING = 3× vol + ret &gt; 1% · SELLING OFF = vol spike + ret &lt; −4%.{' '}
-          <b>ML (10d)</b>: model prediction for next 10 trading days (≥65% confidence threshold). Cached 30 min.{' '}
+          <b>ML (10d)</b>: BUY ≥65% confidence (≥60% when vol ≥2×) · VOL BREAKOUT = 3× vol + RSI &lt; 65, no ML needed · OVEREXTENDED = already up 3%+ from open. Cached 30 min.{' '}
           ⚡ = signal computed live on-demand — stock is outside the regular S&amp;P 500 / NASDAQ 100 watchlist.
         </p>
       </div>

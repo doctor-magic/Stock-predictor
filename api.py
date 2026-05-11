@@ -526,10 +526,33 @@ def _compute_momentum(rsi, vol_ratio: float, ret_5d: float) -> str:
     return "NEUTRAL"
 
 
-def _compute_verdict(ml_signal: str, ml_confidence) -> str:
-    """10-day ML outlook only."""
-    if ml_signal == "BUY" and (ml_confidence or 0) >= 0.65:
+def _compute_verdict(
+    ml_signal: str,
+    ml_confidence,
+    vol_ratio: float = 1.0,
+    rsi=None,
+    open_price=None,
+    current_price=None,
+) -> str:
+    """10-day ML outlook with three momentum overlays:
+    1. Anti-chasing guard  — don't buy if already up 3%+ from open
+    2. Vol Breakout        — pure volume signal, no ML needed (3x vol + RSI < 65)
+    3. Hybrid threshold    — lower BUY bar to 60% when vol_ratio >= 2x
+    """
+    # 1. Anti-chasing guard — price already ran, don't chase
+    if open_price and current_price and open_price > 0:
+        if (current_price - open_price) / open_price >= 0.03:
+            return "OVEREXTENDED"
+
+    # 2. Vol Breakout — independent of ML
+    if vol_ratio >= 3.0 and rsi is not None and rsi < 65:
+        return "VOL BREAKOUT"
+
+    # 3. ML BUY — lower threshold when volume confirms
+    threshold = 0.60 if vol_ratio >= 2.0 else 0.65
+    if ml_signal == "BUY" and (ml_confidence or 0) >= threshold:
         return "BUY"
+
     if ml_signal == "SELL":
         return "SELL"
     if ml_signal in (None, "N/A"):
@@ -622,7 +645,13 @@ def get_volume_leaders(min_market_cap: int = 200_000_000, force: bool = False):
             pass
 
         momentum = _compute_momentum(rsi, vol_ratio, ret_5d or 0.0)
-        verdict  = _compute_verdict(ml_signal, ml_conf)
+        verdict  = _compute_verdict(
+            ml_signal, ml_conf,
+            vol_ratio=vol_ratio,
+            rsi=rsi,
+            open_price=quote.get("regularMarketOpen"),
+            current_price=quote.get("regularMarketPrice"),
+        )
         results.append({
             "symbol": sym,
             "name": quote.get("shortName", sym),
