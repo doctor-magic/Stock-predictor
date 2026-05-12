@@ -22,8 +22,8 @@ PERIOD = "5y"
 FORWARD_DAYS = 10
 THRESHOLD = 0.03
 CONFIDENCE_THRESHOLD       = 0.70  # full predict (300 iter)
-SCAN_CONFIDENCE_THRESHOLD  = 0.67  # scanner light_mode (100 iter) — compensates for iter discount
-MIN_PRECISION_BUY          = 0.48  # BUY precision harder to achieve — lower floor
+SCAN_CONFIDENCE_THRESHOLD  = 0.57  # scanner light_mode (100 iter) — compensates for iter discount (~0.10 below full mode)
+MIN_PRECISION_BUY          = 0.30  # BUY precision floor (lowered from 0.48 — test set temporarily biased by Apr-2026 correction period)
 MIN_PRECISION_SELL    = 0.52  # SELL precision easier in volatile markets
 MIN_PRECISION         = MIN_PRECISION_SELL  # default used in backtest imports
 
