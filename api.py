@@ -549,12 +549,12 @@ def _compute_verdict(
         return "VOL BREAKOUT"
 
     # 3. ML BUY — lower threshold when volume confirms
-    threshold = 0.60 if vol_ratio >= 2.0 else 0.65
+    threshold = 0.65 if vol_ratio >= 2.0 else 0.70
     if ml_signal == "BUY" and (ml_confidence or 0) >= threshold:
         return "BUY"
 
     if ml_signal == "SELL":
-        return "SELL"
+        return "HOLD"
     if ml_signal in (None, "N/A"):
         return "N/A"
     return "HOLD"

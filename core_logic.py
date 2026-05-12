@@ -21,7 +21,7 @@ _macro_cache: TTLCache = TTLCache(maxsize=1, ttl=3600)    # 1h TTL for macro tim
 PERIOD = "5y"
 FORWARD_DAYS = 10
 THRESHOLD = 0.03
-CONFIDENCE_THRESHOLD  = 0.65
+CONFIDENCE_THRESHOLD  = 0.70
 MIN_PRECISION_BUY     = 0.48  # BUY precision harder to achieve — lower floor
 MIN_PRECISION_SELL    = 0.52  # SELL precision easier in volatile markets
 MIN_PRECISION         = MIN_PRECISION_SELL  # default used in backtest imports
@@ -533,6 +533,9 @@ def get_prediction(ticker: str, light_mode=False):
             if confidence < CONFIDENCE_THRESHOLD:
                 final_signal = "HOLD"
 
+    if final_signal == "SELL":
+        final_signal = "HOLD"
+
     try:
         importances = pd.Series(clf.feature_importances_, index=FEATURES).sort_values(ascending=False).to_dict()
     except AttributeError:
@@ -642,6 +645,9 @@ def _train_single(name, sym, raw_data, multi):
 
         # Hard filter: prevent 'Falling Knife' buys if institutional money is flowing out
         if final_signal == "BUY" and df["cmf"].iloc[-1] < 0:
+            final_signal = "HOLD"
+
+        if final_signal == "SELL":
             final_signal = "HOLD"
 
         precision = sell_prec if final_signal == "SELL" else buy_prec
