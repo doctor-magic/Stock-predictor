@@ -24,7 +24,7 @@ SCP (copy file to server):
 
 - GCP VM, Ubuntu, IP: 35.239.74.178
 - SSH user: elimaoz99 (NOT elima_oz, NOT root)
-- SSH key: ~/.ssh/gcp_stock_rsa (Windows: /c/Users/elima/.ssh/gcp_stock_rsa)
+- SSH key: ~/.ssh/gcp_stock_rsa
 - Sudo: elimaoz99 has passwordless sudo ONLY for "systemctl restart stock-app.service".
   For anything else (editing system files, changing service unit) ask the user to do it manually.
 
@@ -56,11 +56,11 @@ Working directory: /home/elimaoz99/stock_predictor/
 
 BACKEND (api.py)
 ----------------
-Local copy:  C:\Users\elima\OneDrive\Desktop\api.py
+Local copy:  ~/Desktop/Stock-predictor/api.py
 Server copy: /home/elimaoz99/stock_predictor/api.py
 
 Deploy backend change:
-  scp -i ~/.ssh/gcp_stock_rsa /c/Users/elima/OneDrive/Desktop/api.py \
+  scp -i ~/.ssh/gcp_stock_rsa ~/Desktop/Stock-predictor/api.py \
     elimaoz99@35.239.74.178:/home/elimaoz99/stock_predictor/api.py
   # then restart service
 
@@ -87,33 +87,38 @@ Other backend modules:
 
 FRONTEND (App.jsx)
 ------------------
-Source:        C:\Users\elima\OneDrive\Desktop\frontend\src\App.jsx (also on GitHub)
+Source:        ~/Desktop/Stock-predictor/frontend/src/App.jsx (also on GitHub)
 Compiled dist: /home/elimaoz99/stock_predictor/frontend/dist/
 
-4 tabs:
+7 tabs:
   1. Single stock prediction
-  2. Market scanner with MacroPulse strip at top
+  2. Market scanner with MacroPulse strip at top + ALMOST BUY section (see below)
   3. Daily Telegram report (rendered as markdown via react-markdown)
   4. FRED macro dashboard (11 indicators with sparklines)
+  5. Macro score (bull_score gauge)
+  6. Leumi Options — employee stock options simulator (see below)
+  7. Volume Leaders — most active US stocks by volume + ML signal
 
-Google Analytics: Tag G-5KHC440K09 added to frontend\index.html (May 1 2026).
+Google Analytics: Tag G-5KHC440K09 added to frontend/index.html (May 1 2026).
   gtag script is in the <head> of index.html — do NOT remove it on future builds.
 
-Deploy frontend changes (from Desktop\frontend\):
+Deploy frontend changes (from ~/Desktop/Stock-predictor/frontend/):
   npm run build
-  scp -r -i "C:\Users\elima\.ssh\gcp_stock_rsa" "C:\Users\elima\OneDrive\Desktop\frontend\dist" \
+  scp -r -i ~/.ssh/gcp_stock_rsa dist/ \
     elimaoz99@35.239.74.178:/home/elimaoz99/stock_predictor/
-  cp /home/elimaoz99/stock_predictor/dist/index.html \
-    /home/elimaoz99/stock_predictor/frontend/dist/index.html
-  sudo systemctl restart stock-app.service
+  # copy FULL dist folder — not just index.html (Vite hashes filenames each build):
+  ssh -i ~/.ssh/gcp_stock_rsa elimaoz99@35.239.74.178 \
+    "cp -r /home/elimaoz99/stock_predictor/dist/. /home/elimaoz99/stock_predictor/frontend/dist/"
+  ssh -i ~/.ssh/gcp_stock_rsa elimaoz99@35.239.74.178 "sudo systemctl restart stock-app.service"
 
 NOTE: Two dist folders exist on server:
   /home/elimaoz99/stock_predictor/dist/          — uploaded via scp
   /home/elimaoz99/stock_predictor/frontend/dist/ — ACTIVE (served by FastAPI)
-  Always cp index.html from dist/ to frontend/dist/ after uploading.
+  Always cp -r the full dist/ to frontend/dist/ after uploading (not just index.html).
 
 Frontend uses RELATIVE URLs for API calls (fetch('/api/...')).
 NEVER hardcode http://localhost:8000.
+Predict fetch uses { cache: 'no-store' } to bypass browser HTTP cache (added May 2 2026).
 
 UI rules:
   - Tailwind dark theme
@@ -126,25 +131,31 @@ FRED MACRO DASHBOARD
 --------------------
 /api/macro-dashboard fetches 11 FRED series in parallel via ThreadPoolExecutor(max_workers=6).
 
-FRED API call format:
-  https://api.stlouisfed.org/fred/series/observations
-    ?series_id=CPIAUCSL&frequency=m&aggregation_method=eop&limit=26&sort_order=desc
-    &api_key=<FRED_API_KEY>&file_type=json
+FRED API call format (FIXED May 4 2026 — do not revert):
+  Monthly series (most indicators):
+    ?series_id=CPIAUCSL&limit=26&sort_order=desc&api_key=<KEY>&file_type=json
+    (NO frequency or aggregation_method — adding them causes HTTP 500 on FRED)
+
+  Daily series only (DGS10, DGS2 — marked "daily": True in FRED_INDICATOR_META):
+    ?series_id=DGS10&frequency=m&aggregation_method=avg&limit=26&sort_order=desc&api_key=<KEY>&file_type=json
+
+  _fred_obs(series_id, limit, daily=False) — daily flag controls which format is used.
+  NEVER use aggregation_method=eop — FRED returns 500 for it on CPILFESL, FEDFUNDS, UMCSENT, CFNAI.
 
 Uses urllib.request (stdlib only) — no external library needed.
 
 11 indicators:
-  CPI        CPIAUCSL   %    yoy    good=down
-  CORE_CPI   CPILFESL   %    yoy    good=down
-  PCE        PCEPI      %    yoy    good=down
-  UNRATE     UNRATE     %    raw    good=down
-  PAYROLLS   PAYEMS     K    mom    good=up
-  10Y        DGS10      %    raw    good=neutral
-  2Y         DGS2       %    raw    good=neutral
-  M2         M2SL       %    yoy    good=neutral
-  FED_FUNDS  FEDFUNDS   %    raw    good=neutral
-  CFNAI      CFNAI      idx  raw    good=up
-  SENTIMENT  UMCSENT    idx  raw    good=up
+  CPI        CPIAUCSL   %    yoy    good=down    monthly (no freq override)
+  CORE_CPI   CPILFESL   %    yoy    good=down    monthly (no freq override)
+  PCE        PCEPI      %    yoy    good=down    monthly (no freq override)
+  UNRATE     UNRATE     %    raw    good=down    monthly (no freq override)
+  PAYROLLS   PAYEMS     K    mom    good=up      monthly (no freq override)
+  10Y        DGS10      %    raw    good=neutral  DAILY → daily=True, freq=m,avg
+  2Y         DGS2       %    raw    good=neutral  DAILY → daily=True, freq=m,avg
+  M2         M2SL       %    yoy    good=neutral  monthly (no freq override)
+  FED_FUNDS  FEDFUNDS   %    raw    good=neutral  monthly (no freq override)
+  CFNAI      CFNAI      idx  raw    good=up      monthly (no freq override)
+  SENTIMENT  UMCSENT    idx  raw    good=up      monthly (no freq override)
 
 Cache gotcha: Results cached in-memory for 6h. If a restart happens mid-request,
 None values can get cached. Fix: restart service again. Second restart always gets clean data.
@@ -152,30 +163,65 @@ None values can get cached. Fix: restart service again. Second restart always ge
 
 GIT WORKFLOW
 ------------
-cd /c/Users/elima/OneDrive/Desktop
+cd ~/Desktop/Stock-predictor
 git add <files>
 git commit -m "message"
 git push
 
-The Desktop folder IS the git repo (branch: main).
+~/Desktop/Stock-predictor IS the git repo (branch: main).
 After changes, git push keeps GitHub in sync, but the running server needs
 files scp'd manually AND a service restart.
 
 
 IN-MEMORY CACHES (reset on service restart)
 --------------------------------------------
-  _macro_cache       1h    /api/macro
-  _macro_dash_cache  6h    /api/macro-dashboard
+api.py caches:
+  _macro_cache         1h    /api/macro endpoint
+  _macro_dash_cache    6h    /api/macro-dashboard endpoint
+  _macro_score_cache   2h    /api/macro-score endpoint
+
+core_logic.py caches (cachetools TTLCache — also reset on restart):
+  fetch_stock_data()         15min  per-ticker OHLCV (TTLCache maxsize=100, ttl=900)
+  fetch_options_features()   15min  per-ticker options chain
+  fetch_macro_timeseries()   1h     FRED macro series (dgs10, t10y2y, vix)
+  load_sp500()               15min  ticker list from Wikipedia  (@cached(_sp500_cache))
+  load_nasdaq100()           15min  ticker list from Wikipedia  (@cached(_nasdaq_cache))
+
+CRITICAL: load_sp500 and load_nasdaq100 MUST use SEPARATE TTLCache instances (_sp500_cache,
+_nasdaq_cache). cachetools @cached uses function args as cache key — NOT function identity.
+Both functions take no args → key=(). If they share a cache object, whichever runs first
+(sp500) poisons the other's result. Bug was live until May 5 2026 — pre_scan was scanning
+SP500 stocks for both markets, producing identical Telegram reports.
 
 Scanner results cache IS persistent (SQLite scanner_cache.db).
-No Redis — a restart clears the in-memory caches.
+No Redis — a service restart clears ALL in-memory caches.
 
 
 PRE-SCAN CRON (05:00 daily)
 ----------------------------
 Script: /home/elimaoz99/stock_predictor/pre_scan.py
 Scans sp500, nasdaq100, tase — stores results in SQLite for instant scanner results.
-Log: cat /home/elimaoz99/stock_predictor/pre_scan.log
+Log: tail /home/elimaoz99/stock_predictor/pre_scan.log
+
+Cron entry (updated May 1 2026):
+  0 5 * * * cd /home/elimaoz99/stock_predictor && venv/bin/python3 -u pre_scan.py >> pre_scan.log 2>&1
+  (-u = unbuffered, so output appears in log in real-time)
+
+IMPORTANT: pre_scan.py loads api_data.env at startup (first few lines).
+Without this, FRED_API_KEY is empty in cron environment → dgs10/t10y2y all NaN
+→ dropna removes all rows → shape=(0,20) error → 0 results for all markets.
+
+On completion, pre_scan.py sends a Telegram alert:
+  ✅ success: "[Stock Predictor] ✅ סריקה הושלמה בהצלחה\n  ✅ SP500: N סיגנלים (BUY:x SELL:y)\n  ..."
+  ⚠️ failure: "[Stock Predictor] ⚠️ סריקה הושלמה עם כשלים\n  ❌ SP500: שגיאה — ...\n  ..."
+
+Debug scripts on server:
+  venv/bin/python3 debug_fred.py        — tests FRED fetch + builds features for AAPL
+  venv/bin/python3 check_scan_results.py — shows current DB results per market
+
+Run pre_scan manually:
+  ssh -i ~/.ssh/gcp_stock_rsa elimaoz99@35.239.74.178 \
+    "cd /home/elimaoz99/stock_predictor && nohup venv/bin/python3 -u pre_scan.py >> pre_scan.log 2>&1 &"
 
 
 DAILY TELEGRAM REPORT PIPELINE
@@ -192,7 +238,18 @@ Cron schedule (two runs per day):
   17:50  fetch_clal_48h.py
   17:55  generate_report.py      — saves stock_recommendations_DD_MM_YYYY_Evening.txt
 
-generate_report.py uses model: claude-haiku-4-5-20251001
+generate_report.py uses model: claude-sonnet-4-6  (upgraded from Haiku — May 5 2026)
+
+Prompt style rules (added May 5 2026 — do NOT revert):
+  - Persona: "כתב TheMarker" (not generic analyst)
+  - Forbidden phrases: "מצד אחד... מצד שני", "תופעה המעידה", "יום המאופיין",
+    "ביטחון יחסי", "אמירה חיובית", "צמיחה מרשימה", "רקע מורכב"
+  - Numbers rule: "+3.2%" not "עלייה חדה"
+  - Max 20 words per sentence
+  - Section headings locked: "אותות חיוביים" / "אותות שליליים" / "שורה תחתונה"
+    (previously "אמירה חיובית חזקה" / "תמצית מנהלים" — caused AI-sounding output)
+
+Same anti-AI rules also applied to local fetch_daily_report.py (May 5 2026).
 
 Output files saved to /home/elimaoz99/stock_predictor/ (same dir as api.py).
 /api/recommendations reads all stock_recommendations_*.txt files from that directory.
@@ -205,36 +262,97 @@ To re-run pipeline manually (on server):
   venv/bin/python3 generate_report.py
 
 IMPORTANT: fetch_daily_report.py does NOT exist on the server.
-It is a LOCAL Windows script at C:\Users\elima\.gemini\antigravity\scratch\fetch_daily_report.py
+It is a LOCAL Mac script at ~/Desktop/Stock-predictor/fetch_daily_report.py
 The server uses generate_report.py for production report generation.
 
-Local Windows scripts (C:\Users\elima\.gemini\antigravity\scratch\):
-  fetch_daily_report.py  — standalone, saves to Desktop, model: claude-sonnet-4-6
+Local Mac scripts (~/Desktop/Stock-predictor/):
+  fetch_daily_report.py  — standalone, saves to ~/Desktop/daily_reports/, model: claude-sonnet-4-6
                            includes Telegram error alerts + SCP auto-upload to server
-  fetch_today_doc.py     — Google Doc format output
-  merge_clal.py          — merges report with Clal CSV
+                           anti-AI style rules applied May 5 2026 (same as generate_report.py)
+  backtest_month.py      — backtests ML model over 3 historical windows
 
-Telegram credentials (local .env at Desktop):
+Telegram credentials (.env at ~/Desktop/Stock-predictor/.env and ~/Desktop/daily_reports/.env):
   TG_API_ID, TG_API_HASH, TG_PHONE, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
-Telegram session file: C:\Users\elima\tg_session\session_v3
-Telegram sources: capitalflow_co_il, claltelegram
+Telegram session file: ~/tg_session/session_v3.session
+Telegram sources: capitalflow_co_il, claltelegram, altshuler_shaham
 
 
 SECURITY RULES (enforced — do not revert)
 ------------------------------------------
 - No CORS — frontend is co-hosted, same origin
 - Scanner is read-only — no edit inputs, no save endpoint
-- /api/scan rate limited — force_refresh once per 5 min per IP (HTTP 429)
 - Ticker validated by regex ^[A-Z0-9.\-]{1,15}$
 - Error messages generic — never expose exception details to client
 
+SECURITY HARDENING (applied May 4 2026 — do NOT revert)
+---------------------------------------------------------
+Six vulnerabilities were found and fixed. If deploying from an older api.py or models.py,
+re-apply all of these.
 
-KEYS (local .env at C:\Users\elima\OneDrive\Desktop\.env)
------------------------------------------------------------
+models.py:
+  - market_id whitelist: only "us", "tase", "sp500", "nasdaq100" accepted (field_validator).
+    Anything else → HTTP 422 before hitting DB or spawning a thread.
+  - top_n clamped: ge=1, le=50. Was unbounded — attacker could request 1,000,000 results.
+  - min_confidence clamped: ge=0.0, le=1.0. Was unclamped — negative value bypassed filters.
+  - task_id format enforced: alphanumeric/dash/underscore, max 64 chars (_TASK_ID_RE).
+
+api.py:
+  - Rate limit now guards ALL scan starts (not just force_refresh=True).
+    Old bug: cold-cache + force_refresh=False had zero rate limiting → unlimited thread spawn.
+    Fix: rate limit check moved to run before any background scan, regardless of force_refresh.
+  - Concurrent scan cap: _SCAN_SEMAPHORE = threading.Semaphore(3).
+    Max 3 simultaneous full market scans. 4th gets "Server busy" error, semaphore released in finally.
+  - GLOBAL_PROGRESS memory leak fixed: entries now popped from dict when results are consumed
+    in get_scan_progress(). Previously grew forever under sustained use.
+  - _scan_rate_limit memory leak fixed: entries older than SCAN_COOLDOWN * 2 pruned on each
+    scan request. Previously grew with every unique IP that ever hit the endpoint.
+  - task_id probe attack fixed: GET /api/scan/progress/{task_id} now validates format with
+    TASK_ID_RE before any dict lookup. Returns HTTP 400 on invalid format.
+  - Removed duplicate `import threading` from inside scan_market() — already imported at module level.
+
+
+KEYS (local .env at ~/Desktop/Stock-predictor/.env and ~/Desktop/daily_reports/.env)
+--------------------------------------------------------------------------------------
   FRED_API_KEY       FRED macroeconomic data
   GEMINI_KEY         report generation
   ANTHROPIC_API_KEY  Claude API
   TG_API_ID / TG_API_HASH / TG_PHONE   Telegram scraping
+  TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID  Telegram bot alerts
+
+
+ALMOST BUY FEATURE (added May 2 2026)
+---------------------------------------
+Stocks that ML predicted BUY but options filter penalized below CONFIDENCE_THRESHOLD
+appear in a separate amber section in the scanner tab — NOT in the main BUY table.
+
+Fields returned per almost_buy record:
+  confidence          post-penalty score (< 0.70)
+  original_confidence pre-penalty ML score (what it was before options multiplier)
+  almost_buy          True
+  options_filtered    True
+  options_context     raw options signals (pc_ratio, iv_skew, etc.)
+
+Frontend: amber "⚠️ ALMOST BUY (N)" tab in ScannerView.
+  - Shows ML→Conf range (original → penalized), PC Ratio column
+  - "סרוק פרטנית →" button: navigates to predict tab, auto-runs individual prediction
+  - Individual scan retrains on that stock fresh → often crosses threshold → promoted to BUY
+
+Backend change in _apply_options_filter():
+  Old: return None  ← stock disappeared entirely
+  New: return {**result, "almost_buy": True, "original_confidence": ..., ...}
+
+api.py filter (both cache path and fresh scan path):
+  [r for r in results if r['confidence'] >= req.min_confidence or r.get('almost_buy')]
+
+
+OPTIONS LIQUIDITY FIX (May 2 2026)
+-------------------------------------
+fetch_options_features() previously used ATM-only OI (3 strikes) as liquidity check.
+Large-cap stocks concentrate put OI far OTM (portfolio hedges) → ATM OI < 100 → null options.
+
+Fix: liquidity check now uses TOTAL put/call OI ≥ 200 per side (not ATM-only).
+PC ratio: volume-based (≥50 contracts per strike), falls back to OI if volume too low.
+This affects ALL stocks, not just WDC.
 
 
 COMMON FAILURE MODES & FIXES
@@ -259,19 +377,75 @@ Symptom: Wrong file edited
 Cause:   Edited stock_app/ instead of stock_predictor/
 Fix:     Always verify path before editing
 
+Symptom: All markets return 0 scan results, every stock fails with shape=(0, 20)
+Cause A: FRED_API_KEY not loaded (cron has clean env — pre_scan.py must load api_data.env)
+         Verify: check first lines of pre_scan.py load api_data.env
+Cause B: FRED API returned HTTP 500 (happens occasionally)
+         Fix: core_logic.py fetch_macro_timeseries() has 3-tier fallback:
+              1. FRED API direct
+              2. DGS10-DGS2 spread (if only T10Y2Y fails)
+              3. yfinance ^TNX / ^IRX (if FRED entirely down)
+         Verify: run debug_fred.py on server
 
-ML MODEL STATE (as of 2026-04-27)
+Symptom: Scanner results unchanged for days
+Cause:   pre_scan.py silent failure — check pre_scan.log tail
+Fix:     Check last "Pre-scan complete." timestamp; Telegram alert should arrive daily at ~05:05
+
+Symptom: Options data null / pc_ratio missing for a large-cap stock
+Cause A: Old bug (pre May 2 2026) — ATM-only OI check too strict; already fixed
+Cause B: Stock genuinely has < 200 total OI per side → truly illiquid options
+Fix:     Check Yahoo Finance options chain; if liquid, check fetch_options_features() liquidity threshold
+
+Symptom: NASDAQ100 pre_scan shows same signal count as SP500 (e.g. 483 vs 483)
+Cause:   load_sp500() and load_nasdaq100() shared same TTLCache object — cache key collision on ()
+Fix:     Ensure each function uses its own TTLCache: _sp500_cache, _nasdaq_cache (fixed May 5 2026)
+         If this reappears after deploying old core_logic.py, re-apply the separate cache instances.
+
+Symptom: BUY signal dropped from scanner but appears in individual predict
+Cause:   Options filter penalized confidence below 0.70 in batch scan.
+         Individual predict retrains fresh → slightly different confidence → may cross threshold.
+Fix:     Use ALMOST BUY tab in scanner → click "סרוק פרטנית" to confirm via detail scan
+
+Symptom: FRED dashboard shows None for CORE_CPI, FED_FUNDS, CFNAI, M2, or SENTIMENT
+Cause:   _fred_obs() was using aggregation_method=eop — FRED returns HTTP 500 for this on monthly series.
+         If deploying from an old api.py (pre May 4 2026), this bug will reappear.
+Fix:     Ensure _fred_obs() only uses frequency=m&aggregation_method=avg for DGS10/DGS2 (daily=True).
+         All other series must NOT pass frequency or aggregation_method. See FRED MACRO DASHBOARD section.
+
+Symptom: Same ticker returns different signal on two consecutive calls (e.g. BUY 79% then HOLD 53%)
+Cause:   FRED data availability — t10y2y is a top-5 feature. With FRED available: real values.
+         With FRED down (fallback ^TNX-^IRX): different t10y2y → signal can flip entirely.
+         Also: core_logic.py caches fetch_stock_data 15min — a fresh Python process gets new data
+         while the running API serves the cached result.
+Fix:     Run debug_fred.py on server to check FRED status.
+         API result is authoritative (uses cached FRED from last successful fetch).
+
+Symptom: Frontend JS/CSS 404 after deploy
+Cause:   Only index.html was copied to frontend/dist/ — Vite hashes asset filenames each build.
+Fix:     Always cp -r the full dist/ to frontend/dist/ (broke site May 10 2026).
+
+
+ML MODEL STATE (as of 2026-05-12)
 -----------------------------------
-File: core_logic.py (local: Desktop, server: /home/elimaoz99/stock_predictor/)
+File: core_logic.py (local: ~/Desktop/Stock-predictor/, server: /home/elimaoz99/stock_predictor/)
+Backup on server: core_logic.py.bak (pre-May-2 options fix)
+
+LONG-ONLY EXPERT (applied May 12 2026):
+  - CONFIDENCE_THRESHOLD raised 0.65 → 0.70 (OOS backtest: 49.4% precision / +2.96% avg ret at 0.70)
+  - SELL signal suppressed: get_prediction() and run_market_scan() convert SELL→HOLD before return
+  - Model still trains on 3 classes (BUY/SELL/HOLD) — suppression is output-only, not label change
+  - Binary BUY/NOTBUY was tested and REJECTED (precision dropped to 40.8% — 3-class is better calibrated)
+  - Do NOT re-enable SELL output. Do NOT revert threshold to 0.65. Do NOT change to binary labels.
+  - _compute_verdict() in api.py also updated: thresholds 0.65/0.70 (high-vol/normal), SELL→HOLD
 
 Config:
   PERIOD             = "5y"
   FORWARD_DAYS       = 10
-  THRESHOLD          = 0.03   (3% move = BUY or SELL label)
-  CONFIDENCE_THRESHOLD = 0.65
+  THRESHOLD          = 0.03   (3% move = BUY label)
+  CONFIDENCE_THRESHOLD = 0.70
   MIN_PRECISION      = 0.52
 
-FEATURES (17 total, order matters — indices used in INTERACTION_GROUPS):
+FEATURES (20 total — 17 technical/macro + 3 options; order matters):
   0  ema9          short-term EMA
   1  ema21         crossover signal
   2  ema50         institutional trend
@@ -287,8 +461,14 @@ FEATURES (17 total, order matters — indices used in INTERACTION_GROUPS):
   12 low52w_dist   (Close - 52w_low) / 52w_low  ← bounce detector (added Apr 27)
   13 atr_pct       ATR(14) / Close — volatility regime
   14 vix           CBOE VIX (from yfinance ^VIX)
-  15 dgs10         10Y Treasury yield (FRED DGS10)
-  16 t10y2y        Yield curve 10Y-2Y (FRED T10Y2Y)
+  15 dgs10         10Y Treasury yield (FRED DGS10, fallback: yfinance ^TNX)
+  16 t10y2y        Yield curve 10Y-2Y (FRED T10Y2Y, fallback: DGS10-DGS2 or ^TNX-^IRX)
+  17 pc_ratio      Put/Call ratio — volume-based (≥50 contracts/strike), OI fallback (added May 2)
+  18 iv_skew       IV skew (put IV - call IV near ATM) (added May 2)
+  19 [3rd options feature — check core_logic.py fetch_options_features() return dict]
+
+NOTE: Handoff previously documented 17 features but production has 20.
+Always check core_logic.py directly for the authoritative feature list.
 
 INTERACTION_GROUPS (6 groups — passed as interaction_cst to HistGBT):
   [0,1,2,3,11,12]      trend + distance features
@@ -352,15 +532,54 @@ The server directory is NOT a git repo. Deploy via curl, not git pull:
 
   sudo systemctl restart stock-app.service
 
-SSH does not work with direct IP — server uses GCP IAP tunnel.
-Connect via: gcloud compute ssh instance-20260417-083125 --zone=<zone>
-Or: user must be already SSHed in; Claude cannot initiate the connection.
+SSH works fine with direct IP (35.239.74.178) using the gcp_stock_rsa key.
+Claude can initiate SSH connections in non-interactive mode (confirmed May 2 2026).
+
+
+LEUMI OPTIONS TAB (added May 3 2026)
+--------------------------------------
+Tab 6: "אופציות לאומי" — Bank Leumi employee stock options simulator (IBI Capital plan).
+
+Plan structure:
+  Annual bonus → 80% salary raise + 20% employee buys Series 1 options
+  Bank matches 20% employer contribution → Series 2a + Series 2b (split evenly)
+  Series 1:  employee-funded, immediately vested
+  Series 2a: employer-funded, 1yr vest
+  Series 2b: employer-funded, 2yr vest
+  Exercise: cashless (מימוש נטו) — shares = options × (price − strike) / price
+
+UI inputs:
+  מענק שנתי (₪)          — annual bonus amount
+  מחיר מימוש (₪)         — strike price (default: 75 ₪ ≈ LUMI.TA current price)
+  שווי אופציה — סדרה 1   — Black-Scholes value per option (default: 18 ₪)
+  שווי אופציה — סדרה 2   — Black-Scholes value per option (default: 20 ₪)
+  מחיר מניה נוכחי (₪)    — current/future stock price
+  משכורת שנתית (₪)       — annual salary for marginal tax bracket calculation (default: 240,000)
+
+Tax calculation:
+  Uses Israeli income tax brackets (IL_BRACKETS in App.jsx) — NOT a flat rate.
+  Brackets: 10% / 14% / 20% / 31% / 35% / 47% (2025 rates).
+  Tax on options profit = calcIncomeTax(salary + profit) − calcIncomeTax(salary)
+  This gives the MARGINAL tax on the option income only.
+  Tax type: הכנסת עבודה (employment income), NOT capital gains (25%).
+  The IBI plan is income-track — marginal rates apply at exercise.
+
+Black-Scholes reference values (LUMI.TA, May 2026):
+  Stock price: ~75 ₪ (LUMI.TA on TASE, quoted in agorot ÷ 100)
+  σ ≈ 38%, r = 4.5%, q = 3.5% (dividend yield)
+  Series 1 (T=3yr): ~18 ₪  ← default in simulator
+  Series 2a (T=4yr): ~20 ₪ ← default in simulator
+  Series 2b (T=5yr): ~22 ₪ (note: simulator uses 20 ₪ for both series 2 tranches)
+
+Display: 3 stat cards (ברוטו / מס שולי / אחרי מס) + sensitivity table by price scenario.
+Components: LeumiOptionsView, OptionsInput, OptionsStat + calcIncomeTax() + IL_BRACKETS[]
+  all defined at end of App.jsx.
 
 
 BACKTEST SCRIPT
 ---------------
-File: C:\Users\elima\OneDrive\Desktop\backtest_month.py
-Run:  py backtest_month.py
+File: ~/Desktop/Stock-predictor/backtest_month.py
+Run:  python3 backtest_month.py  (from ~/Desktop/Stock-predictor/)
 
 3 test periods:
   May 2025 (calm bull):   train up to 2025-05-30, check 2025-06-16
@@ -376,3 +595,157 @@ Last backtest results (2026-04-27, with low52w_dist feature):
 
 Script mirrors core_logic.py exactly (same FEATURES, INTERACTION_GROUPS,
 MIN_PRECISION, chaos filter). Keep them in sync when updating the model.
+
+
+WALK-FORWARD OOS BACKTEST (May 12 2026)
+-----------------------------------------
+File: ~/Desktop/Stock-predictor/swing_backtest.py
+Run:  python3 swing_backtest.py  (from ~/Desktop/Stock-predictor/)
+
+Method: expanding window, 25 stocks, 4 OOS quarters (TRAIN_MIN_DAYS=252, STEP_DAYS=63).
+Imports core_logic directly — always reflects production model state.
+
+Key findings (May 12 2026):
+  3-class BUY >= 0.70: 344 signals, 49.4% precision, +2.96% avg fwd ret  ← current production
+  3-class BUY >= 0.65: 501 signals, 47.3% precision, +2.75% avg fwd ret  ← old production
+  Binary BUY >= 0.65:  306 signals, 40.8% precision, +2.35% avg fwd ret  ← REJECTED (tested, inferior)
+  SELL signal OOS:     +1.30% avg fwd ret (positive on "down" predictions) ← broken, suppressed
+
+Per-symbol edge (BUY signals, 3-class model):
+  Strong edge: CAT (59.6%), AMD (59.6%), BAC (53.8%), GS (52.4%), XOM (52%)
+  No edge:     CRM (22.5%), COST (25%), JPM (37.3%) — model fires too often with poor precision
+
+
+LIVE TRACKER (added May 12 2026)
+----------------------------------
+File: ~/Desktop/Stock-predictor/live_tracker.py
+DB:   ~/Desktop/Stock-predictor/tracker.db  (local SQLite — do NOT commit to git)
+
+Purpose: Validate Long-only Expert (>=0.70) live OOS performance.
+Pulls daily BUY signals from GCP scan API, resolves outcomes after 10 trading days via yfinance,
+sends Telegram digest with running precision and avg return.
+
+Usage:
+  python3 live_tracker.py --log              # after market close (16:30 ET+) — logs + resolves + Telegram
+  python3 live_tracker.py --report           # print current stats, no API call
+  python3 live_tracker.py --log --no-telegram
+
+Data flow:
+  1. POST /api/scan (market_id=sp500 + nasdaq100, min_confidence=0.70, force_refresh=False)
+  2. Filter signal == "BUY" (server already applies confidence filter)
+  3. Deduplicate by sym — same stock in both markets counted once
+  4. entry_price = last_price from scan result
+  5. exit_price  = yfinance close at np.busday_offset(date_logged, +10) days
+  6. hit = 1 if (exit_price / entry_price - 1) >= 0.03
+
+Telegram digest format:
+  New BUY signals (N): sym, conf%, entry price
+  Resolved today (N):  [+] sym +X.XX% / [-] sym -X.XX%
+  Validation (N signals resolved): Precision X.X%, Avg ret +X.XX%, Pending N
+
+Note: pre-scan cron (05:00) must have run before --log for cache to be fresh.
+First clean day with CONFIDENCE_THRESHOLD=0.70 in cache: 2026-05-13.
+
+
+VOLUME LEADERS TAB (added May 10 2026)
+----------------------------------------
+Tab 7: "Volume Leaders" — most active US stocks by volume, filtered by market cap,
+analyzed with ML signal + momentum indicators.
+
+Purpose:
+  High-volume stocks often signal momentum opportunities. This tab finds them daily,
+  filters noise (mkt cap < $200M), and layers the existing ML model on top.
+
+Backend endpoint: GET /api/volume-leaders?min_market_cap=200000000&force=false
+  File: api.py — function get_volume_leaders()
+  Cache: 30 min (_volume_leaders_cache). Pass ?force=true to bypass.
+
+Data pipeline:
+  1. Yahoo Finance unofficial screener API (query1.finance.yahoo.com) — top 50 most active
+  2. Filter: marketCap >= $200M → keeps up to 20 stocks
+  3. ML signal: query scanner_cache.db for today's sp500 + nasdaq100 pre-scan results
+     (2 queries total, dict lookup — no N+1 loop)
+  4. yfinance batch download (1mo daily) → RSI(14) + 5-day return per ticker
+  5. Volume ratio: regularMarketVolume / averageDailyVolume3Month (from screener data)
+
+Verdict logic (_compute_verdict in api.py):
+  OVEREXTENDED — price up ≥3% from open (anti-chasing guard)
+  VOL BREAKOUT — vol_ratio ≥ 3x + RSI < 65 (independent of ML)
+  BUY          — ML=BUY + conf ≥ 0.65 (if vol_ratio ≥ 2x) or ≥ 0.70 (normal)
+  HOLD         — everything else incl. ML=SELL (SELL suppressed — Long-only Expert)
+  WATCH        — RSI < 35 + vol_ratio ≥ 2x (momentum only, no ML)
+
+  NOTE: ML=SELL → HOLD (SELL suppressed since May 12 2026 — Long-only Expert)
+
+Response format (wrapped object — NOT a plain array):
+  { "results": [...], "fetched_at": "2026-05-10T18:32:00Z" }
+  Frontend uses json.results and json.fetched_at separately.
+
+Frontend component: VolumeLeadersView() at end of App.jsx
+  Table columns: Ticker | Name | Price | Mkt Cap | Volume | Vol/Avg | 5d Ret | RSI | ML Signal | Verdict
+  Vol/Avg highlight: ≥ 3x → orange bold + 🔥, ≥ 2x → yellow, < 2x → gray
+  Timestamp: shows server-side fetched_at (not client time) — yellow ⚠ warning if data is from previous day
+  Refresh button: calls ?force=true to bypass 30-min cache
+
+Known limitations:
+  - Yahoo Finance screener is an unofficial API — can break without notice
+  - ML signal is N/A for stocks outside S&P 500 / NASDAQ 100 (e.g. NOK, IREN, RKLB)
+  - Verdict for non-indexed stocks relies only on RSI + volume ratio
+  - Service MUST be restarted after deploy for endpoint to be available
+    (sudo systemctl restart stock-app.service)
+
+Deploy note (critical):
+  After every frontend build, copy FULL dist folder — not just index.html:
+    cp -r /home/elimaoz99/stock_predictor/dist/. /home/elimaoz99/stock_predictor/frontend/dist/
+  Vite generates new hashed filenames on each build. Copying only index.html
+  causes 404 on JS/CSS assets (broke the site on May 10 2026).
+
+
+VOLUME LEADERS — ON-DEMAND ML (added May 10 2026)
+---------------------------------------------------
+Enhancement to the Volume Leaders tab: stocks outside S&P 500 / NASDAQ 100
+(e.g. IREN, NOK, RKLB) now receive a live ML prediction instead of showing N/A.
+
+How it works:
+  After loading sp500_map + nasdaq_map from scanner_cache.db, collect uncached tickers.
+  Run core_logic.get_prediction(sym, light_mode=True) on all of them in parallel via
+  ThreadPoolExecutor(max_workers=5). One failure per stock is isolated — won't crash
+  the endpoint. Results merge into live_predictions dict.
+
+  In the per-stock loop:
+    ml = sp500_map.get(sym) or nasdaq_map.get(sym)
+    ml_live = False
+    if not ml and sym in live_predictions:
+        ml = live_predictions[sym]
+        ml_live = True
+
+  Result dict includes "ml_live": True/False.
+  "EXCLUDED" signal (chaos filter: ATR too high) is treated as N/A.
+
+  light_mode=True: matches the scanner (max_iter=100, faster, same accuracy).
+  ThreadPoolExecutor is already imported at top of api.py.
+
+Frontend:
+  ML Signal cell: shows ⚡ next to signal when ml_live=True.
+  ⚡ has title tooltip: "Signal computed live — stock is outside the regular
+  S&P 500 / NASDAQ 100 watchlist"
+  Bottom legend: "⚡ = signal computed live on-demand — stock is outside
+  the regular S&P 500 / NASDAQ 100 watchlist."
+
+Performance:
+  ~2-5 sec added to first load if uncached stocks exist.
+  30-min endpoint cache means this runs once per half-hour, not per user.
+
+
+MAC SETUP (completed May 11 2026)
+-----------------------------------
+Migrated from Windows to MacBook. All paths below are Mac equivalents.
+
+  SSH key:          ~/.ssh/gcp_stock_rsa  (chmod 600)
+  Git repo:         ~/Desktop/Stock-predictor/  (branch: main)
+  .env (API keys):  ~/Desktop/Stock-predictor/.env
+                    ~/Desktop/daily_reports/.env  (used by fetch_daily_report.py)
+  Telegram session: ~/tg_session/session_v3.session
+  Daily reports:    ~/Desktop/daily_reports/stock_recommendations_*.txt
+
+fetch_daily_report.py was updated: all hardcoded Windows paths replaced with Path.home()-based paths.
