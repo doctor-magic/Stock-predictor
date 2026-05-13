@@ -581,7 +581,13 @@ def get_volume_leaders(min_market_cap: int = 200_000_000, force: bool = False):
             return _volume_leaders_cache["data"]  # serve stale cache rather than failing
         raise HTTPException(status_code=502, detail=f"Failed to fetch volume leaders: {e}")
 
-    filtered = [q for q in quotes if q.get("marketCap", 0) >= min_market_cap][:20]
+    _24h_ago = now - 86400
+    filtered = [
+        q for q in quotes
+        if q.get("marketCap", 0) >= min_market_cap
+        and q.get("regularMarketVolume", 0) > 0
+        and (q.get("regularMarketTime") or 0) >= _24h_ago
+    ][:20]
     if not filtered:
         return _volume_leaders_cache["data"] or []
 

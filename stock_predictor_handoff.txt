@@ -415,6 +415,14 @@ Cause:   load_sp500() and load_nasdaq100() shared same TTLCache object — cache
 Fix:     Ensure each function uses its own TTLCache: _sp500_cache, _nasdaq_cache (fixed May 5 2026)
          If this reappears after deploying old core_logic.py, re-apply the separate cache instances.
 
+Symptom: Delisted or merged stock appears in Volume Leaders
+Cause:   Yahoo Finance screener returns stale entries for stocks that have been delisted or merged.
+         The stock shows historical volume (non-zero) but regularMarketTime is days/weeks old.
+         Example: CTRA after Devon Energy merger completed May 7 2026 — still returned by screener
+         with 73M volume but last trade was May 6 2026.
+Fix:     Filter in get_volume_leaders(): regularMarketVolume > 0 AND regularMarketTime >= now-86400.
+         Both checks applied together catch stale entries (fixed May 13 2026).
+
 Symptom: BUY signal dropped from scanner but appears in individual predict
 Cause:   Options filter penalized confidence below 0.70 in batch scan.
          Individual predict retrains fresh → slightly different confidence → may cross threshold.
@@ -697,7 +705,11 @@ Backend endpoint: GET /api/volume-leaders?min_market_cap=200000000&force=false
 
 Data pipeline:
   1. Yahoo Finance unofficial screener API (query1.finance.yahoo.com) — top 50 most active
-  2. Filter: marketCap >= $200M → keeps up to 20 stocks
+  2. Filter: marketCap >= $200M + regularMarketVolume > 0 + regularMarketTime within last 24h
+     → keeps up to 20 stocks
+     NOTE: Yahoo Finance sometimes returns stale entries for delisted/merged stocks (e.g. CTRA
+     after Devon Energy merger May 7 2026) with non-zero historical volume but last trade days
+     or weeks old. The regularMarketTime >= now-86400 filter catches these.
   3. ML signal: query scanner_cache.db for today's sp500 + nasdaq100 pre-scan results
      (2 queries total, dict lookup — no N+1 loop)
   4. yfinance batch download (1mo daily) → RSI(14) + 5-day return per ticker
