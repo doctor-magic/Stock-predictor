@@ -396,6 +396,20 @@ Cause A: Old bug (pre May 2 2026) — ATM-only OI check too strict; already fixe
 Cause B: Stock genuinely has < 200 total OI per side → truly illiquid options
 Fix:     Check Yahoo Finance options chain; if liquid, check fetch_options_features() liquidity threshold
 
+Symptom: Scanner returns 0 BUY results (or very few) even though market is up
+Cause A: SCAN_CONFIDENCE_THRESHOLD too high relative to light_mode calibration.
+         Light mode (100 iter) produces ~0.10 lower confidence than full mode (300 iter).
+         If threshold is 0.67, stocks that would score 0.70+ in full mode score ~0.57-0.60 in light.
+         Fix: SCAN_CONFIDENCE_THRESHOLD = 0.57 (set May 13 2026)
+Cause B: MIN_PRECISION_BUY too high during post-correction regime.
+         Test set (last 20% of 5y data) includes correction period → BUY precision scores
+         temporarily suppressed (0.30-0.36 instead of 0.48+) because many signals failed in decline.
+         Fix: lower MIN_PRECISION_BUY temporarily (0.30 as of May 13 2026); restore ~Nov 2026.
+Cause C: CMF filter blocking signals — broad money outflow after correction.
+         Fix: check df["cmf"].iloc[-1] for candidate stocks; if mostly negative, regime issue.
+Cause D: FRED macro features missing/NaN → model predictions degrade.
+         Fix: run debug_fred.py on server to verify macro join is healthy.
+
 Symptom: NASDAQ100 pre_scan shows same signal count as SP500 (e.g. 483 vs 483)
 Cause:   load_sp500() and load_nasdaq100() shared same TTLCache object — cache key collision on ()
 Fix:     Ensure each function uses its own TTLCache: _sp500_cache, _nasdaq_cache (fixed May 5 2026)
@@ -425,7 +439,7 @@ Cause:   Only index.html was copied to frontend/dist/ — Vite hashes asset file
 Fix:     Always cp -r the full dist/ to frontend/dist/ (broke site May 10 2026).
 
 
-ML MODEL STATE (as of 2026-05-12)
+ML MODEL STATE (as of 2026-05-13)
 -----------------------------------
 File: core_logic.py (local: ~/Desktop/Stock-predictor/, server: /home/elimaoz99/stock_predictor/)
 Backup on server: core_logic.py.bak (pre-May-2 options fix)
@@ -438,45 +452,62 @@ LONG-ONLY EXPERT (applied May 12 2026):
   - Do NOT re-enable SELL output. Do NOT revert threshold to 0.65. Do NOT change to binary labels.
   - _compute_verdict() in api.py also updated: thresholds 0.65/0.70 (high-vol/normal), SELL→HOLD
 
+SCANNER THRESHOLD FIX (applied May 13 2026):
+  - SCAN_CONFIDENCE_THRESHOLD lowered 0.67 → 0.57
+    Reason: light mode (100 iter) produces ~0.10 less confidence than full mode (300 iter).
+    The original 0.03 offset was insufficient. Confirmed empirically: NVDA light=0.58, full=0.69.
+    The 0.57 scanner threshold is equivalent to ~0.67 in full mode — the correct comparison level.
+    Do NOT raise back to 0.67 — it will produce 0 BUY results in normal market conditions.
+  - MIN_PRECISION_BUY lowered 0.48 → 0.30 (TEMPORARY — restore to 0.48 ~Nov 2026)
+    Reason: test set (last 20% of 5y = ~1 year) includes the April 2026 tariff-war correction.
+    The correction artificially suppresses BUY precision in the evaluation window
+    (many BUY signals that fired during the decline registered as failures).
+    When ~6 months of post-correction data accumulates, restore to 0.48.
+
 Config:
-  PERIOD             = "5y"
-  FORWARD_DAYS       = 10
-  THRESHOLD          = 0.03   (3% move = BUY label)
-  CONFIDENCE_THRESHOLD = 0.70
-  MIN_PRECISION      = 0.52
+  PERIOD                    = "5y"
+  FORWARD_DAYS              = 10
+  THRESHOLD                 = 0.03    (3% move = BUY label)
+  CONFIDENCE_THRESHOLD      = 0.70    (full predict, 300 iter)
+  SCAN_CONFIDENCE_THRESHOLD = 0.57    (scanner light_mode, 100 iter; ~0.10 below full mode)
+  MIN_PRECISION_BUY         = 0.30    (TEMP — restore to 0.48 ~Nov 2026 when correction exits test window)
+  MIN_PRECISION_SELL        = 0.52
+  MIN_PRECISION             = 0.52    (alias used by backtest scripts)
 
-FEATURES (20 total — 17 technical/macro + 3 options; order matters):
-  0  ema9          short-term EMA
-  1  ema21         crossover signal
-  2  ema50         institutional trend
-  3  ema_cross     ema9 > ema21 flag (0/1)
-  4  rsi           RSI(14)
-  5  macd_gap      MACD histogram
-  6  bb_pos        Bollinger Band position (0=lower, 1=upper)
-  7  vol_ratio     today volume / 20d avg
-  8  ret_3d_atr    3d return / ATR — cross-stock normalized
-  9  ret_5d_atr    5d return / ATR
-  10 ret_10d_atr   10d return / ATR
-  11 sma200_dist   (Close - SMA200) / SMA200
-  12 low52w_dist   (Close - 52w_low) / 52w_low  ← bounce detector (added Apr 27)
-  13 atr_pct       ATR(14) / Close — volatility regime
-  14 vix           CBOE VIX (from yfinance ^VIX)
-  15 dgs10         10Y Treasury yield (FRED DGS10, fallback: yfinance ^TNX)
-  16 t10y2y        Yield curve 10Y-2Y (FRED T10Y2Y, fallback: DGS10-DGS2 or ^TNX-^IRX)
-  17 pc_ratio      Put/Call ratio — volume-based (≥50 contracts/strike), OI fallback (added May 2)
-  18 iv_skew       IV skew (put IV - call IV near ATM) (added May 2)
-  19 [3rd options feature — check core_logic.py fetch_options_features() return dict]
+FEATURES (20 total — technical + macro + relative strength; order matters):
+  0  ema9              short-term EMA
+  1  ema21             crossover signal
+  2  ema50             institutional trend
+  3  ema_cross         ema9 > ema21 flag (0/1)
+  4  rsi               RSI(14)
+  5  macd_gap          MACD histogram
+  6  bb_pos            Bollinger Band position (0=lower, 1=upper)
+  7  vol_ratio         today volume / 20d avg
+  8  ret_3d_atr        3d return / ATR(14) — cross-stock normalized
+  9  ret_5d_atr        5d return / ATR
+  10 ret_10d_atr       10d return / ATR
+  11 sma200_dist       (Close - SMA200) / SMA200
+  12 low52w_dist       (Close - 52w_low) / 52w_low  ← bounce detector (added Apr 27)
+  13 atr_pct           ATR(14) / Close — volatility regime
+  14 vix               CBOE VIX (from yfinance ^VIX)
+  15 dgs10             10Y Treasury yield (FRED DGS10, fallback: yfinance ^TNX)
+  16 t10y2y            Yield curve 10Y-2Y (FRED T10Y2Y, fallback: DGS10-DGS2 or ^TNX-^IRX)
+  17 rel_strength_spy  5d return minus SPY 5d return
+  18 cmf               Chaikin Money Flow (20-period) — money flow direction
+  19 rel_strength_sector  5d return minus own sector ETF 5d return
 
-NOTE: Handoff previously documented 17 features but production has 20.
-Always check core_logic.py directly for the authoritative feature list.
+NOTE: Options features (pc_ratio, iv_skew, volume_shock) are used as a POST-PREDICTION
+filter (in _apply_options_filter / get_prediction), NOT as model input features.
+OPTION_FEATURES = {"pc_ratio", "iv_skew", "volume_shock"} is a separate set in core_logic.py.
 
-INTERACTION_GROUPS (6 groups — passed as interaction_cst to HistGBT):
-  [0,1,2,3,11,12]      trend + distance features
-  [4,5,6]              momentum
-  [7,8,9,10,13]        returns + volume + ATR
-  [4,5,6,14,15,16]     momentum × macro
-  [8,9,10,13,14,15,16] returns_atr × macro
-  [4,6,12]             RSI + bb_pos + low52w_dist  ← oversold bounce detector (added Apr 27)
+INTERACTION_GROUPS (7 groups — passed as interaction_cst to HistGBT):
+  [0,1,2,3,11,12,17,19]        trend + distance + relative strengths (SPY + sector)
+  [4,5,6,18]                   momentum + CMF
+  [7,8,9,10,13,18]             returns + volume + ATR + CMF
+  [4,5,6,14,15,16]             momentum × macro
+  [8,9,10,13,14,15,16,17,19]   returns_atr × macro + relative strengths
+  [4,6,12]                     RSI + bb_pos + low52w_dist  ← oversold bounce detector (added Apr 27)
+  [4,17,19]                    momentum + sector vs market divergence
 
 Classifier: HistGradientBoostingClassifier
   max_iter=300 (full), 100 (scanner light_mode)
@@ -493,12 +524,16 @@ Precision reporting:
 CHAOS FILTER (meme/high-vol stock exclusion)
 ---------------------------------------------
 Applied in both _train_single() (scanner) and get_prediction() (single lookup).
-Rule: avg ATR over last 30 trading days > 7% → skip
+Rule: avg ATR over last 30 trading days > chaos_threshold → skip
+  chaos_threshold is VIX-based (dynamic):
+    VIX < 15  → 5%
+    VIX < 25  → 7%
+    VIX >= 25 → 10%   (high-vol regime: legitimate stocks spike ATR; looser threshold needed)
   - Scanner: silently returns None
   - Single lookup: returns signal="EXCLUDED" with excluded_reason field
 Rationale: 10-day swing model is structurally wrong fit for meme stocks (HOOD, GME, etc.)
-Prior threshold was 5% — raised to 7% on Apr 27 because post-Black Swan ATR spiked
-across legitimate stocks too.
+The dynamic threshold was added because during corrections (VIX>25), many legitimate stocks
+temporarily exceed 7% ATR and would be excluded incorrectly without regime-aware thresholding.
 
 
 MACRO PREDICTED PAGE (5th tab)
