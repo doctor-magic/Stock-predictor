@@ -1,5 +1,70 @@
 # Stock Predictor Pro — CLAUDE.md
 
+## Quick Reference
+```bash
+# Restart service
+ssh -i ~/.ssh/gcp_stock_rsa elimaoz99@35.239.74.178 "sudo systemctl restart stock-app.service"
+
+# Deploy backend
+scp -i ~/.ssh/gcp_stock_rsa ~/Desktop/Stock-predictor/api.py elimaoz99@35.239.74.178:/home/elimaoz99/stock_predictor/api.py && ssh -i ~/.ssh/gcp_stock_rsa elimaoz99@35.239.74.178 "sudo systemctl restart stock-app.service && sleep 3 && systemctl is-active stock-app.service"
+
+# Check logs (live)
+ssh -i ~/.ssh/gcp_stock_rsa elimaoz99@35.239.74.178 "sudo journalctl -u stock-app.service -f"
+
+# Force fresh scan
+GET /api/volume-leaders?force=true   # or reversion-leaders / gainers
+
+# Run pre_scan manually (server)
+cd /home/elimaoz99/stock_predictor && nohup venv/bin/python3 -u pre_scan.py >> pre_scan.log 2>&1 &
+```
+
+**Key endpoints:** `/api/volume-leaders` · `/api/reversion-leaders` · `/api/gainers` · `/api/setup-stats` · `/api/falling-knife-stats` · `/api/wedge-scan`
+
+---
+
+## Current Active Configuration
+| Parameter | Value | File |
+|-----------|-------|------|
+| CONFIDENCE_THRESHOLD | 0.70 | core_logic.py |
+| SCAN_CONFIDENCE_THRESHOLD | 0.57 | api.py |
+| PREMIUM_SCAN_THRESHOLD | 0.65 | api.py |
+| _BETA_HIGH_THRESHOLD | 1.5 | api.py |
+| HOD gap threshold | 0.35 | api.py |
+| RVOL slope threshold | 0.95 × mean(T-1,T-2) | api.py |
+| Power Hour: pct_from_low | < 2.0% at ET_hour == 15 | api.py |
+| MODEL_VERSION | "2026-05_ema_dist_regime" | live_tracker.py |
+| Volume Leaders TTL | 1800s | api.py |
+| Reversion Hunter TTL | 900s | api.py |
+| Macro strip TTL | 3600s | api.py |
+| FRED dashboard TTL | 21600s | api.py |
+
+---
+
+## Databases & State Files
+| File | Location | Purpose | Writer | Reader |
+|------|----------|---------|--------|--------|
+| `scanner_cache.db` | server + local | Scan results cache (sp500/nasdaq100) | `db.py` | `api.py` |
+| `intraday_cache.db` | server | 5m bars for time-of-day RVOL | `fetch_intraday.py` | `api.py` |
+| `setup_log.db` | server | Volume Leaders + Reversion Hunter outcome tracking | `api.py` | `/api/setup-stats` |
+| `falling_knife_log.db` | server | Falling Knife signal outcome tracking | `api.py` | `/api/falling-knife-stats` |
+| `tracker.db` | local | Daily BUY signal log + outcome resolver | `live_tracker.py` | `live_tracker.py --report` |
+| `fred_cache.json` | server | FRED dashboard disk cache (survives restarts) | `api.py` | `api.py` (startup) |
+| `wedge_cache.json` | server | Wedge scan results from pre_scan.py | `pre_scan.py` | `/api/wedge-scan` |
+| `macro_state.json` | server | VIX state machine persistence | `api.py` | `api.py` |
+
+---
+
+## Environment Variables
+| Variable | Used By | Source File |
+|----------|---------|-------------|
+| FRED_API_KEY | `api.py` (macro dashboard) | `api_data.env` |
+| TELEGRAM_BOT_TOKEN | `api.py`, `pre_scan.py`, `live_tracker.py` | `api_data.env` |
+| TELEGRAM_CHAT_ID | `api.py`, `pre_scan.py`, `live_tracker.py` | `api_data.env` |
+
+`api_data.env` lives in `/home/elimaoz99/stock_predictor/` on server and `~/Desktop/Stock-predictor/` locally. `api.py` self-loads it at startup. Local scripts load via `python-dotenv` or manual parse.
+
+---
+
 ## Infrastructure
 - **Live site:** stock-predictor.online
 - **GitHub:** doctor-magic/Stock-predictor (branch: main)

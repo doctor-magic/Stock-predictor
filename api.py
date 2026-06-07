@@ -1377,6 +1377,9 @@ def get_volume_leaders(min_market_cap: int = 200_000_000, force: bool = False):
             "beta":         beta,
             "beta_blocked": beta_blocked,
         })
+        # Log all non-trivial verdicts for outcome tracking (not just BUY)
+        if verdict not in ("HOLD", "N/A"):
+            _setup_log_event("volume_leaders", results[-1])
 
     results.sort(key=lambda x: x["volume"] or 0, reverse=True)
 
@@ -2155,6 +2158,8 @@ def get_gainers(force: bool = False):
             "atr14":             overhead.get("atr14"),
             "verdict":           verdict,
         })
+        if verdict not in ("WATCH",):
+            _setup_log_event("gainers", results[-1])
 
     _VORD = {"BREAKOUT CONFIRMED": 0, "DEVELOPING": 1, "WATCH": 2, "FADE RISK": 3, "OVERHEAD WALL": 4}
     results.sort(key=lambda x: _VORD.get(x["verdict"], 9))
