@@ -1012,7 +1012,7 @@ def _get_tod_rvol_cached(symbol: str, time_slot: str, today_str: str):
         if not os.path.exists(_INTRADAY_DB):
             return None, "insufficient"
         import sqlite3, statistics
-        con = sqlite3.connect(_INTRADAY_DB, timeout=3)
+        con = sqlite3.connect(_INTRADAY_DB, timeout=30)
         row = con.execute(
             "SELECT volume FROM intraday_bars WHERE symbol=? AND date=? AND time_slot=?",
             (symbol, today_str, time_slot)
@@ -1693,7 +1693,8 @@ import sqlite3 as _sqlite3
 _FK_LOG_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "falling_knife_log.db")
 
 def _fk_db_init():
-    con = _sqlite3.connect(_FK_LOG_DB)
+    con = _sqlite3.connect(_FK_LOG_DB, timeout=30)
+    con.execute("PRAGMA journal_mode=WAL")
     con.execute("""CREATE TABLE IF NOT EXISTS fk_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         sym TEXT, date TEXT, price REAL, change_pct REAL,
@@ -1713,7 +1714,7 @@ def _fk_log_event(sym, price, change_pct, rsi, rvol, vwap_gap_pct):
     try:
         from datetime import date as _fk_date
         today = _fk_date.today().isoformat()
-        con = _sqlite3.connect(_FK_LOG_DB)
+        con = _sqlite3.connect(_FK_LOG_DB, timeout=30)
         existing = con.execute("SELECT id FROM fk_events WHERE symbol=? AND date=?", (sym, today)).fetchone()
         if not existing:
             con.execute(
@@ -1730,7 +1731,7 @@ def _fk_resolve_yesterday():
     try:
         import yfinance as _yf_fkr
         from datetime import date as _fkr_date, timedelta as _td
-        con = _sqlite3.connect(_FK_LOG_DB)
+        con = _sqlite3.connect(_FK_LOG_DB, timeout=30)
         rows = con.execute("SELECT id, symbol, date FROM fk_events WHERE resolved=0").fetchall()
         today = _fkr_date.today()
         for row_id, sym, date_str in rows:
@@ -1775,7 +1776,7 @@ def _fk_resolve_yesterday():
 def get_falling_knife_stats():
     _fk_resolve_yesterday()
     try:
-        con = _sqlite3.connect(_FK_LOG_DB)
+        con = _sqlite3.connect(_FK_LOG_DB, timeout=30)
         rows = con.execute(
             "SELECT id,symbol,date,price,change_pct,rsi,rvol,vwap_gap_pct,price_close,ph_return,resolved "
             "FROM fk_events ORDER BY date DESC LIMIT 100"
@@ -1798,7 +1799,8 @@ def get_falling_knife_stats():
 _SETUP_LOG_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "setup_log.db")
 
 def _setup_db_init():
-    con = _sqlite3.connect(_SETUP_LOG_DB)
+    con = _sqlite3.connect(_SETUP_LOG_DB, timeout=30)
+    con.execute("PRAGMA journal_mode=WAL")
     con.execute("""CREATE TABLE IF NOT EXISTS setup_log (
         id            INTEGER PRIMARY KEY AUTOINCREMENT,
         source        TEXT,    -- 'volume_leaders' | 'reversion_hunter'
@@ -1839,7 +1841,7 @@ def _setup_log_event(source: str, row: dict):
     try:
         from datetime import date as _d
         today = _d.today().isoformat()
-        con = _sqlite3.connect(_SETUP_LOG_DB)
+        con = _sqlite3.connect(_SETUP_LOG_DB, timeout=30)
         exists = con.execute(
             "SELECT id FROM setup_log WHERE source=? AND symbol=? AND date=?",
             (source, row.get("symbol"), today)
@@ -1881,7 +1883,7 @@ def _setup_resolve():
     try:
         import yfinance as _yf_sr
         from datetime import date as _d, timedelta as _td
-        con = _sqlite3.connect(_SETUP_LOG_DB)
+        con = _sqlite3.connect(_SETUP_LOG_DB, timeout=30)
         rows = con.execute(
             "SELECT id, symbol, date, price FROM setup_log WHERE resolved=0"
         ).fetchall()
@@ -1921,7 +1923,7 @@ def _setup_resolve():
 def get_setup_stats():
     _setup_resolve()
     try:
-        con = _sqlite3.connect(_SETUP_LOG_DB)
+        con = _sqlite3.connect(_SETUP_LOG_DB, timeout=30)
         rows = con.execute("""
             SELECT source, verdict, beta_blocked, COUNT(*) as n,
                    AVG(ret_1d) as mean_1d, AVG(ret_5d) as mean_5d,
