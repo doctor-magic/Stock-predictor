@@ -8,7 +8,6 @@ import time
 import json as _json
 import urllib.request as _req
 from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FuturesTimeout
 
 # self-load api_data.env so FRED_API_KEY is available without EnvironmentFile in systemd
@@ -23,6 +22,8 @@ if os.path.exists(_env_path):
 
 import threading
 import core_logic
+import scanners
+import db as _db
 import db
 from models import PredictionResult, ScanRequest
 
@@ -739,457 +740,6 @@ _volume_leaders_cache: dict = {"ts": 0, "data": None}
 _VOLUME_LEADERS_TTL = 1800  # 30 min
 _BETA_HIGH_THRESHOLD = 1.5  # 6-month rolling beta above this → suppress ML BUY
 
-_market_context_cache: dict = {"ts": 0, "data": None}
-_MARKET_CONTEXT_TTL = 120   # 2 min
-
-
-def _get_market_context() -> dict:
-    now = time.time()
-    if _market_context_cache["data"] and now - _market_context_cache["ts"] < _MARKET_CONTEXT_TTL:
-        return _market_context_cache["data"]
-    try:
-        import yfinance as yf
-        raw = yf.download(["SPY", "QQQ"], period="1d", interval="1m", progress=False, auto_adjust=True)
-        result = {}
-        for sym in ["SPY", "QQQ"]:
-            try:
-                close  = raw["Close"][sym].dropna()
-                high   = raw["High"][sym].dropna()
-                low    = raw["Low"][sym].dropna()
-                volume = raw["Volume"][sym].dropna()
-                tp   = (high + low + close) / 3
-                vwap = (tp * volume).cumsum() / volume.cumsum()
-                price    = float(close.iloc[-1])
-                vwap_val = float(vwap.iloc[-1])
-                result[sym] = {
-                    "price":         round(price, 2),
-                    "vwap":          round(vwap_val, 2),
-                    "above_vwap":    price > vwap_val,
-                    "pct_from_vwap": round((price / vwap_val - 1) * 100, 2),
-                }
-            except Exception:
-                result[sym] = None
-        spy_up = result.get("SPY") and result["SPY"]["above_vwap"]
-        qqq_up = result.get("QQQ") and result["QQQ"]["above_vwap"]
-        both_present = bool(result.get("SPY") and result.get("QQQ"))
-        context = {
-            "SPY":      result.get("SPY"),
-            "QQQ":      result.get("QQQ"),
-            "tailwind": bool(spy_up and qqq_up),
-            "headwind": bool(both_present and not spy_up and not qqq_up),
-        }
-        _market_context_cache["ts"] = now
-        _market_context_cache["data"] = context
-        return context
-    except Exception:
-        return _market_context_cache["data"] or {"SPY": None, "QQQ": None, "tailwind": None, "headwind": None}
-
-
-def _compute_momentum(rsi, vol_ratio: float, ret_5d: float) -> str:
-    """Short-term signal: RSI + volume surge only. No ML."""
-    if rsi is not None and rsi > 75:
-        return "OVEREXTENDED"
-    if rsi is not None and rsi < 35 and vol_ratio >= 2.0:
-        return "WATCH"
-    if vol_ratio >= 3.0 and (ret_5d or 0) > 1.0:
-        return "SURGING"
-    if (ret_5d or 0) < -4.0 and vol_ratio >= 2.0:
-        return "SELLING OFF"
-    return "NEUTRAL"
-
-
-def _detect_falling_wedge(highs, lows, closes, volumes) -> dict:
-    """Detect a falling wedge on daily OHLCV data.
-    Tries windows 30 → 45 → 60 days; returns the first valid match.
-    Criteria: both lines descend, upper faster (converging), compression >= 25%,
-    >= 3 pivot touches on each line within 4% tolerance, volume declining.
-    """
-    try:
-        from scipy.signal import find_peaks
-        import numpy as np
-
-        h_all = np.array(highs,   dtype=float).flatten()
-        l_all = np.array(lows,    dtype=float).flatten()
-        c_all = np.array(closes,  dtype=float).flatten()
-        v_all = np.array(volumes, dtype=float).flatten()
-        total = len(c_all)
-
-        # Adaptive compression threshold: shorter windows require less convergence
-        min_compression = {30: 0.15, 45: 0.20, 60: 0.25}
-
-        for lookback in (30, 45, 60):
-            n = min(lookback, total)
-            if n < 25:
-                continue
-
-            h = h_all[-n:]; l = l_all[-n:]
-            c = c_all[-n:]; v = v_all[-n:]
-            x = np.arange(n, dtype=float)
-
-            price_range = h.max() - l.min()
-            if price_range <= 0:
-                continue
-
-            prominence = price_range * 0.03
-            peaks,   _ = find_peaks( h, distance=3, prominence=prominence)
-            troughs, _ = find_peaks(-l, distance=3, prominence=prominence)
-
-            # Need >= 3 pivots on each side
-            if len(peaks) < 3 or len(troughs) < 3:
-                continue
-
-            upper_slope, upper_intercept = np.polyfit(peaks,   h[peaks],  1)
-            lower_slope, lower_intercept = np.polyfit(troughs, l[troughs], 1)
-
-            # Both must descend; upper must descend faster (lines converge)
-            if upper_slope >= -0.001 or lower_slope >= -0.001:
-                continue
-            if upper_slope >= lower_slope:
-                continue
-
-            # Touch count: at least 3 pivots within 4% of the fitted line
-            upper_fitted  = upper_slope * peaks   + upper_intercept
-            lower_fitted  = lower_slope * troughs + lower_intercept
-            upper_touches = int(np.sum(np.abs(h[peaks]   - upper_fitted) / np.abs(upper_fitted) < 0.04))
-            lower_touches = int(np.sum(np.abs(l[troughs] - lower_fitted) / np.abs(lower_fitted) < 0.04))
-            if upper_touches < 3 or lower_touches < 3:
-                continue
-
-            width_start = upper_intercept - lower_intercept
-            width_end   = (upper_slope * (n-1) + upper_intercept) - (lower_slope * (n-1) + lower_intercept)
-            if width_start <= 0 or width_end < 0:
-                continue
-
-            compression = 1.0 - (width_end / width_start)
-            if compression < min_compression[lookback]:
-                continue
-
-            half = n // 2
-            vol_declining = float(v[half:].mean()) < float(v[:half].mean()) * 0.85
-
-            upper_now = float(upper_slope * (n-1) + upper_intercept)
-            breakout  = float(c[-1]) > upper_now
-
-            fresh_breakout = False
-            if breakout:
-                upper_line = upper_slope * x + upper_intercept
-                for i in range(max(0, n - 3), n):
-                    prev_below = (i == 0) or (c[i-1] <= upper_line[i-1])
-                    if c[i] > upper_line[i] and prev_below:
-                        fresh_breakout = True
-                        break
-
-            return {
-                "detected":       True,
-                "breakout":       breakout,
-                "fresh_breakout": fresh_breakout,
-                "compression":    round(float(compression), 2),
-                "vol_declining":  vol_declining,
-                "lookback_used":  n,
-            }
-
-        return {}
-    except Exception:
-        return {}
-
-
-def _classify_regime(highs, lows, closes) -> tuple[str, float]:
-    """Two-axis regime: ADX-14 (Wilder) trend strength × ATR-14 vol percentile.
-    Returns (regime_str, adx_value), e.g. ('ranging_low_vol', 18.3).
-    Requires ≥30 bars; returns ('unknown', 0.0) otherwise.
-
-    Wilder's smoothing: alpha = 1/N  →  out[i] = (out[i-1]*(N-1) + arr[i]) / N
-    This differs from standard EMA (alpha = 2/(N+1)) and is the correct formula
-    for ADX/ATR as defined by Welles Wilder. Using EMA instead would inflate the
-    smoothed values and shift the 25/40 thresholds off their intended meaning.
-    ATR percentile uses the 100 most-recent bars (requires ≥6mo download).
-    """
-    import numpy as np
-    highs  = np.asarray(highs,  dtype=float).ravel()
-    lows   = np.asarray(lows,   dtype=float).ravel()
-    closes = np.asarray(closes, dtype=float).ravel()
-    if len(closes) < 30:
-        return "unknown", 0.0
-
-    h  = highs[1:]
-    l  = lows[1:]
-    pc = closes[:-1]
-    c  = closes[1:]
-
-    tr   = np.maximum(h - l, np.maximum(np.abs(h - pc), np.abs(l - pc)))
-    up   = highs[1:] - highs[:-1]
-    down = lows[:-1] - lows[1:]
-    pdm  = np.where((up > down) & (up > 0),   up,   0.0)
-    ndm  = np.where((down > up) & (down > 0), down, 0.0)
-
-    n = 14
-    def _wilder(arr):
-        # Wilder's: seed = SMA(first N), then (prev*(N-1) + curr) / N
-        out = np.full(len(arr), np.nan)
-        if len(arr) < n:
-            return out
-        out[n - 1] = arr[:n].mean()
-        for i in range(n, len(arr)):
-            out[i] = (out[i - 1] * (n - 1) + arr[i]) / n
-        return out
-
-    atr14 = _wilder(tr)
-    safe  = np.where(atr14 > 0, atr14, np.nan)
-    pdi14 = 100.0 * _wilder(pdm) / safe
-    ndi14 = 100.0 * _wilder(ndm) / safe
-    di_s  = pdi14 + ndi14
-    dx    = np.where(di_s > 0, 100.0 * np.abs(pdi14 - ndi14) / di_s, 0.0)
-
-    dx_valid = dx[n - 1:]
-    if len(dx_valid) < n:
-        return "unknown", 0.0
-    adx_arr = _wilder(dx_valid)
-    cur_adx = adx_arr[-1]
-    if np.isnan(cur_adx):
-        return "unknown", 0.0
-
-    adx_val = round(float(cur_adx), 1)
-    trend = "ranging" if cur_adx < 25 else "weak_trend" if cur_adx < 40 else "strong_trend"
-
-    # ATR percentile: rank current ATR/price against last 100 bars (~5 months)
-    atr_norm = atr14 / c
-    valid    = atr_norm[~np.isnan(atr_norm)]
-    if len(valid) < 10:
-        return f"{trend}_unknown", adx_val
-    window = valid[-100:]                                    # cap at 100 most-recent bars
-    rank   = float(np.sum(window < window[-1])) / len(window)
-    vol    = "low_vol" if rank < 0.33 else "med_vol" if rank < 0.67 else "high_vol"
-
-    return f"{trend}_{vol}", adx_val
-
-
-def _compute_verdict(
-    ml_signal: str,
-    ml_confidence,
-    vol_ratio: float = 1.0,
-    rsi=None,
-    open_price=None,
-    current_price=None,
-    above_sma50: bool = True,
-) -> str:
-    """10-day ML outlook with four momentum overlays:
-    1. Anti-chasing guard  — don't buy if already up 3%+ from open
-    2. Vol Breakout        — pure volume signal, no ML needed (3x vol + RSI < 65)
-    3. Trend filter        — suppress BUY when price < SMA50 (downtrend)
-    4. Hybrid threshold    — lower BUY bar to 60% when vol_ratio >= 2x
-    """
-    # 1. Anti-chasing guard — price already ran, don't chase
-    if open_price and current_price and open_price > 0:
-        if (current_price - open_price) / open_price >= 0.03:
-            return "OVEREXTENDED"
-
-    # 2. Vol Breakout — independent of ML
-    if vol_ratio >= 3.0 and rsi is not None and rsi < 65:
-        return "VOL BREAKOUT"
-
-    # 3. ML BUY — require trend alignment (price > SMA50), volume >= 1.0x, confidence threshold
-    threshold = 0.65 if vol_ratio >= 2.0 else 0.70
-    if ml_signal == "BUY" and (ml_confidence or 0) >= threshold and vol_ratio >= 1.0 and above_sma50:
-        return "BUY"
-
-    if ml_signal == "SELL":
-        return "HOLD"
-    if ml_signal in (None, "N/A"):
-        return "N/A"
-    return "HOLD"
-
-
-_INTRADAY_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "intraday_cache.db")
-
-
-def _get_tod_rvol_cached(symbol: str, time_slot: str, today_str: str):
-    """
-    Returns (rvol, quality) using median baseline from intraday_cache.db.
-    quality: 'full' (>=10d), 'partial' (3-9d), 'insufficient' (<3d).
-    Falls back to (None, 'insufficient') if cache unavailable or too little history.
-    """
-    try:
-        if not os.path.exists(_INTRADAY_DB):
-            return None, "insufficient"
-        import sqlite3, statistics
-        con = sqlite3.connect(_INTRADAY_DB, timeout=30)
-        row = con.execute(
-            "SELECT volume FROM intraday_bars WHERE symbol=? AND date=? AND time_slot=?",
-            (symbol, today_str, time_slot)
-        ).fetchone()
-        if row is None:
-            con.close()
-            return None, "insufficient"
-        current_vol = row[0]
-        hist = con.execute(
-            "SELECT volume FROM intraday_bars "
-            "WHERE symbol=? AND date<? AND time_slot=? ORDER BY date DESC LIMIT 20",
-            (symbol, today_str, time_slot)
-        ).fetchall()
-        con.close()
-        days = len(hist)
-        if days < 3:
-            return None, "insufficient"
-        median_vol = statistics.median(r[0] for r in hist)
-        if median_vol <= 0:
-            return None, "insufficient"
-        rvol = round(current_vol / median_vol, 1)
-        return rvol, ("full" if days >= 10 else "partial")
-    except Exception:
-        return None, "insufficient"
-
-
-def _get_intraday_signals(tickers: list) -> dict:
-    """Batch 5-minute intraday analysis: VWAP, time-of-day RVOL, ORB, setups.
-    Falls back to last completed trading day when market is closed.
-    """
-    import yfinance as yf
-    import pandas as pd
-
-    ET = ZoneInfo("America/New_York")
-    now_et = datetime.now(ET)
-
-    try:
-        raw5m = yf.download(
-            tickers, period="10d", interval="5m",
-            group_by="ticker", auto_adjust=True, progress=False
-        )
-    except Exception:
-        return {}
-
-    is_multi = len(tickers) > 1
-    in_session = (
-        now_et.replace(hour=9, minute=30, second=0, microsecond=0)
-        <= now_et <=
-        now_et.replace(hour=16, minute=0, second=0, microsecond=0)
-    )
-
-    out = {}
-    for sym in tickers:
-        try:
-            # group_by='ticker' → raw5m[sym] gives OHLCV DataFrame directly
-            df = (raw5m[sym] if is_multi else raw5m)[["Open", "High", "Low", "Close", "Volume"]].copy()
-
-            df.dropna(subset=["Close", "Volume"], inplace=True)
-            if df.empty:
-                continue
-
-            if df.index.tz is None:
-                df.index = df.index.tz_localize("UTC").tz_convert(ET)
-            else:
-                df.index = df.index.tz_convert(ET)
-
-            today = now_et.date()
-            unique_dates = sorted({d.date() for d in df.index})
-
-            if in_session and today in unique_dates:
-                target_date = today
-                is_live = True
-            else:
-                completed = [d for d in unique_dates if d < today]
-                target_date = completed[-1] if completed else unique_dates[-1]
-                is_live = False
-
-            day_df = df[df.index.date == target_date].copy()
-            if day_df.empty:
-                continue
-
-            # VWAP — resets at 9:30 ET each day
-            day_df["tp"] = (day_df["High"] + day_df["Low"] + day_df["Close"]) / 3
-            day_df["tp_vol"] = day_df["tp"] * day_df["Volume"]
-            day_df["vwap"] = day_df["tp_vol"].cumsum() / day_df["Volume"].cumsum()
-            current_vwap  = float(day_df["vwap"].iloc[-1])
-            current_price = float(day_df["Close"].iloc[-1])
-
-            # ORB — opening range = candles from 9:30 to 10:00 ET
-            orb_end  = day_df.index[0].replace(hour=10, minute=0, second=0, microsecond=0)
-            orb_df   = day_df[day_df.index <= orb_end]
-            orb_high = float(orb_df["High"].max()) if not orb_df.empty else None
-            orb_low  = float(orb_df["Low"].min())  if not orb_df.empty else None
-            orb_breakout = bool(orb_high and current_price > orb_high)
-
-            # Find the first candle after ORB period where price crossed above orb_high
-            breakout_time = None
-            if orb_breakout:
-                post_orb = day_df[day_df.index > orb_end]
-                first_break = post_orb[post_orb["Close"] > orb_high]
-                if not first_break.empty:
-                    breakout_time = first_break.index[0].isoformat()
-
-            # Time-of-Day RVOL — prefer SQLite median cache, fall back to 5m-window mean
-            ref_df = day_df.iloc[:-1] if (is_live and len(day_df) > 1) else day_df
-            rvol = None
-            rvol_quality = "insufficient"
-            if not ref_df.empty:
-                import numpy as np
-                ref_time = ref_df.index[-1].time()
-                slot_str = ref_time.strftime("%H:%M")
-                today_str = str(target_date)
-                rvol, rvol_quality = _get_tod_rvol_cached(sym, slot_str, today_str)
-                if rvol is None:
-                    ref_vol   = float(ref_df["Volume"].iloc[-1])
-                    mask      = (np.array(df.index.date) != target_date) & (np.array(df.index.time) == ref_time)
-                    hist_same = df[mask]["Volume"]
-                    if len(hist_same) >= 3:
-                        avg_vol = float(hist_same.mean())
-                        if avg_vol > 0:
-                            rvol = round(ref_vol / avg_vol, 1)
-                            rvol_quality = "legacy"
-
-            # VWAP Bounce — prev candle touched VWAP from below, curr candle green + higher vol
-            vwap_bounce = False
-            if len(day_df) >= 2:
-                prev      = day_df.iloc[-2]
-                curr      = day_df.iloc[-1]
-                prev_vwap = float(day_df["vwap"].iloc[-2])
-                vwap_bounce = (
-                    float(prev["Low"]) <= prev_vwap <= float(prev["Close"])
-                    and float(curr["Close"]) > float(curr["Open"])
-                    and float(curr["Volume"]) > float(prev["Volume"])
-                )
-
-
-            # Base detection: no new low + range compression (Reversion Hunter)
-            base_forming = None
-            if len(day_df) >= 10:
-                last5_lows   = day_df["Low"].iloc[-5:].values
-                prior5_lows  = day_df["Low"].iloc[-10:-5].values
-                last5_range  = float((day_df["High"].iloc[-5:] - day_df["Low"].iloc[-5:]).mean())
-                prior5_range = float((day_df["High"].iloc[-10:-5] - day_df["Low"].iloc[-10:-5]).mean())
-                no_new_low       = float(last5_lows.min()) >= float(prior5_lows.min()) * 0.998
-                range_compressed = prior5_range > 0 and last5_range < prior5_range * 0.75
-                base_forming = bool(no_new_low and range_compressed)
-
-            # Setup priority: ORB BREAKOUT > LIQUID SURGE > VWAP BOUNCE
-            setup = None
-            if orb_breakout and (rvol or 0) >= 2.0:
-                setup = "ORB BREAKOUT"
-            elif (rvol or 0) >= 3.0 and current_price > current_vwap:
-                setup = "LIQUID SURGE"
-            elif vwap_bounce:
-                setup = "VWAP BOUNCE"
-
-            out[sym] = {
-                "vwap":         round(current_vwap, 2),
-                "rvol":         rvol,
-                "rvol_quality": rvol_quality,
-                "orb_high":     round(orb_high, 2) if orb_high else None,
-                "orb_low":      round(orb_low,  2) if orb_low  else None,
-                "orb_breakout": orb_breakout,
-                "above_vwap":   current_price > current_vwap,
-                "vwap_bounce":  vwap_bounce,
-                "setup":          setup,
-                "breakout_time":  breakout_time,
-                "is_live":        is_live,
-                "analysis_date":  str(target_date),
-                "base_forming":   base_forming,
-            }
-        except Exception:
-            pass
-
-    return out
-
-
 @app.get("/api/volume-leaders")
 def get_volume_leaders(min_market_cap: int = 200_000_000, force: bool = False):
     now = time.time()
@@ -1252,7 +802,7 @@ def get_volume_leaders(min_market_cap: int = 200_000_000, force: bool = False):
     import pandas as pd
     tickers = [q["symbol"] for q in filtered]
     hist     = yf.download(tickers, period="6mo", interval="1d", progress=False, auto_adjust=True)
-    intraday = _get_intraday_signals(tickers)
+    intraday = scanners.get_intraday_signals(tickers)
 
     # SPY returns for rolling beta — download once, reuse per symbol
     spy_returns = None
@@ -1303,8 +853,8 @@ def get_volume_leaders(min_market_cap: int = 200_000_000, force: bool = False):
                 ret_5d = round(float((closes.iloc[-1] / closes.iloc[-6] - 1) * 100), 1)
             if len(closes) >= 50:
                 sma50 = round(float(closes.iloc[-50:].mean()), 2)
-            regime, adx_val = _classify_regime(highs.values, lows.values, closes.values)
-            wedge = _detect_falling_wedge(highs.values, lows.values, closes.values, volumes.values)
+            regime, adx_val = scanners.classify_regime(highs.values, lows.values, closes.values)
+            wedge = scanners.detect_falling_wedge(highs.values, lows.values, closes.values, volumes.values)
         except Exception:
             pass
 
@@ -1325,8 +875,8 @@ def get_volume_leaders(min_market_cap: int = 200_000_000, force: bool = False):
         current_price = quote.get("regularMarketPrice")
         above_sma50 = (current_price is not None and sma50 is not None and current_price > sma50)
 
-        momentum = _compute_momentum(rsi, vol_ratio, ret_5d or 0.0)
-        verdict  = _compute_verdict(
+        momentum = scanners.compute_momentum(rsi, vol_ratio, ret_5d or 0.0)
+        verdict  = scanners.compute_verdict(
             ml_signal, ml_conf,
             vol_ratio=vol_ratio,
             rsi=rsi,
@@ -1379,7 +929,7 @@ def get_volume_leaders(min_market_cap: int = 200_000_000, force: bool = False):
         })
         # Log all non-trivial verdicts for outcome tracking (not just BUY)
         if verdict not in ("HOLD", "N/A"):
-            _setup_log_event("volume_leaders", results[-1])
+            _db.setup_log_event("volume_leaders", results[-1])
 
     results.sort(key=lambda x: x["volume"] or 0, reverse=True)
 
@@ -1395,7 +945,7 @@ def get_volume_leaders(min_market_cap: int = 200_000_000, force: bool = False):
 
     payload = _clean({
         "results": results,
-        "market_context": _get_market_context(),
+        "market_context": scanners.get_market_context(),
         "fetched_at": datetime.fromtimestamp(now, tz=timezone.utc).isoformat(),
     })
     _volume_leaders_cache["ts"] = now
@@ -1546,7 +1096,7 @@ def get_reversion_leaders(min_market_cap: int = 500_000_000, force: bool = False
     ][:25]
 
     if not filtered:
-        return _reversion_cache["data"] or {"results": [], "market_context": _get_market_context(), "fetched_at": ""}
+        return _reversion_cache["data"] or {"results": [], "market_context": scanners.get_market_context(), "fetched_at": ""}
 
     sp500_map  = {r["symbol"]: r for r in db.get_latest_scan("sp500")}
     nasdaq_map = {r["symbol"]: r for r in db.get_latest_scan("nasdaq100")}
@@ -1577,7 +1127,7 @@ def get_reversion_leaders(min_market_cap: int = 500_000_000, force: bool = False
     import pandas as pd
     tickers = [q["symbol"] for q in filtered]
     hist     = yf.download(tickers, period="6mo", interval="1d", progress=False, auto_adjust=True)
-    intraday = _get_intraday_signals(tickers)
+    intraday = scanners.get_intraday_signals(tickers)
 
     results = []
     for quote in filtered:
@@ -1604,7 +1154,7 @@ def get_reversion_leaders(min_market_cap: int = 500_000_000, force: bool = False
                 loss  = (-delta.clip(upper=0)).rolling(14).mean()
                 rs    = gain.iloc[-1] / loss.iloc[-1]
                 rsi   = round(float(100 - 100 / (1 + rs)), 1)
-            regime, adx_val = _classify_regime(highs.values, lows.values, closes.values)
+            regime, adx_val = scanners.classify_regime(highs.values, lows.values, closes.values)
         except Exception:
             pass
 
@@ -1657,7 +1207,7 @@ def get_reversion_leaders(min_market_cap: int = 500_000_000, force: bool = False
         })
 
         if reversion_verdict in ("DEEP BUY", "POTENTIAL BOUNCE"):
-            _setup_log_event("reversion_hunter", results[-1])
+            _db.setup_log_event("reversion_hunter", results[-1])
 
     _vord = {"DEEP BUY": 0, "POTENTIAL BOUNCE": 1, "OVERSOLD": 2, "FALLING KNIFE": 3, "WATCH": 4}
     results.sort(key=lambda x: (
@@ -1677,7 +1227,7 @@ def get_reversion_leaders(min_market_cap: int = 500_000_000, force: bool = False
 
     payload = _clean_rev({
         "results":        results,
-        "market_context": _get_market_context(),
+        "market_context": scanners.get_market_context(),
         "fetched_at":     datetime.fromtimestamp(now, tz=timezone.utc).isoformat(),
     })
     _reversion_cache["ts"]   = now
@@ -1686,383 +1236,26 @@ def get_reversion_leaders(min_market_cap: int = 500_000_000, force: bool = False
 
 
 
-# -- Falling Knife Logger -------------------------------------------------------
-
-import sqlite3 as _sqlite3
-
-_FK_LOG_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "falling_knife_log.db")
-
-def _fk_db_init():
-    con = _sqlite3.connect(_FK_LOG_DB, timeout=30)
-    con.execute("PRAGMA journal_mode=WAL")
-    con.execute("""CREATE TABLE IF NOT EXISTS fk_events (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        sym TEXT, date TEXT, price REAL, change_pct REAL,
-        rsi REAL, rvol REAL, vwap_gap_pct REAL,
-        close_next REAL, ph_return REAL, resolved INTEGER DEFAULT 0
-    )""")
-    con.execute("""CREATE TABLE IF NOT EXISTS fk_milestones (key TEXT PRIMARY KEY, value TEXT)""")
-    con.commit(); con.close()
-
-try:
-    _fk_db_init()
-except Exception:
-    pass
-
-
-def _fk_log_event(sym, price, change_pct, rsi, rvol, vwap_gap_pct):
-    try:
-        from datetime import date as _fk_date
-        today = _fk_date.today().isoformat()
-        con = _sqlite3.connect(_FK_LOG_DB, timeout=30)
-        existing = con.execute("SELECT id FROM fk_events WHERE symbol=? AND date=?", (sym, today)).fetchone()
-        if not existing:
-            con.execute(
-                "INSERT INTO fk_events (symbol, date, classify_ts, price, change_pct, rsi, rvol, vwap_gap_pct) VALUES (?,?,?,?,?,?,?,?)",
-                (sym, today, __import__("datetime").datetime.utcnow().isoformat(), price, change_pct, rsi, rvol, vwap_gap_pct)
-            )
-            con.commit()
-        con.close()
-    except Exception:
-        pass
-
-
-def _fk_resolve_yesterday():
-    try:
-        import yfinance as _yf_fkr
-        from datetime import date as _fkr_date, timedelta as _td
-        con = _sqlite3.connect(_FK_LOG_DB, timeout=30)
-        rows = con.execute("SELECT id, symbol, date FROM fk_events WHERE resolved=0").fetchall()
-        today = _fkr_date.today()
-        for row_id, sym, date_str in rows:
-            try:
-                event_date = _fkr_date.fromisoformat(date_str)
-                if (today - event_date).days < 1:
-                    continue
-                hist = _yf_fkr.download(sym, start=date_str,
-                                         end=str(event_date + _td(days=5)),
-                                         interval="1d", auto_adjust=True, progress=False)
-                if hist.empty or len(hist) < 2:
-                    continue
-                closes_arr = hist["Close"].values.flatten()
-                entry_price = float(closes_arr[0])
-                close_next  = float(closes_arr[1]) if len(closes_arr) > 1 else None
-                ph_return   = round((close_next / entry_price - 1) * 100, 2) if close_next else None
-                con.execute("UPDATE fk_events SET price_close=?, ph_return=?, resolved=1 WHERE id=?",
-                            (close_next, ph_return, row_id))
-            except Exception:
-                pass
-        con.commit()
-        total_resolved = con.execute("SELECT COUNT(*) FROM fk_events WHERE resolved=1").fetchone()[0]
-        alerted = con.execute("SELECT value FROM fk_milestones WHERE key='n30_alerted'").fetchone()
-        if total_resolved >= 30 and not alerted:
-            try:
-                import requests as _rq
-                tg_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-                tg_chat  = os.environ.get("TELEGRAM_CHAT_ID", "")
-                if tg_token and tg_chat:
-                    _rq.post(f"https://api.telegram.org/bot{tg_token}/sendMessage",
-                             json={"chat_id": tg_chat, "text": f"Falling Knife milestone: {total_resolved} resolved events!"}, timeout=5)
-            except Exception:
-                pass
-            con.execute("INSERT OR IGNORE INTO fk_milestones (key, ts) VALUES ('n30_alerted', CURRENT_TIMESTAMP)")
-            con.commit()
-        con.close()
-    except Exception:
-        pass
-
-
 @app.get("/api/falling-knife-stats")
 def get_falling_knife_stats():
-    _fk_resolve_yesterday()
     try:
-        con = _sqlite3.connect(_FK_LOG_DB, timeout=30)
-        rows = con.execute(
-            "SELECT id,symbol,date,price,change_pct,rsi,rvol,vwap_gap_pct,price_close,ph_return,resolved "
-            "FROM fk_events ORDER BY date DESC LIMIT 100"
-        ).fetchall()
-        cols = ["id","sym","date","price","change_pct","rsi","rvol","vwap_gap_pct","close_next","ph_return","resolved"]
-        events   = [dict(zip(cols, row)) for row in rows]
-        resolved = [e for e in events if e["resolved"]]
-        mean_ph  = round(sum(e["ph_return"] for e in resolved if e["ph_return"] is not None) / len(resolved), 2) if resolved else None
-        con.close()
-        return {"events": events, "total": len(events), "resolved": len(resolved), "mean_ph_return": mean_ph}
+        return _db.get_fk_stats()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-
-# ── Setup Outcome Logger ────────────────────────────────────────────────────
-# Tracks Volume Leaders + Reversion Hunter signals to measure gate effectiveness.
-# Pattern mirrors falling_knife_log.db — one row per symbol per day per source.
-
-_SETUP_LOG_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "setup_log.db")
-
-def _setup_db_init():
-    con = _sqlite3.connect(_SETUP_LOG_DB, timeout=30)
-    con.execute("PRAGMA journal_mode=WAL")
-    con.execute("""CREATE TABLE IF NOT EXISTS setup_log (
-        id            INTEGER PRIMARY KEY AUTOINCREMENT,
-        source        TEXT,    -- 'volume_leaders' | 'reversion_hunter'
-        symbol        TEXT,
-        date          TEXT,    -- YYYY-MM-DD
-        log_ts        TEXT,
-        price         REAL,
-        verdict       TEXT,    -- final verdict (BUY / HIGH-BETA / OVEREXTENDED / VOL BREAKOUT / HOLD)
-        ml_signal     TEXT,
-        ml_confidence REAL,
-        vol_ratio     REAL,
-        rsi           REAL,
-        beta          REAL,
-        beta_blocked  INTEGER DEFAULT 0,
-        above_sma50   INTEGER DEFAULT 1,
-        regime        TEXT,
-        reversion_verdict TEXT,
-        vwap_gap_pct  REAL,
-        rvol_val      REAL,
-        rvol_alert    INTEGER DEFAULT 0,
-        -- resolution
-        resolved      INTEGER DEFAULT 0,
-        close_1d      REAL,
-        close_5d      REAL,
-        ret_1d        REAL,
-        ret_5d        REAL
-    )""")
-    con.commit(); con.close()
-
-try:
-    _setup_db_init()
-except Exception:
-    pass
-
-
-def _setup_log_event(source: str, row: dict):
-    """Log a signal for outcome tracking. One log per source+symbol+day."""
-    try:
-        from datetime import date as _d
-        today = _d.today().isoformat()
-        con = _sqlite3.connect(_SETUP_LOG_DB, timeout=30)
-        exists = con.execute(
-            "SELECT id FROM setup_log WHERE source=? AND symbol=? AND date=?",
-            (source, row.get("symbol"), today)
-        ).fetchone()
-        if not exists:
-            con.execute("""
-                INSERT INTO setup_log (
-                    source, symbol, date, log_ts, price,
-                    verdict, ml_signal, ml_confidence,
-                    vol_ratio, rsi, beta, beta_blocked, above_sma50,
-                    regime, reversion_verdict, vwap_gap_pct, rvol_val, rvol_alert
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            """, (
-                source, row.get("symbol"), today,
-                datetime.utcnow().isoformat(),
-                row.get("price"),
-                row.get("verdict"),
-                row.get("ml_signal"),
-                row.get("ml_confidence"),
-                row.get("vol_ratio"),
-                row.get("rsi"),
-                row.get("beta"),
-                1 if row.get("beta_blocked") else 0,
-                1 if row.get("above_sma50", True) else 0,
-                row.get("regime"),
-                row.get("reversion_verdict"),
-                row.get("vwap_gap_pct"),
-                row.get("rvol"),
-                1 if row.get("rvol_alert") else 0,
-            ))
-            con.commit()
-        con.close()
-    except Exception:
-        pass
-
-
-def _setup_resolve():
-    """Fetch 1d and 5d forward returns for unresolved setup_log rows."""
-    try:
-        import yfinance as _yf_sr
-        from datetime import date as _d, timedelta as _td
-        con = _sqlite3.connect(_SETUP_LOG_DB, timeout=30)
-        rows = con.execute(
-            "SELECT id, symbol, date, price FROM setup_log WHERE resolved=0"
-        ).fetchall()
-        today = _d.today()
-        for row_id, sym, date_str, entry_price in rows:
-            try:
-                event_date = _d.fromisoformat(date_str)
-                if (today - event_date).days < 1:
-                    continue
-                hist = _yf_sr.download(
-                    sym,
-                    start=date_str,
-                    end=str(event_date + _td(days=10)),
-                    interval="1d", auto_adjust=True, progress=False
-                )
-                if hist.empty or len(hist) < 2 or entry_price is None:
-                    continue
-                closes = hist["Close"].values.flatten()
-                c1 = float(closes[1]) if len(closes) > 1 else None
-                c5 = float(closes[5]) if len(closes) > 5 else None
-                r1 = round((c1 / entry_price - 1) * 100, 2) if c1 else None
-                r5 = round((c5 / entry_price - 1) * 100, 2) if c5 else None
-                resolved = 1 if (today - event_date).days >= 5 else 0
-                con.execute(
-                    "UPDATE setup_log SET close_1d=?, close_5d=?, ret_1d=?, ret_5d=?, resolved=? WHERE id=?",
-                    (c1, c5, r1, r5, resolved, row_id)
-                )
-            except Exception:
-                pass
-        con.commit()
-        con.close()
-    except Exception:
-        pass
-
-
 @app.get("/api/setup-stats")
 def get_setup_stats():
-    _setup_resolve()
     try:
-        con = _sqlite3.connect(_SETUP_LOG_DB, timeout=30)
-        rows = con.execute("""
-            SELECT source, verdict, beta_blocked, COUNT(*) as n,
-                   AVG(ret_1d) as mean_1d, AVG(ret_5d) as mean_5d,
-                   SUM(CASE WHEN ret_5d > 0 THEN 1 ELSE 0 END) as wins_5d
-            FROM setup_log WHERE resolved=1
-            GROUP BY source, verdict, beta_blocked
-            ORDER BY source, mean_5d DESC
-        """).fetchall()
-        cols = ["source", "verdict", "beta_blocked", "n", "mean_1d", "mean_5d", "wins_5d"]
-        breakdown = [dict(zip(cols, r)) for r in rows]
-        for b in breakdown:
-            b["win_rate_5d"] = round(b["wins_5d"] / b["n"] * 100, 1) if b["n"] else None
-            b["mean_1d"] = round(b["mean_1d"], 2) if b["mean_1d"] is not None else None
-            b["mean_5d"] = round(b["mean_5d"], 2) if b["mean_5d"] is not None else None
-
-        total = con.execute("SELECT COUNT(*) FROM setup_log").fetchone()[0]
-        resolved = con.execute("SELECT COUNT(*) FROM setup_log WHERE resolved=1").fetchone()[0]
-        con.close()
-        return {"total_logged": total, "resolved": resolved, "breakdown": breakdown}
+        return _db.get_setup_breakdown()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 # ── Gainers / Momentum Hunter ─────────────────────────────────────────────────
 
-_gainers_cache: dict       = {"ts": 0, "data": None}
-_GAINERS_TTL               = 300          # 5 min
-_gainers_daily_cache: dict = {}           # sym → {date, sma200, nearest_resist, atr14, …}
-_vaccel_cache: dict        = {}           # sym → {ts, vaccel}
-_VACCEL_TTL                = 300          # 5 min
-
-
-def _get_overhead_supply(sym: str, price: float) -> dict:
-    """Lazy per-symbol daily cache (1 trading day TTL).
-    Returns overhead supply data: nearest resistance, ATR-14, overhead_blocked flag."""
-    from datetime import date as _date
-    today_str = _date.today().isoformat()
-    cached = _gainers_daily_cache.get(sym)
-    if cached and cached.get("date") == today_str:
-        return cached
-    try:
-        import yfinance as _yf2
-        import numpy as _np2
-        hist = _yf2.download(sym, period="6mo", interval="1d", auto_adjust=True, progress=False)
-        if hist.empty or len(hist) < 20:
-            return {}
-        closes = _np2.asarray(hist["Close"].values, dtype=float).ravel()
-        highs  = _np2.asarray(hist["High"].values,  dtype=float).ravel()
-        lows   = _np2.asarray(hist["Low"].values,   dtype=float).ravel()
-        n      = len(closes)
-
-        sma200 = float(_np2.mean(closes[-200:])) if n >= 200 else float(_np2.mean(closes))
-
-        def _wilder_g(arr, period):
-            out = _np2.full(len(arr), _np2.nan)
-            if len(arr) < period:
-                return out
-            out[period - 1] = _np2.mean(arr[:period])
-            for i in range(period, len(arr)):
-                out[i] = (out[i - 1] * (period - 1) + arr[i]) / period
-            return out
-
-        trs = _np2.maximum(
-            highs[1:] - lows[1:],
-            _np2.maximum(
-                _np2.abs(highs[1:] - closes[:-1]),
-                _np2.abs(lows[1:]  - closes[:-1]),
-            ),
-        )
-        atr14_arr = _wilder_g(trs, 14)
-        atr14 = float(atr14_arr[-1]) if not _np2.isnan(atr14_arr[-1]) else None
-
-        pivot_highs = []
-        window = min(60, n - 2)
-        for i in range(1, window + 1):
-            idx = n - 1 - i
-            if idx > 0 and highs[idx] > highs[idx - 1] and highs[idx] > highs[idx + 1]:
-                if highs[idx] > price * 1.001:
-                    pivot_highs.append(float(highs[idx]))
-
-        candidates = [r for r in ([sma200] + pivot_highs) if r > price * 1.001]
-        nearest_resist = min(candidates) if candidates else None
-
-        overhead_blocked   = False
-        dist_to_resist_pct = None
-        if nearest_resist and atr14 and atr14 > 0:
-            dist_abs           = nearest_resist - price
-            dist_to_resist_pct = round(dist_abs / price * 100, 2)
-            overhead_blocked   = dist_abs < 0.5 * atr14
-
-        result = {
-            "date":               today_str,
-            "sma200":             round(sma200, 2),
-            "nearest_resist":     round(nearest_resist, 2) if nearest_resist else None,
-            "atr14":              round(atr14, 2) if atr14 else None,
-            "dist_to_resist_pct": dist_to_resist_pct,
-            "overhead_blocked":   overhead_blocked,
-        }
-        _gainers_daily_cache[sym] = result
-        return result
-    except Exception:
-        return {}
-
-
-def _get_vaccel(sym: str) -> float | None:
-    """V_accel = mean(last 3 bars vol) / mean(last 15 bars vol) for today 5m bars."""
-    now = time.time()
-    cached = _vaccel_cache.get(sym)
-    if cached and now - cached["ts"] < _VACCEL_TTL:
-        return cached["vaccel"]
-    try:
-        import yfinance as _yf3
-        import numpy as _np3
-        intra = _yf3.download(sym, period="1d", interval="5m", auto_adjust=True, progress=False)
-        if intra.empty or len(intra) < 15:
-            return None
-        vols   = _np3.asarray(intra["Volume"].values, dtype=float).ravel()
-        v_long = float(_np3.mean(vols[-15:]))
-        if v_long == 0:
-            return None
-        v_short = float(_np3.mean(vols[-3:]))
-        vaccel  = round(v_short / v_long, 2)
-        _vaccel_cache[sym] = {"ts": now, "vaccel": vaccel}
-        return vaccel
-    except Exception:
-        return None
-
-
-def _gainers_verdict(v_accel, overhead_blocked: bool, vwap_gap_pct) -> str:
-    above_vwap = vwap_gap_pct is not None and vwap_gap_pct > 0
-    if overhead_blocked:
-        return "OVERHEAD WALL"
-    if v_accel is not None and v_accel < 1.0:
-        return "FADE RISK"
-    if v_accel is not None and v_accel >= 1.5 and above_vwap:
-        return "BREAKOUT CONFIRMED"
-    if v_accel is not None and v_accel >= 1.0:
-        return "DEVELOPING"
-    return "WATCH"
+_gainers_cache: dict = {"ts": 0, "data": None}
+_GAINERS_TTL         = 300          # 5 min
 
 
 @app.get("/api/gainers")
@@ -2099,12 +1292,12 @@ def get_gainers(force: bool = False):
 
     if not filtered:
         return _gainers_cache["data"] or {
-            "results": [], "market_context": _get_market_context(),
+            "results": [], "market_context": scanners.get_market_context(),
             "fetched_at": datetime.fromtimestamp(now, tz=timezone.utc).isoformat(),
         }
 
     tickers  = [q["symbol"] for q in filtered]
-    intraday = _get_intraday_signals(tickers)
+    intraday = scanners.get_intraday_signals(tickers)
 
     price_map = {q["symbol"]: q.get("regularMarketPrice") for q in filtered}
 
@@ -2113,8 +1306,8 @@ def get_gainers(force: bool = False):
 
     def _fetch_sym_data(sym):
         price = price_map.get(sym)
-        va = _get_vaccel(sym)
-        oh = _get_overhead_supply(sym, price) if price else {}
+        va = scanners.get_vaccel(sym)
+        oh = scanners.get_overhead_supply(sym, price) if price else {}
         return sym, va, oh
 
     with ThreadPoolExecutor(max_workers=5) as executor:
@@ -2138,7 +1331,7 @@ def get_gainers(force: bool = False):
         v_accel          = vaccel_map.get(sym)
         overhead         = overhead_map.get(sym, {})
         overhead_blocked = overhead.get("overhead_blocked", False)
-        verdict          = _gainers_verdict(v_accel, overhead_blocked, vwap_gap_pct)
+        verdict          = scanners.gainers_verdict(v_accel, overhead_blocked, vwap_gap_pct)
 
         results.append({
             "symbol":            sym,
@@ -2161,7 +1354,7 @@ def get_gainers(force: bool = False):
             "verdict":           verdict,
         })
         if verdict not in ("WATCH",):
-            _setup_log_event("gainers", results[-1])
+            _db.setup_log_event("gainers", results[-1])
 
     _VORD = {"BREAKOUT CONFIRMED": 0, "DEVELOPING": 1, "WATCH": 2, "FADE RISK": 3, "OVERHEAD WALL": 4}
     results.sort(key=lambda x: _VORD.get(x["verdict"], 9))
@@ -2178,7 +1371,7 @@ def get_gainers(force: bool = False):
 
     payload = _clean_g({
         "results":        results,
-        "market_context": _get_market_context(),
+        "market_context": scanners.get_market_context(),
         "fetched_at":     datetime.fromtimestamp(now, tz=timezone.utc).isoformat(),
     })
     _gainers_cache["ts"]   = now
