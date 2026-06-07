@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 from typing import List, Dict
+import logging
 import os
 import glob
 import re
@@ -25,6 +26,8 @@ import core_logic
 import scanners
 import db as _db
 import db
+
+logger = logging.getLogger(__name__)
 from models import PredictionResult, ScanRequest
 
 IMPORTANCE_DESCRIPTIONS: dict[str, str] = {
@@ -813,8 +816,8 @@ def get_volume_leaders(min_market_cap: int = 200_000_000, force: bool = False):
         _spy_close = _spy_raw["Close"].dropna()
         _spy_close.index = pd.to_datetime(_spy_close.index).tz_localize(None)
         spy_returns = _spy_close.pct_change().dropna()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("SPY download failed — beta gate disabled: %s", e)
 
     results = []
     for quote in filtered:
@@ -855,8 +858,8 @@ def get_volume_leaders(min_market_cap: int = 200_000_000, force: bool = False):
                 sma50 = round(float(closes.iloc[-50:].mean()), 2)
             regime, adx_val = scanners.classify_regime(highs.values, lows.values, closes.values)
             wedge = scanners.detect_falling_wedge(highs.values, lows.values, closes.values, volumes.values)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Technical indicators failed for %s: %s", sym, e)
 
         # 6-month rolling beta vs SPY
         beta = None
@@ -869,8 +872,8 @@ def get_volume_leaders(min_market_cap: int = 200_000_000, force: bool = False):
                     cov = float(np.cov(s, m)[0, 1])
                     var = float(np.var(m, ddof=1))
                     beta = round(cov / var, 2) if var > 0 else None
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Beta calculation failed for %s: %s", sym, e)
 
         current_price = quote.get("regularMarketPrice")
         above_sma50 = (current_price is not None and sma50 is not None and current_price > sma50)

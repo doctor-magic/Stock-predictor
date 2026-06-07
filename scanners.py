@@ -3,12 +3,15 @@
 Imported by api.py. No imports from api.py (prevents circular imports).
 DB logging calls use db.py directly.
 """
+import logging
 import os
 import time
 import sqlite3
 import statistics
 from datetime import datetime, date
 from zoneinfo import ZoneInfo
+
+logger = logging.getLogger(__name__)
 
 _INTRADAY_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "intraday_cache.db")
 
@@ -244,7 +247,8 @@ def get_tod_rvol_cached(symbol: str, time_slot: str, today_str: str):
             return None, "insufficient"
         rvol = round(current_vol / median_vol, 1)
         return rvol, ("full" if days >= 10 else "partial")
-    except Exception:
+    except Exception as e:
+        logger.warning("RVOL calc failed for %s: %s", symbol, e)
         return None, "insufficient"
 
 
@@ -262,7 +266,8 @@ def get_intraday_signals(tickers: list) -> dict:
             tickers, period="10d", interval="5m",
             group_by="ticker", auto_adjust=True, progress=False
         )
-    except Exception:
+    except Exception as e:
+        logger.error("yfinance batch download failed: %s", e)
         return {}
 
     is_multi = len(tickers) > 1
