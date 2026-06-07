@@ -5,8 +5,13 @@
 # Restart service
 ssh -i ~/.ssh/gcp_stock_rsa elimaoz99@35.239.74.178 "sudo systemctl restart stock-app.service"
 
-# Deploy backend
-scp -i ~/.ssh/gcp_stock_rsa ~/Desktop/Stock-predictor/api.py elimaoz99@35.239.74.178:/home/elimaoz99/stock_predictor/api.py && ssh -i ~/.ssh/gcp_stock_rsa elimaoz99@35.239.74.178 "sudo systemctl restart stock-app.service && sleep 3 && systemctl is-active stock-app.service"
+# Deploy backend (always deploy all 3 together — api.py imports from scanners + db)
+scp -i ~/.ssh/gcp_stock_rsa \
+  ~/Desktop/Stock-predictor/api.py \
+  ~/Desktop/Stock-predictor/scanners.py \
+  ~/Desktop/Stock-predictor/db.py \
+  elimaoz99@35.239.74.178:/home/elimaoz99/stock_predictor/ && \
+ssh -i ~/.ssh/gcp_stock_rsa elimaoz99@35.239.74.178 "sudo systemctl restart stock-app.service && sleep 3 && systemctl is-active stock-app.service"
 
 # Check logs (live)
 ssh -i ~/.ssh/gcp_stock_rsa elimaoz99@35.239.74.178 "sudo journalctl -u stock-app.service -f"
@@ -44,9 +49,9 @@ cd /home/elimaoz99/stock_predictor && nohup venv/bin/python3 -u pre_scan.py >> p
 | File | Location | Purpose | Writer | Reader |
 |------|----------|---------|--------|--------|
 | `scanner_cache.db` | server + local | Scan results cache (sp500/nasdaq100) | `db.py` | `api.py` |
-| `intraday_cache.db` | server | 5m bars for time-of-day RVOL | `fetch_intraday.py` | `api.py` |
-| `setup_log.db` | server | Volume Leaders + Reversion Hunter outcome tracking | `api.py` | `/api/setup-stats` |
-| `falling_knife_log.db` | server | Falling Knife signal outcome tracking | `api.py` | `/api/falling-knife-stats` |
+| `intraday_cache.db` | server | 5m bars for time-of-day RVOL | `fetch_intraday.py` | `scanners.get_tod_rvol_cached()` |
+| `setup_log.db` | server | Scanner signal outcome tracking (VL + Rev + Gainers) | `db.setup_log_event()` via api.py | `/api/setup-stats` → `db.get_setup_breakdown()` |
+| `falling_knife_log.db` | server | Falling Knife signal outcome tracking | `db.fk_log_event()` via api.py | `/api/falling-knife-stats` → `db.get_fk_stats()` |
 | `tracker.db` | local | Daily BUY signal log + outcome resolver | `live_tracker.py` | `live_tracker.py --report` |
 | `fred_cache.json` | server | FRED dashboard disk cache (survives restarts) | `api.py` | `api.py` (startup) |
 | `wedge_cache.json` | server | Wedge scan results from pre_scan.py | `pre_scan.py` | `/api/wedge-scan` |
@@ -92,9 +97,13 @@ cd /home/elimaoz99/stock_predictor && nohup venv/bin/python3 -u pre_scan.py >> p
 FastAPI (`api.py`) + React (`frontend/src/App.jsx`, built with Vite → `frontend/dist/`)
 
 ## Deploy
-**Backend:**
-```
-scp -i ~/.ssh/gcp_stock_rsa <local_api.py> elimaoz99@35.239.74.178:/home/elimaoz99/stock_predictor/api.py
+**Backend (always deploy all 3 together — api.py imports scanners + db):**
+```bash
+scp -i ~/.ssh/gcp_stock_rsa \
+  ~/Desktop/Stock-predictor/api.py \
+  ~/Desktop/Stock-predictor/scanners.py \
+  ~/Desktop/Stock-predictor/db.py \
+  elimaoz99@35.239.74.178:/home/elimaoz99/stock_predictor/
 # then restart
 ```
 **Frontend (always copy FULL dist):**
@@ -105,10 +114,11 @@ ssh ... "cp -r /home/elimaoz99/stock_predictor/dist/. /home/elimaoz99/stock_pred
 # then restart
 ```
 
-## Architecture
-- `api.py` — FastAPI endpoints, Volume Leaders engine, intraday signals, ML verdict
+## Architecture (updated Jun 7 2026)
+- `api.py` — **1387 lines** — FastAPI endpoints + macro/VIX logic only. Thin routing layer. Imports from `scanners` and `db`.
+- `scanners.py` — **520 lines (new Jun 7)** — All scanner helpers: `compute_verdict`, `compute_momentum`, `gainers_verdict`, `detect_falling_wedge`, `classify_regime`, `get_tod_rvol_cached`, `get_intraday_signals`, `get_market_context`, `get_overhead_supply`, `get_vaccel` + their module-level caches. No imports from api.py.
+- `db.py` — **316 lines** — SQLite logic: scan cache (original) + FK log functions + setup log functions. `fk_db_init`/`setup_db_init` run at module load. WAL mode on all writable DBs.
 - `core_logic.py` — ML model (HistGradientBoostingClassifier, 20 features), CONFIDENCE_THRESHOLD=0.70
-- `db.py` — SQLite scan cache
 - `models.py` — Pydantic models
 - `pre_scan.py` — overnight cron (5:00 UTC): wedge scan + Telegram alert (server copy is authoritative — 334 lines)
 - `fetch_intraday.py` — cron 20:30 UTC: downloads 1m bars → resamples to 5m → `intraday_cache.db`
@@ -127,7 +137,7 @@ Single predict | Scanner (with ALMOST BUY) | Daily report | FRED dashboard | Mac
 - On-demand ML via `get_prediction(sym, light_mode=True)`, ThreadPoolExecutor(5)
 - Cache: `_reversion_cache`, TTL = 900s (15 min), `?force=true` to bypass
 - Endpoint: `GET /api/reversion-leaders`
-- Backend file: `api.py` (globals `_reversion_cache`, `_REVERSION_TTL`; helper `_clean_rev()`)
+- Backend: `api.py` (endpoint + globals `_reversion_cache`, `_REVERSION_TTL`); helpers in `scanners.py`; logging via `db.setup_log_event()`
 
 ### Verdict Tiers
 - **DEEP BUY**: ML verdict == BUY AND RSI < 35 AND vwap_gap_pct < -2%
@@ -217,8 +227,8 @@ Suppresses ML BUY on high-beta stocks — model is Mean-Reversion on institution
 Concept: institutional players accumulate beaten-down stocks at daily lows during 15:00–16:00 ET.
 Validated by: QBTS (May 26), WOLF/PDD/NVTS/QCOM all surged in final 15–20 min on May 27.
 
-**Implementation in `get_volume_leaders()` (`api.py`):**
-- `_rvol_history: dict` — global, symbol → `deque(maxlen=3)` of `(rvol_val, timestamp)`, newest-first
+**Implementation in `get_volume_leaders()` (`api.py`); helpers in `scanners.py`:**
+- `_rvol_history: dict` — global in `api.py`, symbol → `deque(maxlen=3)` of `(rvol_val, timestamp)`, newest-first
 - `_SLOT_SEC = 270` — slot guard: `appendleft` only if `now - deque[0].ts >= 270`; else update `[0]` in-place (prevents F5 spam)
 - `pct_from_low = (price - regularMarketDayLow) / price * 100` — zero extra API calls (`regularMarketDayLow` already in Yahoo screener quote)
 - Time gate: `is_live AND ET_hour == 15` (15:00–15:59 ET only)
@@ -255,11 +265,24 @@ Validated by: QBTS (May 26), WOLF/PDD/NVTS/QCOM all surged in final 15–20 min 
 - One active trade at a time on headwind days. Two simultaneous positions split attention at the critical exit/entry moment. (confirmed: IREN alert missed while managing PDD exit, May 27)
 - Do NOT average down. First entry going wrong = exit signal, not add-more signal. (confirmed: CRCL -$79, NVTS -$86 both from averaging down, May 26)
 
+### Architecture (Jun 7 2026 — do not revert)
+- **Deploy api.py + scanners.py + db.py together** — api.py imports both; deploying api.py alone causes ImportError on startup
+- **Scanner helpers live in scanners.py** — `classify_regime`, `detect_falling_wedge`, `compute_verdict`, `get_intraday_signals`, `get_market_context` etc. Do NOT move back into api.py.
+- **DB logic lives in db.py** — `fk_log_event`, `setup_log_event`, `setup_resolve`, `get_fk_stats`, `get_setup_breakdown`. api.py calls them via `_db.*`.
+- **No imports from api.py in scanners.py or db.py** — would create circular imports.
+- **All SQLite connections: timeout=30, WAL mode** — setup_log.db and falling_knife_log.db have `PRAGMA journal_mode=WAL` set in their `*_db_init()`. Do not revert to timeout=3 or rollback mode.
+
+### Setup Logging Coverage (Jun 7 2026 — do not narrow)
+- **Volume Leaders**: logs all verdicts EXCEPT HOLD and N/A — includes HIGH-BETA, OVEREXTENDED, VOL BREAKOUT
+- **Reversion Hunter**: logs DEEP BUY and POTENTIAL BOUNCE
+- **Gainers**: logs all verdicts EXCEPT WATCH — includes BREAKOUT CONFIRMED, DEVELOPING, FADE RISK, OVERHEAD WALL
+- Narrowing the logged set causes selection bias in `/api/setup-stats` — you'd only measure BUY outcomes and never see if gates blocked winners
+
 ### Volume Leaders
 - hist download: period="6mo" (NOT 3mo — needed for 100-bar ATR percentile)
-- RVOL uses MEDIAN not mean in `_get_tod_rvol_cached()` (robust to earnings volume spikes)
-- `_classify_regime()` uses Wilder's smoothing (alpha=1/N), NOT pandas .ewm() — do not replace
-- `_classify_regime()` requires `np.asarray(..., dtype=float).ravel()` on all inputs (yfinance 2.x MultiIndex guard)
+- RVOL uses MEDIAN not mean in `scanners.get_tod_rvol_cached()` (robust to earnings volume spikes)
+- `scanners.classify_regime()` uses Wilder's smoothing (alpha=1/N), NOT pandas .ewm() — do not replace
+- `scanners.classify_regime()` requires `np.asarray(..., dtype=float).ravel()` on all inputs (yfinance 2.x MultiIndex guard)
 - Regime is observational only — no BUY filter until ≥50 resolved signals per regime in tracker.db
 - HOD gate: threshold 0.35, window 10:00–16:00 ET only, `_atr_daily_cache` — never inline per-request
 - RVOL slope: slot guard 270s, deque maxlen=3 — do not remove guard
@@ -306,26 +329,24 @@ Validated by: QBTS (May 26), WOLF/PDD/NVTS/QCOM all surged in final 15–20 min 
 - `orb_backtest.py` — ORB intraday backtest
 - `.env` — API keys (also at ~/Desktop/daily_reports/.env)
 
-## Git State (May 28 2026)
-All features deployed to server but NOT committed to GitHub:
-- Wedge Scan tab, SWING column, Score column, SPY/QQQ context
-- Earnings Calendar badge, Regime Classification
-- Premium Scan mode, model_version tracking
-- Merger-pinned filter, high-risk badge (pre_scan.py)
-- Momentum Gates: HOD/ATR + RVOL slope (May 22 2026)
-- Beta Gate: rolling beta vs SPY, HIGH-BETA verdict, β ⊘ UI indicator (May 23 2026)
-- backtest_month.py: EMA normalization fix + two-group universe (May 23 2026)
-- live_tracker.py: beta column in DB, _batch_regimes() 6mo+SPY batch, ⚠β Telegram tag (May 24 2026)
-- Reversion Hunter tab (Tab 9): /api/reversion-leaders endpoint, ReversionView component (May 26 2026)
-- TradingView TV links on all 5 symbol tables (May 26 2026)
-- **Power Hour Whale Alert: `_rvol_history` deque + `pct_from_low` + `reversion_alert` in api.py; 🚨 animate-ping badge in VolumeLeadersView (May 27 2026)**
-- **FRED disk cache + sequential fetch fix (Jun 1 2026):** `_load_fred_disk_cache()` / `_save_fred_disk_cache()` added to api.py; `ThreadPoolExecutor` removed from `get_macro_dashboard()`; `"daily": True` on DGS10/DGS2 in FRED_INDICATOR_META; `fred_cache.json` on server
-- **Reversion Hunter RVOL alert (Jun 2 2026):** `rvol_alert = bool((rvol or 0) > 5.0)` added to reversion endpoint; red animate-ping dot in ReversionView Symbol cell when `rvol_alert=true`
-- **Wedge Scan Touches column (Jun 1 2026):** `upper_touches`/`lower_touches` added to pre_scan.py return + scan; Touches column in WedgeScanView (green ≥5, yellow =4, gray =3)
-- **Reversion Hunter Price column (Jun 1 2026):** `price` already in API, Price column added to ReversionView table
+## Git State (Jun 7 2026) — all committed, latest commit: `9fe3557`
+Everything is in sync: local `~/Desktop/Stock-predictor/` = server `/home/elimaoz99/stock_predictor/` = GitHub main.
+
+**Committed Jun 7 2026 (this session):**
+- `scanners.py` — new file, 520 lines, all scanner helpers extracted from api.py
+- `db.py` — expanded to 316 lines: FK log + setup log functions + WAL mode
+- `api.py` — reduced to 1387 lines; imports from scanners + db
+- Setup outcome logger: `setup_log.db`, `/api/setup-stats`, broader logging coverage
+- SQLite WAL mode + timeout=30 on all connections
+- CLAUDE.md: Quick Reference, Config, Databases, Env Vars sections
+
+**Previously committed (all in main):**
+- May–Jun 2026: Wedge Scan tab, SWING/Score columns, SPY/QQQ context, Earnings Calendar, Regime Classification, Premium Scan, Momentum Gates (HOD+RVOL), Beta Gate, Reversion Hunter (Tab 9), TradingView TV links, Power Hour Whale Alert, FRED disk cache, Reversion Hunter RVOL alert, Wedge Scan Touches column, Falling Knife Logger
 
 ## Pending actions
 - **July 10 2026:** VM downgrade e2-standard-2 → e2-medium (see Infrastructure section)
-- **After ~50 resolved signals with beta IS NOT NULL:** run per-beta SQL analysis in tracker.db:
+- **After ~50 resolved signals in setup_log.db:** run `/api/setup-stats` breakdown → verify gate effectiveness (HIGH-BETA, HOD, RVOL blocked vs actual outcomes)
+- **After ~50 resolved signals with beta IS NOT NULL in tracker.db:**
   `SELECT CASE WHEN beta > 1.5 THEN 'high' ELSE 'normal' END, AVG(hit), COUNT(*) FROM signals WHERE beta IS NOT NULL GROUP BY 1`
 - **After ~50 resolved signals per regime:** run per-regime precision analysis → Phase 2 regime filter
+- **Step 3 of refactor (future):** move `get_volume_leaders`, `get_reversion_leaders`, `get_gainers` to `scanners.py` — completes the architecture split
