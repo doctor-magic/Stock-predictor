@@ -71,6 +71,7 @@ Endpoints:
   GET  /api/recommendations           daily Telegram report text files
   GET  /api/macro                     MacroPulse strip (VIX, 10Y, SPY, regime); 1h cache
   GET  /api/macro-dashboard           FRED 11-indicator dashboard; 6h cache; needs FRED_API_KEY
+  POST /api/earnings-calendar         upcoming earnings dates for a list of symbols (see below)
 
 IMPORTANT: api.py self-loads api_data.env at startup (reads the file directly via Python,
 not via systemd EnvironmentFile). Adding a key to api_data.env takes effect on next restart
@@ -90,7 +91,7 @@ FRONTEND (App.jsx)
 Source:        ~/Desktop/Stock-predictor/frontend/src/App.jsx (also on GitHub)
 Compiled dist: /home/elimaoz99/stock_predictor/frontend/dist/
 
-7 tabs:
+9 tabs:
   1. Single stock prediction
   2. Market scanner with MacroPulse strip at top + ALMOST BUY section (see below)
   3. Daily Telegram report (rendered as markdown via react-markdown)
@@ -98,6 +99,8 @@ Compiled dist: /home/elimaoz99/stock_predictor/frontend/dist/
   5. Macro score (bull_score gauge)
   6. Leumi Options — employee stock options simulator (see below)
   7. Volume Leaders — most active US stocks by volume + ML signal
+  8. Wedge Scan — falling wedge pattern results from overnight pre_scan (see below)
+  9. Reversion Hunter — Yahoo day_losers ≥5% drop, mean-reversion ML engine (see below)
 
 Google Analytics: Tag G-5KHC440K09 added to frontend/index.html (May 1 2026).
   gtag script is in the <head> of index.html — do NOT remove it on future builds.
@@ -157,8 +160,17 @@ Uses urllib.request (stdlib only) — no external library needed.
   CFNAI      CFNAI      idx  raw    good=up      monthly (no freq override)
   SENTIMENT  UMCSENT    idx  raw    good=up      monthly (no freq override)
 
-Cache gotcha: Results cached in-memory for 6h. If a restart happens mid-request,
-None values can get cached. Fix: restart service again. Second restart always gets clean data.
+Cache gotcha (FIXED Jun 1 2026 — disk cache added):
+  In-memory cache (_macro_dash_cache) is lost on every service restart.
+  Disk cache: /home/elimaoz99/stock_predictor/fred_cache.json
+    - Loaded into _macro_dash_cache at module startup via _load_fred_disk_cache()
+    - Saved after every successful full fetch (≥4 valid indicators) via _save_fred_disk_cache()
+    - Survives service restarts — no FRED calls needed until TTL expires after restart
+    - DO NOT DELETE fred_cache.json on the server — this breaks the startup warmup
+  Fetch is SEQUENTIAL with time.sleep(0.5) between each series (ThreadPoolExecutor was REMOVED).
+    Why: FRED rate-limits at ~2 concurrent requests → HTTP 429 → nulls cached 6h silently.
+  Stale-cache fallback: if valid < 4 indicators returned by fetch → serve existing cache instead
+    of overwriting with nulls.
 
 
 GIT WORKFLOW
@@ -274,7 +286,8 @@ Local Mac scripts (~/Desktop/Stock-predictor/):
 Telegram credentials (.env at ~/Desktop/Stock-predictor/.env and ~/Desktop/daily_reports/.env):
   TG_API_ID, TG_API_HASH, TG_PHONE, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 Telegram session file: ~/tg_session/session_v3.session
-Telegram sources: capitalflow_co_il, claltelegram, altshuler_shaham
+Telegram sources: capitalflow_co_il, claltelegram, altshuler_shaham, msh_telegram2023 (מגדל — נוסף May 17 2026)
+Message truncation (fetch_daily_report.py): 1200 chars per message (raised from 600 — May 17 2026)
 
 
 SECURITY RULES (enforced — do not revert)
@@ -748,6 +761,49 @@ Deploy note (critical):
   causes 404 on JS/CSS assets (broke the site on May 10 2026).
 
 
+VOLUME LEADERS — MOMENTUM GATES (added May 22 2026)
+-----------------------------------------------------
+Two filters that suppress BUY setup signals when intraday momentum is exhausted.
+Model philosophy: Volume Leaders is a MOMENTUM CHASER. Gates answer "is the fuel still alive?"
+Do NOT add support/resistance level detection — that changes the model's identity.
+
+Gate 1 — HOD Gap / ATR-14:
+  Active window: is_live=True AND 10:00 <= ET_hour < 16:00 only.
+    Before 10:00: ORB forming, HOD is ephemeral → gate disabled.
+    After 16:00:  post-market thin volume inflates HOD ratio → gate disabled.
+  hod = quote.get("regularMarketDayHigh") from Yahoo screener (same call, no extra fetch).
+  atr14_val from _atr_daily_cache[sym] — populated by pandas ewm(alpha=1/14) on 6mo daily hist.
+    Cache key: (sym, trading_date_ET). On cache miss: compute and store. On hit: O(1) lookup.
+    Do NOT compute ATR inline per-request — the 6mo download is the expensive part, ATR piggybacks.
+  hod_gap_ratio = (hod - current_price) / atr14_val
+  Gate fires when hod_gap_ratio > 0.35 → setup = None, setup_blocked_by = "HOD"
+  Threshold 0.35 is a starting point. Calibrate after ~50 resolved signals:
+    SELECT hod_gap_atr_bucket, AVG(fwd_ret_10d) FROM signals GROUP BY 1
+
+Gate 2 — RVOL Slope:
+  Global state: _rvol_history: dict[str, deque(maxlen=3)] — newest entry at index 0.
+  SLOT GUARD (critical): before appendleft, check (now - deque[0].ts) >= 270 seconds.
+    If same 5-min slot: update deque[0] in-place — do NOT appendleft.
+    Without this guard: 3x F5 refresh fills deque with identical readings → flat slope → wrong signal.
+  Requires 3 readings (~15 min post-10:00) before slope is valid.
+  Fires when: RVOL_now < mean(T-1, T-2) * 0.95 → rvol_trend = "down" → setup suppressed.
+  setup_blocked_by = "RVOL"
+
+API additions: setup_blocked_by ("HOD"/"RVOL"/None), hod_gap_ratio (float), rvol_trend ("up"/"flat"/"down"/None)
+
+Frontend (App.jsx):
+  RVOL cell: inline ▲/▼/→ arrow (green/red/gray) appended after the "x" value. Zero new columns.
+  SETUP cell: "— ⊘" with native HTML title tooltip in Hebrew when blocked. Plain "—" otherwise.
+    title HOD:  "חסום: HOD gap {ratio}× ATR — מומנטום מותש"
+    title RVOL: "חסום: RVOL דועך — דלק אוזל"
+
+Calibration case study (IONQ May 21 2026):
+  Entry 1 (10:43 ET, $58.04, HOD $61, ATR ~$4): ratio 0.74 → BLOCKED (missed +$30 winner)
+  Entry 2 (13:25 ET, $59.18, HOD $61): ratio 0.455 + rvol_trend=down → BLOCKED (avoided -$52 stop-out)
+  Net: $0 with gates vs -$22 without gates.
+  Lesson: 0.74 blocked a winner — correct statistically, wrong once. 0.35 threshold needs calibration.
+
+
 VOLUME LEADERS — ON-DEMAND ML (added May 10 2026)
 ---------------------------------------------------
 Enhancement to the Volume Leaders tab: stocks outside S&P 500 / NASDAQ 100
@@ -784,6 +840,54 @@ Performance:
   30-min endpoint cache means this runs once per half-hour, not per user.
 
 
+EARNINGS CALENDAR (added May 18 2026)
+--------------------------------------
+Endpoint: POST /api/earnings-calendar
+Body:     {"symbols": ["AAPL", "NVDA", ...]}  (max 300 symbols, validated by TICKER_RE)
+Returns:  {symbol: {"date": "YYYY-MM-DD", "days_until": int}} — only symbols with upcoming earnings
+
+Implementation (api.py):
+  _get_next_earnings(symbol) → fetches yfinance Ticker.info["earningsTimestamp"]
+    Converts Unix timestamp to UTC date. Returns None if past or not found.
+  _earnings_cache: dict[str, dict] — per-symbol cache {"result": ..., "ts": float}
+  _EARNINGS_CACHE_TTL = 6 * 3600 (6 hours)
+  ThreadPoolExecutor(max_workers=10) for parallel fetching
+  EarningsRequest Pydantic model (symbols: List[str])
+
+Frontend (ScannerView in App.jsx):
+  fetchEarnings(scanResults) — called after every scan result:
+    cache hit (data.status === 'done')
+    poll done (pData.done && pData.results)
+    fallback (Array.isArray(data))
+  Badges shown in Symbol cell of both main table and ALMOST BUY table:
+    ⚠️ Xd (red bg-red-500/20)    — days_until <= 7  (danger: report imminent)
+    📅 Xd (yellow bg-yellow-500/20) — days_until <= 14 (heads up)
+  title attribute shows full date on hover ("Earnings: 2026-05-20")
+
+IMPORTANT: Model NOT changed — this is UI-only. ML confidence is unaffected by proximity to earnings.
+The badge is a manual warning for the user to decide. A future enhancement could auto-reject
+BUY signals with earnings within N days (similar to the options filter in core_logic.py).
+
+Example response: {"NVDA": {"date": "2026-05-20", "days_until": 3}}
+Test: curl -s -X POST https://stock-predictor.online/api/earnings-calendar \
+        -H "Content-Type: application/json" -d '{"symbols": ["NVDA", "AAPL"]}' | python3 -m json.tool
+
+
+WEDGE SCAN TAB (added May 14 2026, recovered May 18 2026)
+-----------------------------------------------------------
+Tab 8: "Wedge Scan" — falling wedge pattern results from the overnight pre_scan.py run.
+Frontend component: WedgeScanView() in App.jsx.
+Endpoints used:
+  GET /api/wedge-scan  — reads wedge_cache.json (written by pre_scan.py at 05:00 daily)
+  GET /api/wedge-live  — returns today's intraday % change for each wedge symbol
+
+IMPORTANT — git state note (May 18 2026):
+  The Wedge Scan tab was accidentally lost when a deploy used an older App.jsx (pre-stash).
+  It was recovered by restoring from git stash ref fa7bc56:frontend/src/App.jsx.
+  The current App.jsx is NOT committed to git — it contains stash content + earnings calendar changes.
+  Before the next major deploy, commit the reconciled App.jsx to GitHub to avoid losing it again.
+
+
 MAC SETUP (completed May 11 2026)
 -----------------------------------
 Migrated from Windows to MacBook. All paths below are Mac equivalents.
@@ -796,3 +900,175 @@ Migrated from Windows to MacBook. All paths below are Mac equivalents.
   Daily reports:    ~/Desktop/daily_reports/stock_recommendations_*.txt
 
 fetch_daily_report.py was updated: all hardcoded Windows paths replaced with Path.home()-based paths.
+
+
+VOLUME LEADERS — BETA GATE (added May 23 2026)
+------------------------------------------------
+Suppresses ML BUY on high-beta stocks. The ML model is Mean-Reversion on institutional stocks;
+it consistently fails on momentum-driven names.
+
+OOS validation (backtest_month.py, May 23 2026):
+  Large-Cap  (beta ~0.7-1.2): 3/4 BUY signals correct, avg return +11.7%
+  High-Beta  (beta  > 1.5):   0/5 BUY signals correct, avg return -10.8%
+
+Implementation (api.py get_volume_leaders()):
+  _BETA_HIGH_THRESHOLD = 1.5  (constant, near TTL constants — do NOT remove)
+  SPY downloaded once per call: yf.download("SPY", period="6mo") → spy_returns = pct_change()
+  Per-symbol: beta = Cov(stock_returns, spy_returns) / Var(spy_returns) over 6mo aligned window.
+    Requires ≥60 bars after inner-join alignment. Wrapped in try/except: beta = None on failure.
+  SPY download also in try/except: spy_returns = None → gate disabled gracefully.
+  If beta > 1.5 AND verdict == "BUY" → verdict = "HIGH-BETA", beta_blocked = True
+  API response adds: beta (float|null), beta_blocked (bool)
+
+Frontend (App.jsx VolumeLeadersView):
+  SETUP cell shows "β ⊘" in purple (text-purple-400) with Hebrew tooltip when row.beta_blocked.
+  Pattern consistent with HOD/RVOL gates.
+
+Calibrate threshold after ~50 resolved trades:
+  SELECT CASE WHEN beta > 1.5 THEN 'high' ELSE 'normal' END, AVG(hit), COUNT(*)
+  FROM signals WHERE beta IS NOT NULL GROUP BY 1
+
+
+VOLUME LEADERS — POWER HOUR WHALE ALERT (added May 27 2026)
+-------------------------------------------------------------
+Concept: institutional players accumulate beaten-down stocks at daily lows during 15:00-16:00 ET.
+Validated: QBTS (May 26), WOLF/PDD/NVTS/QCOM all surged in final 15-20 min on May 27.
+
+Implementation (api.py get_volume_leaders()):
+  pct_from_low = (price - regularMarketDayLow) / price * 100  (no extra API calls)
+  reversion_alert = is_live AND ET_hour == 15 AND pct_from_low < 2.0 AND rvol_trend != "down"
+    Time gate strictly ET_hour == 15 — do NOT extend to 14:xx.
+    Alert fires on rvol_trend=None (warming up) — only suppressed on "down".
+    pct_from_low < 2.0 threshold — do not loosen above 3% without evidence.
+  API response adds: pct_from_low (float|null), reversion_alert (bool)
+
+Frontend (App.jsx VolumeLeadersView):
+  Red animate-ping dot in Symbol cell when row.reversion_alert === true.
+  Same CSS pattern as Reversion Hunter RVOL alert.
+  Tooltip: "🚨 Power Hour — X.X% מהתחתית, נפח עולה"
+
+Slot guard (critical): _rvol_history deque slot guard = 270s — do NOT remove.
+  Prevents F5 spam corrupting RVOL slope (which gate depends on).
+
+
+REVERSION HUNTER TAB (added May 26 2026)
+------------------------------------------
+Tab 9: "Reversion Hunter" — Yahoo Finance day_losers, stocks down ≥5% with mean-reversion analysis.
+Frontend component: ReversionView() at end of App.jsx.
+Endpoint: GET /api/reversion-leaders?min_market_cap=500000000&force=false
+
+Data pipeline:
+  Yahoo Finance day_losers screener (scrIds=day_losers — same API pattern as most_actives).
+  Filter: marketCap ≥ $500M, volume ≥ 2M shares, last trade < 24h, change_pct ≤ -5%.
+  ML: query scanner_cache.db first; on-demand get_prediction(sym, light_mode=True) for uncached.
+  ThreadPoolExecutor(max_workers=5) for on-demand ML. 30-second timeout.
+  yfinance batch download (period="6mo") → RSI(14), regime classification.
+  Intraday signals: _get_intraday_signals() → VWAP, RVOL, base_forming.
+  Cache: _reversion_cache dict, _REVERSION_TTL = 900 (15 min). ?force=true bypasses.
+
+Verdict logic:
+  DEEP BUY:        ml_signal=="BUY" AND RSI < 35 AND vwap_gap_pct < -2%
+  POTENTIAL BOUNCE: ml_signal=="BUY" AND (RSI<35 OR vwap_gap_pct<-2%)
+  OVERSOLD:        RSI < 35 AND vwap_gap_pct < -2% (no ML BUY needed)
+  WATCH:           default
+  FALLING KNIFE:   any of above downgraded if base_forming is explicitly False (not None)
+
+CRITICAL — field names differ from Volume Leaders (do not confuse):
+  ml_signal (NOT ml_verdict)
+  reversion_verdict (NOT verdict)
+  ml_confidence: already 0-100 scale (backend does round(conf * 100, 1)).
+    Do NOT multiply by 100 in frontend — produces "4520%" display bug.
+
+API response fields (full list):
+  symbol, name, price, change_pct, volume, market_cap, rsi, ml_signal, ml_confidence,
+  ml_live, vwap, vwap_gap_pct, above_vwap, is_live, rvol, rvol_quality,
+  rvol_alert, reversion_verdict, regime, adx, base_forming
+
+rvol_alert (added Jun 2 2026):
+  bool = (rvol or 0) > 5.0
+  Frontend: red animate-ping dot in Symbol cell, identical CSS to Power Hour alert.
+  Tooltip: "🚨 RVOL חריג — Nx נפח גבוה במיוחד"
+  Triggered by SOC 9.3x RVOL incident (Jun 1 2026) — wasn't flagged by algorithm.
+
+Entry rule (critical): VWAP bounce confirmation required — do NOT enter on signal alone.
+  VWAP is the TARGET, not the entry trigger.
+  On headwind days (SPY+QQQ both below VWAP): require confirmed green 5m candle closing above VWAP.
+  "+0.2% above VWAP" at entry is NOT confirmation (PDD loss of -$20.44 confirmed this, May 27).
+
+Frontend tables (all 5 symbol tables have Yahoo Finance + TradingView links):
+  Yahoo Finance: https://finance.yahoo.com/quote/${symbol}
+  TradingView:   https://www.tradingview.com/chart/?symbol=${symbol}  (no exchange prefix needed)
+  Symbol cell wrapper: flex items-center gap-1.5 whitespace-nowrap
+    NOT inline-flex — inline-flex inside td renders as block, stacks children vertically.
+
+Helper: _clean_rev(obj) replaces nan/inf → None recursively before JSON return.
+
+
+WEDGE SCAN — TOUCHES COLUMN (added Jun 1-2 2026)
+--------------------------------------------------
+Shows how many times price touched each trendline — critical context for compression reliability.
+
+Problem that motivated this: GIS showed 99% compression (lines nearly converging) with only
+3 touch points (minimum). With few touches, linear regression can produce extreme convergence
+that doesn't reflect visual reality.
+
+Backend (pre_scan.py _detect_falling_wedge()):
+  upper_touches (ut) and lower_touches (lt) were already computed — not returned.
+  Added to return dict: "upper_touches": ut, "lower_touches": lt (after "lookback_used")
+  Added to results.append() in _scan_wedge_patterns(): "upper_touches": w.get("upper_touches", 0)
+
+Frontend (App.jsx WedgeScanView):
+  New "Touches" column (hidden sm:table-cell) between "Comp." and "Vol".
+  Format: "▲N ▼N" (upper / lower touch count).
+  Color: green ≥5 touches, yellow =4, gray =3 (minimum — low reliability).
+  Data shows "—" until next pre_scan runs at 5:00 AM (zero overhead — computed already).
+
+
+FALLING KNIFE RESEARCH (started Jun 2 2026)
+--------------------------------------------
+Testing hypothesis: stocks classified FALLING KNIFE by Reversion Hunter bounce in Power Hour
+(15:00→close) due to short covering.
+
+Backtest script (local Mac):
+  ~/Desktop/Stock-predictor/falling_knife_backtest.py
+  Method: yfinance 5-min bars, 60 days, 54 tickers.
+  FALLING KNIFE proxy: intraday drop ≥ 8% by 14:30 ET.
+  Measures: price at 15:00 ET → close price = Power Hour return.
+  Results (Jun 2 2026, N=11 events):
+    Mean PH return: +1.02% (vs control +0.11%)
+    Median:         +1.47%
+    Win rate:       54.5%
+    FK vs Control:  t=3.13, p=0.0018 ✅ statistically significant
+    vs zero:        p=0.067 (marginal — N too small)
+  Full results CSV: ~/Desktop/Stock-predictor/falling_knife_results.csv
+
+Automated logging (api.py):
+  falling_knife_log.db — SQLite, server-side (/home/elimaoz99/stock_predictor/)
+  Tables:
+    fk_events: id, symbol, date, classify_ts, price, change_pct, rsi, rvol,
+               vwap_gap_pct, price_ph, price_close, ph_return, resolved
+    fk_milestones: key, ts (used for one-time alert sentinel)
+  _fk_log_event(): called when FALLING KNIFE classified during 13:00–15:00 ET
+  _fk_resolve_yesterday(): fetches close prices via yfinance for unresolved past events
+  Endpoint: GET /api/falling-knife-stats → resolves + returns events + stats
+  Milestone alert: Telegram sent ONCE when resolved events first cross 30.
+    Recorded in fk_milestones table as key='n30_alerted' — never fires again.
+    Message includes mean return, win rate, reminder to run RSI analysis.
+
+ANTI-HARKING RULE (do not add RSI filter prematurely):
+  TTD (RSI 71.8 at drop time) was the worst FK event (-1.53% PH return, Jun 2 2026).
+  Tempting to add RSI < 40 filter — but that's HARKing (fitting rule to N=1 outlier).
+  Log ALL events regardless of RSI. After 30+ resolved events, run:
+    SELECT CASE WHEN rsi < 40 THEN 'low_rsi' ELSE 'high_rsi' END,
+           AVG(ph_return), COUNT(*)
+    FROM fk_events WHERE resolved=1 GROUP BY 1
+  Only add filter if the split is statistically significant.
+
+Power Hour retrospective (Jun 2 2026, 15:31 ET → close):
+  CBOE: $273.10 → $275.59 (+$2.49) ✅ whale accumulation confirmed, LOD $269.96
+  SHAK: $56.56  → $57.01  (+$0.45) ✅
+  MIAX: $42.30  → $42.51  (+$0.21) ✅ (RVOL 7x alert)
+  MSTR: $134.44 → $136.08 (+$1.64) ✅ (despite FALLING KNIFE)
+  CELC: $89.33  → $91.42  (+$2.09) ✅ (despite FALLING KNIFE)
+  INTU: $324.00 → $322.14 (-$1.86) ✗ — already above VWAP at 15:31, faded into close
+  Lesson: "already above VWAP" ≠ bullish in Power Hour. Look for stocks near VWAP building base.

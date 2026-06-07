@@ -20,3 +20,4 @@ class ScanRequest(BaseModel):
     top_n: int = 10
     task_id: Optional[str] = None
     force_refresh: bool = False
+    premium_only: bool = False

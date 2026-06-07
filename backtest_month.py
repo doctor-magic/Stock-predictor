@@ -22,14 +22,14 @@ PERIODS = [
     (date(2026,  3, 26), date(2026,  4,  9), "Mar 2026 (Black Swan)"),
 ]
 
-CONFIDENCE_THRESHOLD = 0.65
-MIN_PRECISION_BUY    = 0.48
+CONFIDENCE_THRESHOLD = 0.70
+MIN_PRECISION_BUY    = 0.30
 MIN_PRECISION_SELL   = 0.52
 THRESHOLD            = 0.03
 FORWARD_DAYS         = 10
 
 FEATURES = [
-    "ema9", "ema21", "ema50", "ema_cross",
+    "ema9_dist", "ema21_dist", "ema50_dist", "ema_cross",
     "rsi", "macd_gap", "bb_pos",
     "vol_ratio", "ret_3d_atr", "ret_5d_atr", "ret_10d_atr",
     "sma200_dist",
@@ -73,11 +73,28 @@ def get_sector_etf(ticker: str) -> str:
     _sector_cache[ticker] = col
     return col
 
-TICKERS = [
-    "AAPL", "NVDA", "TSLA", "MSFT", "META", "GOOGL", "AMZN", "SPY",
-    "PLTR", "HOOD", "HWM", "EL", "ALB",
-    "JPM", "GS", "BAC", "XOM", "CVX", "PFE", "JNJ", "WMT",
-    "NFLX", "AMD", "INTC", "CRM", "ORCL", "UBER", "ABNB",
+TICKERS_LARGECAP = [
+    # Blue-chip S&P 500 — institutional, beta ~0.7-1.2
+    "AAPL", "MSFT", "AMZN", "GOOGL", "META",
+    "JPM", "BAC", "WFC", "GS", "MS",
+    "XOM", "CVX", "COP",
+    "JNJ", "PFE", "MRK", "ABBV", "UNH",
+    "WMT", "COST", "HD", "TGT",
+    "V", "MA", "AXP",
+    "CAT", "DE", "HON",
+    "PG", "KO", "PEP",
+    "LLY", "TMO", "ISRG",
+    "ORCL", "CRM", "ACN",
+    "INTC", "NFLX", "UBER",
+]
+
+TICKERS_HIGHBETA = [
+    # Growth/Momentum — beta > 1.5, retail-driven or speculative
+    "NVDA", "TSLA", "AMD", "COIN",
+    "HOOD", "PLTR", "MSTR", "SMCI",
+    "SHOP", "SNAP", "RBLX", "ABNB",
+    "SOFI", "UPST", "DKNG", "LYFT",
+    "ROKU", "RIVN", "MELI", "HWM",
 ]
 
 # ── FRED key ──────────────────────────────────────────────────────────────────
@@ -114,10 +131,13 @@ def fetch_fred(series_id, col, end_date):
 
 def build_features(df, macro, sector_col="spy_close"):
     df = df.copy()
-    df["ema9"]        = df["Close"].ewm(span=9,  adjust=False).mean()
-    df["ema21"]       = df["Close"].ewm(span=21, adjust=False).mean()
-    df["ema50"]       = df["Close"].ewm(span=50, adjust=False).mean()
-    df["ema_cross"]   = (df["ema9"] > df["ema21"]).astype(int)
+    _ema9             = df["Close"].ewm(span=9,  adjust=False).mean()
+    _ema21            = df["Close"].ewm(span=21, adjust=False).mean()
+    _ema50            = df["Close"].ewm(span=50, adjust=False).mean()
+    df["ema9_dist"]   = (df["Close"] - _ema9)  / _ema9
+    df["ema21_dist"]  = (df["Close"] - _ema21) / _ema21
+    df["ema50_dist"]  = (df["Close"] - _ema50) / _ema50
+    df["ema_cross"]   = (_ema9 > _ema21).astype(int)
     sma200            = df["Close"].rolling(200).mean()
     df["sma200_dist"] = (df["Close"] - sma200) / sma200
     df["rsi"]         = compute_rsi(df["Close"])
@@ -217,7 +237,7 @@ def train_predict(df):
     return signal, conf, precision
 
 # ── Run one period ────────────────────────────────────────────────────────────
-def run_period(backtest_date, check_date, label):
+def run_period(backtest_date, check_date, label, tickers):
     print(f"\n{'='*66}")
     print(f"  {label}  |  train up to {backtest_date}  |  check {check_date}")
     print(f"{'='*66}")
@@ -262,7 +282,7 @@ def run_period(backtest_date, check_date, label):
     print("-" * 66)
 
     results = []
-    for ticker in TICKERS:
+    for ticker in tickers:
         try:
             raw = yf.download(ticker, start=str(start), end=str(backtest_date),
                               progress=False, auto_adjust=False)
@@ -328,31 +348,46 @@ def run_period(backtest_date, check_date, label):
         return 0, 0, pd.DataFrame()
 
 # ── Main ──────────────────────────────────────────────────────────────────────
-all_results = []
-total_ok = total_n = 0
-for bdate, cdate, lbl in PERIODS:
-    ok, n, df_r = run_period(bdate, cdate, lbl)
-    total_ok += ok
-    total_n  += n
-    if not df_r.empty:
-        df_r["period"] = lbl
-        all_results.append(df_r)
+GROUPS = [
+    ("LARGE-CAP (beta ~0.7-1.2)", TICKERS_LARGECAP),
+    ("HIGH-BETA (beta >1.5)",      TICKERS_HIGHBETA),
+]
+
+group_summaries = []
+
+for group_name, tickers in GROUPS:
+    print(f"\n{'#'*66}")
+    print(f"  GROUP: {group_name}  ({len(tickers)} tickers)")
+    print(f"{'#'*66}")
+    all_results = []
+    total_ok = total_n = 0
+    for bdate, cdate, lbl in PERIODS:
+        ok, n, df_r = run_period(bdate, cdate, lbl, tickers)
+        total_ok += ok
+        total_n  += n
+        if not df_r.empty:
+            df_r["period"] = lbl
+            all_results.append(df_r)
+
+    combined = pd.concat(all_results) if all_results else pd.DataFrame()
+    group_summaries.append((group_name, total_ok, total_n, combined))
 
 print(f"\n{'='*66}")
-print(f"COMBINED ACROSS ALL PERIODS")
-if total_n:
-    combined = pd.concat(all_results) if all_results else pd.DataFrame()
-    print(f"Total signals: {total_n}  |  Hit rate: {total_ok}/{total_n} = {total_ok/total_n:.0%}")
-    print(f"Avg model precision: {combined['precision'].mean():.1%}")
-
-    # Recall check: did AAPL/NVDA appear at all?
-    print("\nRecall check (AAPL / NVDA):")
-    for t in ["AAPL", "NVDA"]:
-        rows = combined[combined["ticker"] == t]
-        if rows.empty:
-            print(f"  {t}: no signal emitted (filtered or HOLD)")
-        else:
-            for _, r in rows.iterrows():
-                print(f"  {t}: {r['signal']} in '{r['period']}' -> {r['ret_pct']:+.1f}%  {'HIT' if r['correct'] else 'MISS'}")
-else:
-    print("No signals at all.")
+print(f"FINAL COMPARISON: LARGE-CAP vs HIGH-BETA")
+print(f"{'='*66}")
+for group_name, ok, n, df in group_summaries:
+    if n:
+        avg_ret = df["ret_pct"].mean()
+        avg_prec = df["precision"].mean()
+        print(f"\n{group_name}")
+        print(f"  Signals: {n}  |  Hit rate: {ok}/{n} = {ok/n:.0%}  |  Avg ret: {avg_ret:+.1f}%  |  Avg precision: {avg_prec:.1%}")
+        for sig in ["BUY", "SELL"]:
+            sub = df[df["signal"] == sig]
+            if not sub.empty:
+                print(f"    {sig}: {int(sub['correct'].sum())}/{len(sub)}  avg ret {sub['ret_pct'].mean():+.1f}%")
+        top = df.nlargest(3, "ret_pct")[["ticker","period","ret_pct","correct"]]
+        bot = df.nsmallest(3, "ret_pct")[["ticker","period","ret_pct","correct"]]
+        print(f"  Best:  " + " | ".join(f"{r.ticker} {r.ret_pct:+.1f}%" for _, r in top.iterrows()))
+        print(f"  Worst: " + " | ".join(f"{r.ticker} {r.ret_pct:+.1f}%" for _, r in bot.iterrows()))
+    else:
+        print(f"\n{group_name}: No signals.")

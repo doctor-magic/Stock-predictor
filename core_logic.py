@@ -28,7 +28,7 @@ MIN_PRECISION_SELL    = 0.52  # SELL precision easier in volatile markets
 MIN_PRECISION         = MIN_PRECISION_SELL  # default used in backtest imports
 
 FEATURES = [
-    "ema9", "ema21", "ema50", "ema_cross",              # 0-3  trend
+    "ema9_dist", "ema21_dist", "ema50_dist", "ema_cross",  # 0-3  trend (% distance from price)
     "rsi", "macd_gap", "bb_pos",                         # 4-6  momentum
     "vol_ratio", "ret_3d_atr", "ret_5d_atr", "ret_10d_atr",  # 7-10 ATR-normalized returns+volume
     "sma200_dist",                                        # 11   long-term trend
@@ -61,6 +61,17 @@ SECTOR_ETF_MAP = {
     "Communication Services": "XLC",
 }
 _sector_cache: dict = {}  # ticker → macro column name, e.g. "sect_XLK"
+
+# OOS-validated elite universe (swing_backtest May 2026, 9 stocks, BUY>=65% precision).
+# Optimal confidence threshold is 0.65, NOT 0.57 used for full-universe scanner.
+PREMIUM_UNIVERSE = {
+    "Goldman Sachs": "GS",   "Bank of America": "BAC",
+    "ExxonMobil":    "XOM",  "Caterpillar":     "CAT",
+    "Tesla":         "TSLA", "AMD":             "AMD",
+    "NVIDIA":        "NVDA", "Google":          "GOOGL",
+    "Apple":         "AAPL",
+}
+PREMIUM_SCAN_THRESHOLD = 0.65  # OOS-optimal for 9-stock universe (full universe uses 0.57)
 
 PRESET_STOCKS = {
     "us": {
@@ -344,10 +355,13 @@ def get_sector_etf(ticker: str) -> str:
 
 def build_features(df: pd.DataFrame, sector_col: str = "spy_close") -> pd.DataFrame:
     df = df.copy()
-    df["ema9"] = df["Close"].ewm(span=9, adjust=False).mean()
-    df["ema21"] = df["Close"].ewm(span=21, adjust=False).mean()
-    df["ema50"] = df["Close"].ewm(span=50, adjust=False).mean()
-    df["ema_cross"] = (df["ema9"] > df["ema21"]).astype(int)
+    _ema9  = df["Close"].ewm(span=9,  adjust=False).mean()
+    _ema21 = df["Close"].ewm(span=21, adjust=False).mean()
+    _ema50 = df["Close"].ewm(span=50, adjust=False).mean()
+    df["ema_cross"]  = (_ema9 > _ema21).astype(int)
+    df["ema9_dist"]  = (df["Close"] - _ema9)  / _ema9
+    df["ema21_dist"] = (df["Close"] - _ema21) / _ema21
+    df["ema50_dist"] = (df["Close"] - _ema50) / _ema50
     sma200 = df["Close"].rolling(200).mean()
     df["sma200_dist"] = (df["Close"] - sma200) / sma200
     df["rsi"] = compute_rsi(df["Close"])
@@ -648,6 +662,14 @@ def _train_single(name, sym, raw_data, multi):
         if final_signal == "BUY" and df["cmf"].iloc[-1] < 0:
             final_signal = "HOLD"
 
+        # Trend filter: BUY requires price > SMA50 (mirrors _compute_verdict guard)
+        if final_signal == "BUY":
+            closes = raw["Close"].dropna()
+            if len(closes) >= 50:
+                sma50 = closes.iloc[-50:].mean()
+                if float(closes.iloc[-1]) < float(sma50):
+                    final_signal = "HOLD"
+
         if final_signal == "SELL":
             final_signal = "HOLD"
 
@@ -668,10 +690,12 @@ def _train_single(name, sym, raw_data, multi):
         return None
 
 
-def run_market_scan(market_id: str, progress_callback=None):
+def run_market_scan(market_id: str, progress_callback=None, premium_only: bool = False):
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    if market_id == "sp500":
+    if premium_only:
+        stocks = PREMIUM_UNIVERSE
+    elif market_id == "sp500":
         stocks = load_sp500()
     elif market_id == "nasdaq100":
         stocks = load_nasdaq100()
@@ -739,5 +763,11 @@ def run_market_scan(market_id: str, progress_callback=None):
         with ThreadPoolExecutor(max_workers=min(len(results), 8)) as pool:
             filtered = list(pool.map(_apply_options_filter, results))
         results = [r for r in filtered if r is not None]
+
+    # Premium mode: raise effective BUY threshold to 0.65 (OOS-optimal for 9-stock universe)
+    if premium_only:
+        for r in results:
+            if r.get("signal") == "BUY" and r.get("confidence", 0) < PREMIUM_SCAN_THRESHOLD:
+                r["signal"] = "HOLD"
 
     return sorted(results, key=lambda x: x["confidence"], reverse=True)

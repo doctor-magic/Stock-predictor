@@ -28,6 +28,11 @@ FORWARD_DAYS  = 10   # trading days
 HIT_THRESHOLD = 0.03
 MARKETS       = ["sp500", "nasdaq100"]
 DB_PATH       = Path(__file__).parent / "tracker.db"
+
+# Bump this whenever a material model change ships:
+# features, threshold, universe, label scheme, SELL suppression, etc.
+# Format: YYYY-MM_short_description
+MODEL_VERSION = "2026-05_ema_dist_regime"  # normalized EMA features + regime tagging + 0.70 threshold
 ENV_FILE      = Path(__file__).parent / ".env"
 
 # Load .env (Telegram credentials)
@@ -63,7 +68,142 @@ def init_db(conn: sqlite3.Connection) -> None:
         hit           INTEGER
     );
     """)
+    for col, typedef in [
+        ("regime",          "TEXT"),
+        ("model_version",   "TEXT"),
+        ("beta",            "REAL"),
+        ("entry_vix",       "REAL"),
+        ("spy_trend",       "TEXT"),
+        ("entry_spy_ret5d", "REAL"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE signals ADD COLUMN {col} {typedef}")
+            conn.commit()
+        except Exception:
+            pass  # column already exists
     conn.commit()
+
+
+def _classify_regime(highs, lows, closes) -> tuple[str, float]:
+    """ADX-14 (Wilder) × ATR-14 vol percentile → regime string + ADX value.
+    Wilder's: seed=SMA(N), then out[i]=(out[i-1]*(N-1)+arr[i])/N  (alpha=1/N, not 2/(N+1)).
+    ATR percentile: last 100 bars (requires 6mo download).
+    """
+    highs  = np.asarray(highs,  dtype=float).ravel()
+    lows   = np.asarray(lows,   dtype=float).ravel()
+    closes = np.asarray(closes, dtype=float).ravel()
+    if len(closes) < 30:
+        return "unknown", 0.0
+    h  = highs[1:]
+    l  = lows[1:]
+    pc = closes[:-1]
+    c  = closes[1:]
+    tr   = np.maximum(h - l, np.maximum(np.abs(h - pc), np.abs(l - pc)))
+    up   = highs[1:] - highs[:-1]
+    down = lows[:-1] - lows[1:]
+    pdm  = np.where((up > down) & (up > 0),   up,   0.0)
+    ndm  = np.where((down > up) & (down > 0), down, 0.0)
+    n = 14
+    def _wilder(arr):
+        out = np.full(len(arr), np.nan)
+        if len(arr) < n:
+            return out
+        out[n - 1] = arr[:n].mean()
+        for i in range(n, len(arr)):
+            out[i] = (out[i - 1] * (n - 1) + arr[i]) / n
+        return out
+    atr14 = _wilder(tr)
+    safe  = np.where(atr14 > 0, atr14, np.nan)
+    pdi14 = 100.0 * _wilder(pdm) / safe
+    ndi14 = 100.0 * _wilder(ndm) / safe
+    di_s  = pdi14 + ndi14
+    dx    = np.where(di_s > 0, 100.0 * np.abs(pdi14 - ndi14) / di_s, 0.0)
+    dx_valid = dx[n - 1:]
+    if len(dx_valid) < n:
+        return "unknown", 0.0
+    adx_arr = _wilder(dx_valid)
+    cur_adx = adx_arr[-1]
+    if np.isnan(cur_adx):
+        return "unknown", 0.0
+    adx_val = round(float(cur_adx), 1)
+    trend = "ranging" if cur_adx < 25 else "weak_trend" if cur_adx < 40 else "strong_trend"
+    atr_norm = atr14 / c
+    valid    = atr_norm[~np.isnan(atr_norm)]
+    if len(valid) < 10:
+        return f"{trend}_unknown", adx_val
+    window = valid[-100:]                                    # last 100 bars ~= 5 months
+    rank   = float(np.sum(window < window[-1])) / len(window)
+    vol    = "low_vol" if rank < 0.33 else "med_vol" if rank < 0.67 else "high_vol"
+    return f"{trend}_{vol}", adx_val
+
+
+def _batch_regimes(symbols: list[str]) -> dict[str, dict]:
+    """Download 6mo OHLCV for symbols + SPY; return per-symbol regime and beta.
+    6mo required for 100-bar ATR percentile window in _classify_regime().
+    SPY added once for batch beta computation — not re-downloaded per symbol.
+    """
+    if not symbols:
+        return {}
+    unique = list(dict.fromkeys(symbols))
+    tickers = unique + ([] if "SPY" in unique else ["SPY"])
+    try:
+        hist = yf.download(tickers, period="6mo", interval="1d", progress=False, auto_adjust=True)
+        if hist.empty:
+            return {}
+        multi = len(tickers) > 1
+
+        spy_returns = None
+        try:
+            spy_close = (hist["Close"]["SPY"] if multi else hist["Close"]).dropna()
+            spy_returns = spy_close.pct_change().dropna()
+        except Exception:
+            pass
+
+        result = {}
+        for sym in unique:
+            if sym == "SPY":
+                continue
+            try:
+                closes = (hist["Close"][sym] if multi else hist["Close"]).dropna()
+                highs  = (hist["High"][sym]  if multi else hist["High"]).dropna()
+                lows   = (hist["Low"][sym]   if multi else hist["Low"]).dropna()
+                regime, _ = _classify_regime(highs.values, lows.values, closes.values)
+
+                beta = None
+                if spy_returns is not None and len(closes) >= 60:
+                    stock_ret = closes.pct_change().dropna()
+                    s, m = stock_ret.align(spy_returns, join="inner")
+                    if len(s) >= 60:
+                        cov = float(np.cov(s, m)[0, 1])
+                        var = float(np.var(m, ddof=1))
+                        beta = round(cov / var, 2) if var > 0 else None
+
+                result[sym] = {"regime": regime, "beta": beta}
+            except Exception:
+                result[sym] = {"regime": "unknown", "beta": None}
+        return result
+    except Exception:
+        return {}
+
+
+def _get_market_context() -> tuple[float | None, str | None, float | None]:
+    """Return (entry_vix, spy_trend, spy_ret5d) at time of signal logging.
+    spy_trend: BULL_STRONG (>SMA50 & >SMA200) / BULL_WEAK (>SMA200 only) / BEAR (<SMA200).
+    Requires period="300d" — 200 calendar days gives only ~140 trading days, not enough for SMA200.
+    """
+    spy  = yf.Ticker("SPY").history(period="300d")["Close"]
+    vix  = float(yf.Ticker("^VIX").history(period="5d")["Close"].iloc[-1])
+    sma50   = float(spy.rolling(50).mean().iloc[-1])
+    sma200  = float(spy.rolling(200).mean().iloc[-1])
+    current = float(spy.iloc[-1])
+    ret5d   = float(spy.pct_change(5).iloc[-1])
+    if current > sma50 and current > sma200:
+        trend = "BULL_STRONG"
+    elif current >= sma200:
+        trend = "BULL_WEAK"
+    else:
+        trend = "BEAR"
+    return round(vix, 2), trend, round(ret5d, 4)
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────────
@@ -145,10 +285,10 @@ def send_telegram(text: str) -> None:
 
 # ── Core operations ─────────────────────────────────────────────────────────────
 def log_signals(conn: sqlite3.Connection) -> list[dict]:
-    """Fetch today's BUY>=0.70 signals from GCP and persist new ones."""
+    """Fetch today's BUY>=0.70 signals from GCP and persist new ones (with regime tag)."""
     today = str(date.today())
-    new_signals: list[dict] = []
     seen: set[str] = set()
+    to_insert: list[tuple] = []  # (sym, conf, price)
 
     for market in MARKETS:
         try:
@@ -165,20 +305,43 @@ def log_signals(conn: sqlite3.Connection) -> list[dict]:
                 continue
             seen.add(sym)
 
-            conf  = r.get("confidence", 0)
-            price = r.get("last_price")
-
             prev = conn.execute(
                 "SELECT id FROM signals WHERE sym=? AND date_logged=?", (sym, today)
             ).fetchone()
             if prev:
                 continue
 
-            conn.execute(
-                "INSERT INTO signals (sym, date_logged, entry_price, confidence) VALUES (?,?,?,?)",
-                (sym, today, price, conf),
-            )
-            new_signals.append({"sym": sym, "conf": conf, "price": price})
+            to_insert.append((sym, r.get("confidence", 0), r.get("last_price")))
+
+    if not to_insert:
+        return []
+
+    # Batch compute regime — one yfinance download for all new BUY symbols
+    print(f"  Computing regime for {len(to_insert)} new signal(s)...")
+    regime_map = _batch_regimes([t[0] for t in to_insert])
+
+    vix_val, spy_trend_val, spy_ret5d_val = None, None, None
+    try:
+        vix_val, spy_trend_val, spy_ret5d_val = _get_market_context()
+        print(f"  Market context: {spy_trend_val}, VIX={vix_val}, SPY 5d={spy_ret5d_val:+.2%}")
+    except Exception as e:
+        print(f"  ⚠️ market context unavailable: {e}")
+
+    new_signals: list[dict] = []
+    for sym, conf, price in to_insert:
+        entry  = regime_map.get(sym, {})
+        regime = entry.get("regime", "unknown")
+        beta   = entry.get("beta")
+        conn.execute(
+            "INSERT INTO signals (sym, date_logged, entry_price, confidence, regime, model_version, beta,"
+            " entry_vix, spy_trend, entry_spy_ret5d)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (sym, today, price, conf, regime, MODEL_VERSION, beta, vix_val, spy_trend_val, spy_ret5d_val),
+        )
+        new_signals.append({
+            "sym": sym, "conf": conf, "price": price, "regime": regime, "beta": beta,
+            "entry_vix": vix_val, "spy_trend": spy_trend_val, "entry_spy_ret5d": spy_ret5d_val,
+        })
 
     conn.commit()
     return new_signals
@@ -250,7 +413,6 @@ def print_report(conn: sqlite3.Connection) -> dict:
         print("\n  No resolved signals yet.")
 
     if pending:
-        today = date.today()
         print(f"\n  Pending ({len(pending)}):")
         print(f"  {'Sym':<7} {'Date':<12} {'Conf':>5} {'Entry':>8}  Days")
         print(f"  {'-'*44}")
@@ -272,9 +434,24 @@ def build_telegram_msg(new_signals: list, resolved: list, stats: dict) -> str:
     lines = [f"<b>Long-only Expert — {today_str}</b>"]
 
     if new_signals:
+        s0 = new_signals[0]
+        spy_t = s0.get("spy_trend")
+        vix   = s0.get("entry_vix")
+        ret5d = s0.get("entry_spy_ret5d")
+        if spy_t or vix is not None:
+            parts = []
+            if spy_t:            parts.append(spy_t)
+            if vix  is not None: parts.append(f"VIX {vix:.1f}")
+            if ret5d is not None: parts.append(f"SPY 5d {ret5d*100:+.1f}%")
+            lines.append(f"🌡 {' | '.join(parts)}")
+
         lines.append(f"\n<b>New BUY signals ({len(new_signals)}):</b>")
         for s in sorted(new_signals, key=lambda x: -x["conf"]):
-            lines.append(f"  • {s['sym']:<6} {s['conf']:.0%}  ${s['price']:.2f}")
+            regime = s.get("regime", "")
+            regime_tag = f"  [{regime}]" if regime and regime != "unknown" else ""
+            beta = s.get("beta")
+            beta_tag = f" ⚠β{beta:.1f}" if beta is not None and beta > 1.5 else ""
+            lines.append(f"  • {s['sym']:<6} {s['conf']:.0%}  ${s['price']:.2f}{regime_tag}{beta_tag}")
     else:
         lines.append("\nNo new BUY signals today.")
 
