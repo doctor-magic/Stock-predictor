@@ -5,6 +5,11 @@
 # Restart service
 ssh -i ~/.ssh/gcp_stock_rsa elimaoz99@35.239.74.178 "sudo systemctl restart stock-app.service"
 
+# Deploy (CANONICAL — verified pipeline: unittest gate → scp → restart → health(200|401,retry) → frontend disk-hash check)
+./deploy.sh                 # full: backend + frontend
+./deploy.sh --backend-only  # backend only (skips frontend build/copy)
+
+# ── Manual fallback (only if deploy.sh is unavailable) ──
 # Deploy backend (always deploy all 3 together — api.py imports from scanners + db)
 scp -i ~/.ssh/gcp_stock_rsa \
   ~/Desktop/Stock-predictor/api.py \

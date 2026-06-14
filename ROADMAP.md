@@ -15,7 +15,8 @@
 
 ---
 
-## 🟡 Phase 1 — `deploy.sh`
+## 🟢 Phase 1 — `deploy.sh` `[DONE]`
+**Shipped:** 2026-06-14. Verified end-to-end in production (backend-only + full run): cold-start retry observed 000→401, disk check confirmed the hashed asset landed in the active dir. `--backend-only` opt-out; hang-proof SSH (`ConnectTimeout` + `BatchMode` + curl `--max-time`).
 **Done when:** a single command on the Mac performs, as one atomic chain:
 1. local `unittest` run as a **blocking gate** (abort deploy on any failure)
 2. unified `scp` of `api.py` + `scanners.py` + `db.py` **together** (never api.py alone → ImportError)
