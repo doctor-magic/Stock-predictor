@@ -1,0 +1,20 @@
+# Secrets — never commit
+.env
+api_data.env
+*.env
+
+# Local state / SQLite databases (server-side or local runtime)
+*.db
+*.db-wal
+*.db-shm
+
+# Local research outputs / runtime caches
+falling_knife_results.csv
+wedge_cache.json
+fred_cache.json
+macro_state.json
+
+# Python / OS junk
+__pycache__/
+*.pyc
+.DS_Store

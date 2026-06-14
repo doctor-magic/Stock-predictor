@@ -1,4 +1,6 @@
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Depends, status
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
+import secrets
 from pydantic import BaseModel
 from typing import List, Dict
 import logging
@@ -27,6 +29,37 @@ import scanners
 import db as _db
 import db
 
+# ── Basic Auth ────────────────────────────────────────────────────────────────
+_security = HTTPBasic()
+
+def _load_basic_auth_users() -> dict[str, str]:
+    raw = os.getenv("BASIC_AUTH_USERS", "").strip()
+    if not raw:
+        return {}
+    users = {}
+    for pair in raw.split(","):
+        if ":" in pair:
+            username, password = pair.split(":", 1)
+            users[username.strip()] = password.strip()
+    return users
+
+_BASIC_AUTH_USERS = _load_basic_auth_users()
+_ENABLE_AUTH = os.getenv("ENABLE_AUTH", "true").lower() == "true"
+
+def _require_auth(credentials: HTTPBasicCredentials = Depends(_security)) -> str:
+    if not _ENABLE_AUTH:
+        return "auth_disabled"
+    if not _BASIC_AUTH_USERS:
+        return "no_users_configured"
+    correct_password = _BASIC_AUTH_USERS.get(credentials.username)
+    if correct_password is None or not secrets.compare_digest(credentials.password.encode('utf-8'), correct_password.encode('utf-8')):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid username or password",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    return credentials.username
+
 logger = logging.getLogger(__name__)
 from models import PredictionResult, ScanRequest
 
@@ -53,7 +86,7 @@ IMPORTANCE_DESCRIPTIONS: dict[str, str] = {
     "t10y2y":       "Yield curve (10Y minus 2Y) — negative = inverted curve, historically precedes slowdowns.",
 }
 
-app = FastAPI(title="Stock Predictor Pro API")
+app = FastAPI(title="Stock Predictor Pro API", dependencies=[Depends(_require_auth)])
 
 # No CORS middleware — frontend is co-hosted on the same origin
 
@@ -232,7 +265,7 @@ def get_recommendations():
 
 FRED_API_KEY = os.getenv("FRED_API_KEY", "")
 
-_MACRO_TTL      = 3600    # 1 h  – MacroPulse strip
+_MACRO_TTL      = 300     # 5 min – MacroPulse strip
 _MACRO_DASH_TTL = 21600   # 6 h  – FRED Dashboard
 
 _macro_cache:      dict = {"ts": 0, "data": None}
@@ -451,14 +484,14 @@ def get_macro():
 
     import yfinance as yf
     try:
-        tickers = yf.download("^VIX ^TNX SPY", period="15d", progress=False, auto_adjust=True)
+        tickers = yf.download("^VIX ^TNX", period="15d", progress=False, auto_adjust=True)
         close = tickers["Close"]
 
         vix_series = close["^VIX"].dropna()
         vix        = float(vix_series.iloc[-1])
         rate_10y   = float(close["^TNX"].dropna().iloc[-1])
-        spy_s      = close["SPY"].dropna()
-        spy_change = float((spy_s.iloc[-1] / spy_s.iloc[-2] - 1) * 100)
+        _spy_fi = yf.Ticker("SPY").fast_info
+        spy_change = float((_spy_fi.last_price / _spy_fi.previous_close - 1) * 100)
 
         roc3, roc5, scaled = _calc_vix_signals(vix_series)
 
@@ -877,6 +910,7 @@ def get_volume_leaders(min_market_cap: int = 200_000_000, force: bool = False):
 
         current_price = quote.get("regularMarketPrice")
         above_sma50 = (current_price is not None and sma50 is not None and current_price > sma50)
+        dist_from_sma50 = round((current_price / sma50 - 1) * 100, 2) if (current_price and sma50) else None
 
         momentum = scanners.compute_momentum(rsi, vol_ratio, ret_5d or 0.0)
         verdict  = scanners.compute_verdict(
@@ -929,6 +963,7 @@ def get_volume_leaders(min_market_cap: int = 200_000_000, force: bool = False):
             "adx":    adx_val,
             "beta":         beta,
             "beta_blocked": beta_blocked,
+            "dist_from_sma50": dist_from_sma50,
         })
         # Log all non-trivial verdicts for outcome tracking (not just BUY)
         if verdict not in ("HOLD", "N/A"):
@@ -1323,8 +1358,11 @@ def get_gainers(force: bool = False):
 
     results = []
     for quote in filtered:
-        sym   = quote["symbol"]
-        price = quote.get("regularMarketPrice")
+        sym      = quote["symbol"]
+        price    = quote.get("regularMarketPrice")
+        vol_today_g = quote.get("regularMarketVolume", 0)
+        vol_avg_g   = quote.get("averageDailyVolume3Month", 0)
+        vol_ratio_g = round(vol_today_g / vol_avg_g, 1) if vol_avg_g > 0 else None
         intra = intraday.get(sym, {})
         vwap  = intra.get("vwap")
         vwap_gap_pct = None
@@ -1355,6 +1393,7 @@ def get_gainers(force: bool = False):
             "overhead_blocked":  overhead_blocked,
             "atr14":             overhead.get("atr14"),
             "verdict":           verdict,
+            "vol_ratio":         vol_ratio_g,
         })
         if verdict not in ("WATCH",):
             _db.setup_log_event("gainers", results[-1])

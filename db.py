@@ -198,12 +198,17 @@ def setup_db_init():
         vwap_gap_pct  REAL,
         rvol_val      REAL,
         rvol_alert    INTEGER DEFAULT 0,
+        dist_from_sma50 REAL,
         resolved      INTEGER DEFAULT 0,
         close_1d      REAL,
         close_5d      REAL,
         ret_1d        REAL,
         ret_5d        REAL
     )""")
+    try:
+        con.execute("ALTER TABLE setup_log ADD COLUMN dist_from_sma50 REAL")
+    except Exception:
+        pass
     con.commit()
     con.close()
 
@@ -222,8 +227,9 @@ def setup_log_event(source: str, row: dict):
                     source, symbol, date, log_ts, price,
                     verdict, ml_signal, ml_confidence,
                     vol_ratio, rsi, beta, beta_blocked, above_sma50,
-                    regime, reversion_verdict, vwap_gap_pct, rvol_val, rvol_alert
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    regime, reversion_verdict, vwap_gap_pct, rvol_val, rvol_alert,
+                    dist_from_sma50
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
                 source, row.get("symbol"), today,
                 datetime.utcnow().isoformat(),
@@ -241,6 +247,7 @@ def setup_log_event(source: str, row: dict):
                 row.get("vwap_gap_pct"),
                 row.get("rvol"),
                 1 if row.get("rvol_alert") else 0,
+                row.get("dist_from_sma50"),
             ))
             con.commit()
         con.close()
@@ -272,7 +279,7 @@ def setup_resolve():
                 c5 = float(closes[5]) if len(closes) > 5 else None
                 r1 = round((c1 / entry_price - 1) * 100, 2) if c1 else None
                 r5 = round((c5 / entry_price - 1) * 100, 2) if c5 else None
-                resolved = 1 if (today - event_date).days >= 5 else 0
+                resolved = 1 if c5 is not None else 0
                 con.execute(
                     "UPDATE setup_log SET close_1d=?, close_5d=?, ret_1d=?, ret_5d=?, resolved=? WHERE id=?",
                     (c1, c5, r1, r5, resolved, row_id)

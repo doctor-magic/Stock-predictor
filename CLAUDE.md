@@ -13,6 +13,12 @@ scp -i ~/.ssh/gcp_stock_rsa \
   elimaoz99@35.239.74.178:/home/elimaoz99/stock_predictor/ && \
 ssh -i ~/.ssh/gcp_stock_rsa elimaoz99@35.239.74.178 "sudo systemctl restart stock-app.service && sleep 3 && systemctl is-active stock-app.service"
 
+# Deploy frontend (always copy FULL dist — Vite hashes filenames)
+cd ~/Desktop/Stock-predictor/frontend && npm run build && \
+scp -r -i ~/.ssh/gcp_stock_rsa dist/ elimaoz99@35.239.74.178:/home/elimaoz99/stock_predictor/ && \
+ssh -i ~/.ssh/gcp_stock_rsa elimaoz99@35.239.74.178 \
+  "cp -r /home/elimaoz99/stock_predictor/dist/. /home/elimaoz99/stock_predictor/frontend/dist/ && sudo systemctl restart stock-app.service"
+
 # Check logs (live)
 ssh -i ~/.ssh/gcp_stock_rsa elimaoz99@35.239.74.178 "sudo journalctl -u stock-app.service -f"
 
@@ -40,7 +46,7 @@ cd /home/elimaoz99/stock_predictor && nohup venv/bin/python3 -u pre_scan.py >> p
 | MODEL_VERSION | "2026-05_ema_dist_regime" | live_tracker.py |
 | Volume Leaders TTL | 1800s | api.py |
 | Reversion Hunter TTL | 900s | api.py |
-| Macro strip TTL | 3600s | api.py |
+| Macro strip TTL | 300s | api.py |
 | FRED dashboard TTL | 21600s | api.py |
 
 ---
@@ -52,7 +58,7 @@ cd /home/elimaoz99/stock_predictor && nohup venv/bin/python3 -u pre_scan.py >> p
 | `intraday_cache.db` | server | 5m bars for time-of-day RVOL | `fetch_intraday.py` | `scanners.get_tod_rvol_cached()` |
 | `setup_log.db` | server | Scanner signal outcome tracking (VL + Rev + Gainers) | `db.setup_log_event()` via api.py | `/api/setup-stats` → `db.get_setup_breakdown()` |
 | `falling_knife_log.db` | server | Falling Knife signal outcome tracking | `db.fk_log_event()` via api.py | `/api/falling-knife-stats` → `db.get_fk_stats()` |
-| `tracker.db` | local | Daily BUY signal log + outcome resolver | `live_tracker.py` | `live_tracker.py --report` |
+| `tracker.db` | **server** (was local until Jun 14 2026) | Daily BUY signal log + outcome resolver | `live_tracker.py` cron (20:05 UTC Mon–Fri) | `live_tracker.py --report` |
 | `fred_cache.json` | server | FRED dashboard disk cache (survives restarts) | `api.py` | `api.py` (startup) |
 | `wedge_cache.json` | server | Wedge scan results from pre_scan.py | `pre_scan.py` | `/api/wedge-scan` |
 | `macro_state.json` | server | VIX state machine persistence | `api.py` | `api.py` |
@@ -65,23 +71,77 @@ cd /home/elimaoz99/stock_predictor && nohup venv/bin/python3 -u pre_scan.py >> p
 | FRED_API_KEY | `api.py` (macro dashboard) | `api_data.env` |
 | TELEGRAM_BOT_TOKEN | `api.py`, `pre_scan.py`, `live_tracker.py` | `api_data.env` |
 | TELEGRAM_CHAT_ID | `api.py`, `pre_scan.py`, `live_tracker.py` | `api_data.env` |
+| BASIC_AUTH_USERS | `api.py` (Basic Auth on endpoints), `live_tracker.py` (sends auth header to `/api/scan`) | `api_data.env` |
+| ENABLE_AUTH | `api.py` (enforces auth), `live_tracker.py` (fail-fast warn if true but BASIC_AUTH_USERS unset) | `api_data.env` (default `"true"`) |
 
-`api_data.env` lives in `/home/elimaoz99/stock_predictor/` on server and `~/Desktop/Stock-predictor/` locally. `api.py` self-loads it at startup. Local scripts load via `python-dotenv` or manual parse.
+`api_data.env` lives in `/home/elimaoz99/stock_predictor/` on server and `~/Desktop/Stock-predictor/` locally. `api.py` self-loads it at startup. `live_tracker.py` (server cron) loads **api_data.env first, then .env** via `os.environ.setdefault()` (Jun 14 2026 fix — loading `.env` first missed `BASIC_AUTH_USERS` and caused a silent 9-day 401 outage). Other local scripts load via `python-dotenv` or manual parse.
+
+---
+
+## Debugging & Inspection
+
+### setup_log.db (scanner signal outcomes)
+```bash
+ssh -i ~/.ssh/gcp_stock_rsa elimaoz99@35.239.74.178
+cd /home/elimaoz99/stock_predictor
+
+# Recent signals (last 20)
+sqlite3 setup_log.db "SELECT source, symbol, date, verdict, ml_confidence, beta_blocked, resolved FROM setup_log ORDER BY log_ts DESC LIMIT 20;"
+
+# Breakdown by verdict + outcome (resolved only)
+sqlite3 setup_log.db "SELECT source, verdict, beta_blocked, COUNT(*) as n, ROUND(AVG(ret_5d),2) as mean_5d FROM setup_log WHERE resolved=1 GROUP BY source, verdict, beta_blocked ORDER BY mean_5d DESC;"
+
+# Unresolved (waiting for close data)
+sqlite3 setup_log.db "SELECT symbol, date, verdict FROM setup_log WHERE resolved=0;"
+```
+→ API shortcut: `GET /api/setup-stats`
+
+### falling_knife_log.db (FK signal outcomes)
+```bash
+# Recent FK events (last 20)
+sqlite3 falling_knife_log.db "SELECT symbol, date, price, change_pct, rsi, ph_return, resolved FROM fk_events ORDER BY date DESC LIMIT 20;"
+
+# Mean next-day return (resolved only)
+sqlite3 falling_knife_log.db "SELECT COUNT(*) as n, ROUND(AVG(ph_return),2) as mean_ph FROM fk_events WHERE resolved=1;"
+```
+→ API shortcut: `GET /api/falling-knife-stats`
+
+### Health check after deploy
+```bash
+# Verify service is active
+ssh -i ~/.ssh/gcp_stock_rsa elimaoz99@35.239.74.178 "systemctl is-active stock-app.service"
+
+# Check for ImportError on startup (most common failure after partial deploy)
+ssh -i ~/.ssh/gcp_stock_rsa elimaoz99@35.239.74.178 "sudo journalctl -u stock-app.service -n 30 --no-pager | grep -i 'error\|import\|started'"
+```
+**Most common failure mode:** deploying `api.py` alone (without `scanners.py` + `db.py`) → `ImportError` on service start → site down. Always deploy all 3.
+
+### Post-Deploy Checklist
+- [ ] `systemctl is-active stock-app.service` returns `active`
+- [ ] No `ImportError` / `ModuleNotFoundError` in last 30 log lines (especially `scanners` or `db`)
+- [ ] `GET /api/health` returns `{"status": "ok"}`
+- [ ] `GET /api/volume-leaders` returns 200
+- [ ] Force-refresh works: `GET /api/volume-leaders?force=true`
+- [ ] If frontend deployed: open stock-predictor.online → verify no JS errors in console + tabs load
+- [ ] If scanner signals were sent during testing: verify logging pipeline survived deploy
+  ```bash
+  sqlite3 setup_log.db "SELECT source, symbol, date, verdict, resolved FROM setup_log ORDER BY log_ts DESC LIMIT 5;"
+  ```
 
 ---
 
 ## Infrastructure
-- **Live site:** stock-predictor.online
-- **GitHub:** doctor-magic/Stock-predictor (branch: main)
-- **Server:** GCP Ubuntu VM — `elimaoz99@35.239.74.178`
-- **SSH:** `ssh -i ~/.ssh/gcp_stock_rsa elimaoz99@35.239.74.178`
-- **Active dir:** `/home/elimaoz99/stock_predictor/` (NOT stock_app/)
-- **Service:** `stock-app.service` (systemd, uvicorn on port 8000)
-- **Restart:** `ssh -i ~/.ssh/gcp_stock_rsa elimaoz99@35.239.74.178 "sudo systemctl restart stock-app.service"`
-- **Sudo:** passwordless ONLY for that systemctl restart — nothing else
-- **Static IP:** `35.239.74.178` is a named reserved static IP (`stock-app-ip`) — will NOT change on Stop/Start
-- **Current machine:** e2-standard-2 (2 vCPU, 8GB RAM) — ~₪174/month
-- **GCP credits expire: July 10 2026**
+| Property | Value |
+|----------|-------|
+| Live site | stock-predictor.online |
+| GitHub | doctor-magic/Stock-predictor (branch: main) |
+| SSH | `ssh -i ~/.ssh/gcp_stock_rsa elimaoz99@35.239.74.178` |
+| Active dir | `/home/elimaoz99/stock_predictor/` (**NOT** `stock_app/`) |
+| Service | `stock-app.service` (systemd, uvicorn port 8000) |
+| Sudo | passwordless **only** for `systemctl restart stock-app.service` |
+| Static IP | `35.239.74.178` (`stock-app-ip`) — survives Stop/Start |
+| Machine | e2-standard-2 (2 vCPU, 8GB RAM) — ~₪174/month. Do NOT use e2-small (yfinance spikes to ~1.5GB). |
+| GCP credits | expire July 10 2026 → downgrade to e2-medium (plan below) |
 
 ### Downgrade plan (execute July 10 2026)
 1. GCP Console → Compute Engine → VM → **Stop**
@@ -89,40 +149,29 @@ cd /home/elimaoz99/stock_predictor && nohup venv/bin/python3 -u pre_scan.py >> p
 3. **Start**
 4. Verify: `sudo systemctl status stock-app.service` + open site
 - Target cost: ~₪60/month (vs ₪174 now)
-- Do NOT use e2-small (2GB) — yfinance batch 50+ tickers × 6mo spikes to ~1.5GB peak
 - Also disable: VM Manager (₪3.14/mo) + Network Intelligence Center (₪3.16/mo)
 - Cloud Run is NOT an option: SQLite local state + cron jobs + sklearn cold-start make it unsuitable
 
 ## Stack
 FastAPI (`api.py`) + React (`frontend/src/App.jsx`, built with Vite → `frontend/dist/`)
 
-## Deploy
-**Backend (always deploy all 3 together — api.py imports scanners + db):**
-```bash
-scp -i ~/.ssh/gcp_stock_rsa \
-  ~/Desktop/Stock-predictor/api.py \
-  ~/Desktop/Stock-predictor/scanners.py \
-  ~/Desktop/Stock-predictor/db.py \
-  elimaoz99@35.239.74.178:/home/elimaoz99/stock_predictor/
-# then restart
-```
-**Frontend (always copy FULL dist):**
-```
-npm run build   # in frontend/
-scp -r -i ~/.ssh/gcp_stock_rsa dist/ elimaoz99@35.239.74.178:/home/elimaoz99/stock_predictor/
-ssh ... "cp -r /home/elimaoz99/stock_predictor/dist/. /home/elimaoz99/stock_predictor/frontend/dist/"
-# then restart
-```
-
 ## Architecture (updated Jun 7 2026)
 - `api.py` — **1387 lines** — FastAPI endpoints + macro/VIX logic only. Thin routing layer. Imports from `scanners` and `db`.
 - `scanners.py` — **520 lines (new Jun 7)** — All scanner helpers: `compute_verdict`, `compute_momentum`, `gainers_verdict`, `detect_falling_wedge`, `classify_regime`, `get_tod_rvol_cached`, `get_intraday_signals`, `get_market_context`, `get_overhead_supply`, `get_vaccel` + their module-level caches. No imports from api.py.
-- `db.py` — **316 lines** — SQLite logic: scan cache (original) + FK log functions + setup log functions. `fk_db_init`/`setup_db_init` run at module load. WAL mode on all writable DBs.
+- `db.py` — **316 lines** — SQLite logic: scan cache (original) + FK log functions + setup log functions. `fk_db_init`/`setup_db_init` run at module load. WAL mode on the two high-write logs ONLY (`setup_log.db`, `falling_knife_log.db`); the read-mostly cache DBs (`scanner_cache.db`, `intraday_cache.db`) do NOT use WAL.
 - `core_logic.py` — ML model (HistGradientBoostingClassifier, 20 features), CONFIDENCE_THRESHOLD=0.70
 - `models.py` — Pydantic models
 - `pre_scan.py` — overnight cron (5:00 UTC): wedge scan + Telegram alert (server copy is authoritative — 334 lines)
 - `fetch_intraday.py` — cron 20:30 UTC: downloads 1m bars → resamples to 5m → `intraday_cache.db`
-- `live_tracker.py` — daily BUY signal logger + outcome resolver. Usage: `python3 live_tracker.py --log | --report`
+- `live_tracker.py` — daily BUY signal logger + outcome resolver. **Runs as a server cron (20:05 UTC Mon–Fri) since Jun 14 2026** (was a local Mac script). Writes `/home/elimaoz99/stock_predictor/tracker.db`. Calls `/api/scan` with Basic Auth — any auth/endpoint change in api.py must update it too. Usage: `live_tracker.py --log | --report`
+
+**Where to add new code:**
+- New scanner gates, verdict logic, intraday analysis, or momentum/mean-reversion logic → `scanners.py`
+- New SQLite tables, logging functions, or persistence logic → `db.py`
+- New API endpoints, macro/VIX logic, or routing → `api.py`
+- New cron scripts or local analysis tools → standalone files (e.g. `pre_scan.py`, `live_tracker.py` pattern)
+
+**Rule:** Never move scanner-related logic back into `api.py`. The refactor boundary is hard.
 
 ## 9 Tabs
 Single predict | Scanner (with ALMOST BUY) | Daily report | FRED dashboard | Macro score | Leumi Options | Volume Leaders | Wedge Scan | Reversion Hunter
@@ -257,6 +306,8 @@ Validated by: QBTS (May 26), WOLF/PDD/NVTS/QCOM all surged in final 15–20 min 
 - MODEL_VERSION = "2026-05_ema_dist_regime" in live_tracker.py — bump on any material change
 - PREMIUM_SCAN_THRESHOLD=0.65 (not 0.57 or 0.70) for 9-stock premium universe
 
+---
+
 ### Trading Entry Rules (updated May 27 2026)
 - Volume Leaders BUY signal = watchlist alert, NOT immediate entry. Enter on VWAP pullback + bounce.
 - Reversion Hunter signal = same. VWAP is the TARGET, not the entry price.
@@ -265,7 +316,10 @@ Validated by: QBTS (May 26), WOLF/PDD/NVTS/QCOM all surged in final 15–20 min 
 - One active trade at a time on headwind days. Two simultaneous positions split attention at the critical exit/entry moment. (confirmed: IREN alert missed while managing PDD exit, May 27)
 - Do NOT average down. First entry going wrong = exit signal, not add-more signal. (confirmed: CRCL -$79, NVTS -$86 both from averaging down, May 26)
 
+---
+
 ### Architecture (Jun 7 2026 — do not revert)
+- **Any change to api.py auth or endpoints must also update live_tracker.py** — it runs as a cron on the server (20:05 UTC) and calls `/api/scan` with Basic Auth from `api_data.env`. Silent failures only appear in `tracker_cron.log`. (Jun 14 2026: auth hardening broke the tracker for 9 days before discovery)
 - **Deploy api.py + scanners.py + db.py together** — api.py imports both; deploying api.py alone causes ImportError on startup
 - **Scanner helpers live in scanners.py** — `classify_regime`, `detect_falling_wedge`, `compute_verdict`, `get_intraday_signals`, `get_market_context` etc. Do NOT move back into api.py.
 - **DB logic lives in db.py** — `fk_log_event`, `setup_log_event`, `setup_resolve`, `get_fk_stats`, `get_setup_breakdown`. api.py calls them via `_db.*`.
@@ -278,6 +332,8 @@ Validated by: QBTS (May 26), WOLF/PDD/NVTS/QCOM all surged in final 15–20 min 
 - **Gainers**: logs all verdicts EXCEPT WATCH — includes BREAKOUT CONFIRMED, DEVELOPING, FADE RISK, OVERHEAD WALL
 - Narrowing the logged set causes selection bias in `/api/setup-stats` — you'd only measure BUY outcomes and never see if gates blocked winners
 
+---
+
 ### Volume Leaders
 - hist download: period="6mo" (NOT 3mo — needed for 100-bar ATR percentile)
 - RVOL uses MEDIAN not mean in `scanners.get_tod_rvol_cached()` (robust to earnings volume spikes)
@@ -289,6 +345,8 @@ Validated by: QBTS (May 26), WOLF/PDD/NVTS/QCOM all surged in final 15–20 min 
 - Beta gate: `_BETA_HIGH_THRESHOLD = 1.5`, SPY downloaded once per call, beta computed from 6mo hist already available. Do NOT remove try/except isolation. Do NOT make threshold a query param yet (premature — calibrate first)
 - Power Hour whale alert: `_rvol_history` deque slot guard = 270s — do not remove (prevents F5 spam corrupting slope). `pct_from_low < 2.0` threshold — do not loosen above 3% without evidence. Alert fires on `rvol_trend=None` (warming up) — only suppressed on `"down"`. Time gate strictly `ET_hour == 15` — do not extend to 14:xx (pre-power-hour has different dynamics).
 
+---
+
 ### Frontend
 - Never hardcode http://localhost:8000 — use relative /api/... URLs
 - Never remove Google Analytics G-5KHC440K09 from frontend/index.html
@@ -297,8 +355,12 @@ Validated by: QBTS (May 26), WOLF/PDD/NVTS/QCOM all surged in final 15–20 min 
 - TradingView links on all 5 symbol tables (Scanner BUY, ALMOST BUY, Volume Leaders, Wedge Scan, Reversion Hunter): URL = `https://www.tradingview.com/chart/?symbol=${symbol}` — no exchange prefix needed
 - Symbol cell wrapper for Yahoo + TV links: use `flex items-center gap-1.5 whitespace-nowrap` — NOT `inline-flex` (inline-flex inside `<td>` renders as block, stacks children vertically)
 
+---
+
 ### Security (May 2026 — do not revert)
 - market_id whitelist, top_n clamp, min_confidence clamp, task_id format enforcement, scan semaphore
+
+---
 
 ### FRED API
 - Monthly series: NO frequency/aggregation_method params
@@ -323,7 +385,7 @@ Validated by: QBTS (May 26), WOLF/PDD/NVTS/QCOM all surged in final 15–20 min 
 
 ## Local Scripts (Mac, ~/Desktop/Stock-predictor/)
 - `backtest_month.py` — backtests ML (thresholds: 0.70/0.30). Two universe groups: TICKERS_LARGECAP (40) + TICKERS_HIGHBETA (20). FEATURES use normalized EMA: ema9_dist/ema21_dist/ema50_dist — do NOT revert to raw dollar values.
-- `live_tracker.py` — signals table has `beta REAL` column (migration auto-runs on next `--log`). `_batch_regimes()` downloads 6mo (NOT 3mo — required for 100-bar ATR window) + SPY in one batch call. Beta computed per-symbol via `Cov/Var` with `join="inner"` alignment. Telegram shows `⚠β2.3` when beta > 1.5.
+- `live_tracker.py` — source lives on Mac but **executes as a server cron since Jun 14 2026** (see Architecture). signals table has `beta REAL` column (migration auto-runs on next `--log`). `_batch_regimes()` downloads 6mo (NOT 3mo — required for 100-bar ATR window) + SPY in one batch call. Beta computed per-symbol via `Cov/Var` with `join="inner"` alignment. Telegram shows `⚠β2.3` when beta > 1.5.
 - `swing_backtest.py` — walk-forward OOS (--filtered = 9-stock premium)
 - `live_tracker.py --log | --report [--no-telegram]`
 - `orb_backtest.py` — ORB intraday backtest

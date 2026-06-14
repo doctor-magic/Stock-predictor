@@ -59,10 +59,14 @@ BACKEND (api.py)
 Local copy:  ~/Desktop/Stock-predictor/api.py
 Server copy: /home/elimaoz99/stock_predictor/api.py
 
-Deploy backend change:
-  scp -i ~/.ssh/gcp_stock_rsa ~/Desktop/Stock-predictor/api.py \
-    elimaoz99@35.239.74.178:/home/elimaoz99/stock_predictor/api.py
+Deploy backend change (ALWAYS deploy all 3 together — api.py imports scanners + db):
+  scp -i ~/.ssh/gcp_stock_rsa \
+    ~/Desktop/Stock-predictor/api.py \
+    ~/Desktop/Stock-predictor/scanners.py \
+    ~/Desktop/Stock-predictor/db.py \
+    elimaoz99@35.239.74.178:/home/elimaoz99/stock_predictor/
   # then restart service
+  # WARNING: deploying api.py alone causes ImportError on startup → site down
 
 Endpoints:
   GET  /api/predict/{ticker}          single stock prediction
@@ -78,11 +82,21 @@ not via systemd EnvironmentFile). Adding a key to api_data.env takes effect on n
 — no service unit changes needed.
 
 Environment file: /home/elimaoz99/stock_predictor/api_data.env
-Contains: TG_API_ID, TG_API_HASH, TG_PHONE, GEMINI_KEY, FRED_API_KEY
+Contains: TG_API_ID, TG_API_HASH, TG_PHONE, GEMINI_KEY, FRED_API_KEY, TELEGRAM_BOT_TOKEN,
+          TELEGRAM_CHAT_ID, BASIC_AUTH_USERS, ENABLE_AUTH
+          (BASIC_AUTH_USERS + ENABLE_AUTH added May 2026 — their absence from the file loaded
+           first caused the silent Jun 6–14 401 outage; see 'BUG 2/BUG 3' at end. live_tracker.py
+           loads api_data.env FIRST, then .env, via os.environ.setdefault().)
 
 Other backend modules:
+  scanners.py    ALL scanner helpers: compute_verdict, compute_momentum, classify_regime,
+                 detect_falling_wedge, get_intraday_signals, get_market_context,
+                 get_tod_rvol_cached, get_overhead_supply, get_vaccel + module-level caches.
+                 No imports from api.py — do not add any (circular import).
+  db.py          SQLite logic: scanner_cache.db (original) + FK log (falling_knife_log.db)
+                 + setup log (setup_log.db). All connections: timeout=30. WAL mode on the two
+                 high-write logs ONLY (setup_log.db + falling_knife_log.db); cache DBs do not use WAL.
   core_logic.py  ML model training and prediction logic
-  db.py          SQLite cache (scanner_cache.db), parameterized queries throughout
   models.py      Pydantic schemas
 
 
@@ -471,7 +485,7 @@ LONG-ONLY EXPERT (applied May 12 2026):
   - Model still trains on 3 classes (BUY/SELL/HOLD) — suppression is output-only, not label change
   - Binary BUY/NOTBUY was tested and REJECTED (precision dropped to 40.8% — 3-class is better calibrated)
   - Do NOT re-enable SELL output. Do NOT revert threshold to 0.65. Do NOT change to binary labels.
-  - _compute_verdict() in api.py also updated: thresholds 0.65/0.70 (high-vol/normal), SELL→HOLD
+  - _compute_verdict() in api.py also updated: thresholds 0.65/0.70 (high-vol/normal), SELL→HOLD (now compute_verdict in scanners.py — Jun 7 2026 refactor)
 
 SCANNER THRESHOLD FIX (applied May 13 2026):
   - SCAN_CONFIDENCE_THRESHOLD lowered 0.67 → 0.57
@@ -676,6 +690,10 @@ LIVE TRACKER (added May 12 2026)
 ----------------------------------
 File: ~/Desktop/Stock-predictor/live_tracker.py
 DB:   ~/Desktop/Stock-predictor/tracker.db  (local SQLite — do NOT commit to git)
+      ⚠️ SUPERSEDED Jun 14 2026: live_tracker.py now runs as a SERVER cron (20:05 UTC Mon–Fri).
+      The live DB is /home/elimaoz99/stock_predictor/tracker.db. The Mac copy is legacy — do NOT
+      scp it over the server (overwrote 15 rows on Jun 14). The local --log/--report commands below
+      are historical; run them on the server now. See 'JUN 14 — LIVE TRACKER HARDENING' at end.
 
 Purpose: Validate Long-only Expert (>=0.70) live OOS performance.
 Pulls daily BUY signals from GCP scan API, resolves outcomes after 10 trading days via yfinance,
@@ -725,10 +743,10 @@ Data pipeline:
      or weeks old. The regularMarketTime >= now-86400 filter catches these.
   3. ML signal: query scanner_cache.db for today's sp500 + nasdaq100 pre-scan results
      (2 queries total, dict lookup — no N+1 loop)
-  4. yfinance batch download (1mo daily) → RSI(14) + 5-day return per ticker
+  4. yfinance batch download (6mo daily — was 1mo; raised May 18 2026 for SMA50 + 100-bar ATR/regime window) → RSI(14) + 5-day return per ticker
   5. Volume ratio: regularMarketVolume / averageDailyVolume3Month (from screener data)
 
-Verdict logic (_compute_verdict in api.py):
+Verdict logic (compute_verdict in scanners.py — moved + renamed from api.py's _compute_verdict in the Jun 7 2026 refactor):
   OVEREXTENDED — price up ≥3% from open (anti-chasing guard)
   VOL BREAKOUT — vol_ratio ≥ 3x + RSI < 65 (independent of ML)
   BUY          — ML=BUY + conf ≥ 0.65 (if vol_ratio ≥ 2x) or ≥ 0.70 (normal)
@@ -1072,3 +1090,125 @@ Power Hour retrospective (Jun 2 2026, 15:31 ET → close):
   CELC: $89.33  → $91.42  (+$2.09) ✅ (despite FALLING KNIFE)
   INTU: $324.00 → $322.14 (-$1.86) ✗ — already above VWAP at 15:31, faded into close
   Lesson: "already above VWAP" ≠ bullish in Power Hour. Look for stocks near VWAP building base.
+
+
+JUN 7 2026 — ARCHITECTURE REFACTOR (commit 9fe3557)
+=====================================================
+This is the most structurally significant change since the project started.
+Read this section before touching any backend file.
+
+FILE STRUCTURE AFTER REFACTOR:
+  api.py       1387 lines (was 2187). Thin routing + macro/VIX logic only.
+               Imports: `import scanners` and `import db as _db`
+  scanners.py   520 lines (NEW FILE). All scanner computation helpers.
+  db.py         316 lines (was 74). All SQLite logic for all 3 databases.
+
+DEPLOYMENT RULE (hard — do not break):
+  Always deploy api.py + scanners.py + db.py together in one scp command.
+  api.py imports from both at module load. Partial deploy = ImportError = site down.
+
+WHERE TO ADD NEW CODE:
+  New scanner gates, verdict logic, intraday analysis → scanners.py
+  New SQLite tables, logging functions, persistence   → db.py
+  New API endpoints, macro/VIX logic, routing         → api.py
+  New cron scripts or local tools                     → standalone files
+  NEVER move scanner logic back into api.py — circular import risk.
+
+SETUP OUTCOME LOGGER (added Jun 7 2026):
+  setup_log.db — tracks all scanner signals for outcome measurement.
+  Source field: "volume_leaders" / "reversion_hunter" / "gainers"
+  Volume Leaders: logs all verdicts EXCEPT HOLD and N/A
+  Reversion Hunter: logs DEEP BUY and POTENTIAL BOUNCE
+  Gainers: logs all verdicts EXCEPT WATCH
+  Resolution: setup_resolve() fetches 1d/5d forward returns, marks resolved=1 after 5 days.
+  Endpoint: GET /api/setup-stats → breakdown by source/verdict/beta_blocked with win rates.
+  Do NOT narrow the logged set — causes selection bias in /api/setup-stats.
+
+SQLITE HARDENING (Jun 7 2026):
+  All DB connections: timeout=30. WAL mode on the two high-write logs ONLY.
+  setup_log.db and falling_knife_log.db: PRAGMA journal_mode=WAL in *_db_init(). The read-mostly
+  cache DBs (scanner_cache.db, intraday_cache.db) intentionally do NOT use WAL — single writer.
+
+PENDING (deferred — data-gated):
+  Volume Leaders "Gates at a Glance" summary box — NOT added yet.
+  Waiting for 50+ resolved signals in setup_log.db before writing summary with real numbers.
+  When ready: SELECT source, verdict, beta_blocked, COUNT(*), AVG(ret_5d)
+              FROM setup_log WHERE resolved=1 GROUP BY source, verdict, beta_blocked;
+
+GIT STATE (Jun 7 2026): All committed — commit 9fe3557.
+  local ~/Desktop/Stock-predictor/ = server /home/elimaoz99/stock_predictor/ = GitHub main.
+
+
+JUN 14 2026 — LIVE TRACKER HARDENING (NOT committed to git yet)
+=================================================================
+
+THREE BUG FIXES in this session. All are in effect on server and local Mac.
+
+BUG 1 — setup_resolve() used calendar days instead of data availability (db.py)
+  Was:   resolved = 1 if (today - event_date).days >= 5 else 0
+  Fixed: resolved = 1 if c5 is not None else 0
+  Why:   6 calendar days != 5 trading days over a weekend. The old condition would mark
+         resolved=1 with ret_5d=NULL on Saturday/Sunday. Fix: data presence drives resolution.
+  Impact: setup_log.db had 53 events from Jun 8-12, all stuck at resolved=0.
+          Will auto-resolve on Jun 16 (Mon) when the 5th trading day close becomes available.
+
+BUG 2 — live_tracker.py sent no auth headers → HTTP 401 on all /api/scan calls since Jun 6
+  Root cause: Basic Auth was added to api.py in May 2026 security hardening, but
+              live_tracker.py (local script at the time) was never updated.
+  Fix: added _basic_auth_header() in live_tracker.py — reads BASIC_AUTH_USERS from env,
+       builds "Basic <base64>" header, injects into fetch_scan() requests.
+  Impact: NO signals were logged in tracker.db from Jun 6-13 (9 trading days lost).
+          Jun 3-5 signals were logged correctly (cron ran before auth was added).
+  RULE ADDED TO CLAUDE.md: any api.py auth or endpoint change must also update live_tracker.py.
+
+BUG 3 — ENV loading picked .env instead of api_data.env on server
+  Was:   next((f for f in [".env", "api_data.env"] if exists)) — picks .env first.
+         .env exists on server but does NOT have BASIC_AUTH_USERS → auth fix was silently ignored.
+  Fixed: load BOTH files in order (api_data.env first, then .env) using os.environ.setdefault().
+  Added: Fail-Fast warning to stderr at startup if ENABLE_AUTH=true but BASIC_AUTH_USERS not set.
+
+LIVE TRACKER — NOW A SERVER CRON (cron was already set up, file was missing until today)
+  Cron: 5 20 * * 1-5 cd /home/elimaoz99/stock_predictor && venv/bin/python3 live_tracker.py --log --no-telegram
+  Time: 20:05 UTC (4:05 PM ET) Mon-Fri — after market close
+  Log:  /home/elimaoz99/stock_predictor/tracker_cron.log
+  DB:   /home/elimaoz99/stock_predictor/tracker.db  (was Mac-only until today — now server)
+  Note: --no-telegram suppresses Telegram digest from cron. Run manually with --log to get digest.
+
+TRACKER.DB STATE (Jun 14 2026):
+  26 signals total:
+    May 13 (4): APP, COIN, HOOD, PLTR — logged before regime/beta features, all high-beta
+    Jun 3  (7): APP, HOOD, IBKR, PLTR, SHOP, SMCI, STX
+    Jun 4  (5): APP, HOOD, PLTR, SMCI, STX
+    Jun 5 (10): ANET, APH, APP, AVGO, HOOD, PLTR, SHOP, SMCI, STX, WDC
+    Jun 14 (7): logged today with auth fix in place (symbols TBD — check tracker_cron.log)
+  4 resolved (May 13 only): APP ✅ +0.16%, COIN ❌ -0.16%, HOOD ❌ -0.03%, PLTR ❌ -0.03%
+    Hit rate: 25% (1/4). NOTE: all 4 were pre-beta-gate. COIN/HOOD/PLTR are high-beta → gate
+    would block them today. Validates beta gate hypothesis.
+  22 pending (Jun 3-5): ALL have beta > 1.4. live_tracker.py calls /api/scan (no beta gate),
+    so these pass through even though Volume Leaders would block them. Separate code paths.
+    → KNOWN MEASUREMENT BIAS / SHADOW TEST: tracker.db precision will read LOWER than the UI
+      (UI suppresses these via the beta gate; /api/scan does not). Do NOT compare the two numbers
+      directly until the code paths are reconciled. If these high-beta names resolve as losers
+      (~Jun 17-18), that is the empirical green light to add the beta gate into /api/scan too.
+  CAUTION before scp-ing tracker.db to server: CHECK server row count first.
+    Jun 4-5 data was lost when Mac DB (11 rows) was uploaded over server DB (22 rows).
+    Restored manually from tracker_cron.log. Always verify: python3 -c "import sqlite3;
+    print(sqlite3.connect('tracker.db').execute('SELECT COUNT(*) FROM signals').fetchone())"
+
+SETUP_LOG.DB STATE (Jun 14 2026):
+  53 events from Jun 8-12, 0 resolved (Jun 13 = Saturday → only 4 trading days elapsed for Jun 8)
+  Breakdown: OVEREXTENDED×18, OVERHEAD WALL×19, FADE RISK×11, VOL BREAKOUT×2,
+             HIGH-BETA×1, DEVELOPING×2
+  ZERO BUY signals in any scanner Jun 8-12 — all gates blocked everything.
+  Resolution expected: Jun 16 Mon after 20:05 UTC (next cron run).
+
+NEXT MILESTONE:
+  Jun 16 after 20:05 UTC — first ~22 resolved outcomes from tracker.db (Jun 3-5 signals).
+  Jun 28 — Jun 14 signals resolve.
+  DO NOT build optimize_gates.py until ~50 resolved outcomes (~mid-July).
+  The SQL to analyze gates is trivial; the data is not yet there.
+
+GIT STATE (Jun 14 2026): NOT committed.
+  live_tracker.py changes (auth fix, env loading, fail-fast) are deployed but not pushed.
+  db.py change (setup_resolve fix) is deployed but not pushed.
+  CLAUDE.md (auth rule) is local only.

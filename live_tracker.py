@@ -8,6 +8,7 @@ Usage:
 """
 
 import argparse
+import base64
 import json
 import os
 import sqlite3
@@ -33,18 +34,22 @@ DB_PATH       = Path(__file__).parent / "tracker.db"
 # features, threshold, universe, label scheme, SELL suppression, etc.
 # Format: YYYY-MM_short_description
 MODEL_VERSION = "2026-05_ema_dist_regime"  # normalized EMA features + regime tagging + 0.70 threshold
-ENV_FILE      = Path(__file__).parent / ".env"
-
-# Load .env (Telegram credentials)
-if ENV_FILE.exists():
-    for _line in ENV_FILE.read_text().splitlines():
-        _line = _line.strip()
-        if _line and not _line.startswith("#") and "=" in _line:
-            _k, _, _v = _line.partition("=")
-            os.environ.setdefault(_k.strip(), _v.strip())
+# Load all env files — api_data.env first (server), then .env (local Mac)
+for _env_name in ("api_data.env", ".env"):
+    _env_file = Path(__file__).parent / _env_name
+    if _env_file.exists():
+        for _line in _env_file.read_text().splitlines():
+            _line = _line.strip()
+            if _line and not _line.startswith("#") and "=" in _line:
+                _k, _, _v = _line.partition("=")
+                os.environ.setdefault(_k.strip(), _v.strip())
 
 TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+
+# Fail-fast: warn if auth is enabled but credentials are missing
+if os.environ.get("ENABLE_AUTH", "true").lower() == "true" and not os.environ.get("BASIC_AUTH_USERS"):
+    print("WARNING: ENABLE_AUTH=true but BASIC_AUTH_USERS not set — /api/scan calls will return 401", file=sys.stderr)
 
 
 # ── DB ──────────────────────────────────────────────────────────────────────────
@@ -229,6 +234,17 @@ def fetch_close_on(sym: str, target_date: date) -> float | None:
         return None
 
 
+def _basic_auth_header() -> str | None:
+    """Build Basic Auth header from BASIC_AUTH_USERS env var (first pair)."""
+    raw = os.environ.get("BASIC_AUTH_USERS", "").strip()
+    if not raw:
+        return None
+    first_pair = raw.split(",")[0].strip()
+    if ":" not in first_pair:
+        return None
+    return "Basic " + base64.b64encode(first_pair.encode()).decode()
+
+
 def fetch_scan(market_id: str) -> list[dict]:
     """Pull BUY signals from GCP scan cache (no force-refresh)."""
     payload = json.dumps({
@@ -237,10 +253,14 @@ def fetch_scan(market_id: str) -> list[dict]:
         "top_n": 200,
         "force_refresh": False,
     }).encode()
+    headers = {"Content-Type": "application/json"}
+    auth = _basic_auth_header()
+    if auth:
+        headers["Authorization"] = auth
     req = urllib.request.Request(
         f"{API_BASE}/api/scan",
         data=payload,
-        headers={"Content-Type": "application/json"},
+        headers=headers,
     )
     with urllib.request.urlopen(req, timeout=30) as r:
         data = json.loads(r.read())
