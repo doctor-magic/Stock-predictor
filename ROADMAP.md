@@ -32,6 +32,8 @@
 - explicit trading-day check (e.g. "does SPY have a bar dated today?") to recognize market holidays as a legitimate "ran, market closed" state → `exit 0` + valid heartbeat ping
 - never infers health from empty data.
 
+**Backlog — `get_vaccel` silent post-close None (found 2026-06-15):** `get_vaccel` (`scanners.py`) returns a silent `None` when `yf.download(period="1d", interval="5m")` yields <15 bars. Verified post-close: Yahoo's 5m feed lagged to ~10:10 ET → only 9 bars returned → every Gainers row got `v_accel=None`, collapsing ALL verdicts to WATCH / OVERHEAD WALL (no BREAKOUT CONFIRMED / DEVELOPING / FADE RISK possible — exactly the observed board). Honest fix: fetch `period="2d"`, **filter to today's bars only** (never mix Friday's volume into today's acceleration — a naive 2d switch produces a *wrong* number, worse than `—`), require ≥15 of today's bars; when insufficient, emit a distinct `⏳`/`N/A` marker + log a warning — do NOT return a silent `None` that reads like a real low value. Live-session runs (~54 bars) are unaffected; post-close/lag artifact only.
+
 ---
 
 ## 🟡 Phase 3 — Cron monitoring
