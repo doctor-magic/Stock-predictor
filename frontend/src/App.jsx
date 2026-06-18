@@ -1,5 +1,5 @@
 ﻿import { useState, useEffect, useCallback } from 'react'
-import { Search, Activity, AlertCircle, BarChart3, TrendingUp, TrendingDown, Minus, BookOpen, ListFilter, RefreshCw, ExternalLink, Info, Calculator, Zap } from 'lucide-react'
+import { Search, Activity, AlertCircle, BarChart3, TrendingUp, TrendingDown, Minus, BookOpen, ListFilter, RefreshCw, ExternalLink, Info, Zap } from 'lucide-react'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, LineChart, Line, ReferenceLine } from 'recharts'
 import ReactMarkdown from 'react-markdown'
 export default function App() {
@@ -26,9 +26,7 @@ export default function App() {
           <TabButton active={activeTab === 'scanner'} onClick={() => setActiveTab('scanner')} icon={ListFilter}>סורק מניות</TabButton>
           <TabButton active={activeTab === 'review'} onClick={() => setActiveTab('review')} icon={BookOpen}>סקירה יומית</TabButton>
           <TabButton active={activeTab === 'macro'} onClick={() => setActiveTab('macro')} icon={BarChart3}>מאקרו FRED</TabButton>
-          <TabButton active={activeTab === 'macro-score'} onClick={() => setActiveTab('macro-score')} icon={TrendingUp}>MACRO PREDICTED</TabButton>
-          <TabButton active={activeTab === 'options'} onClick={() => setActiveTab('options')} icon={Calculator}>אופציות לאומי</TabButton>
-          <TabButton active={activeTab === 'volume-leaders'} onClick={() => setActiveTab('volume-leaders')} icon={Zap}>Volume Leaders</TabButton>
+          <TabButton active={activeTab === 'macro-score'} onClick={() => setActiveTab('macro-score')} icon={TrendingUp}>MACRO PREDICTED</TabButton>          <TabButton active={activeTab === 'volume-leaders'} onClick={() => setActiveTab('volume-leaders')} icon={Zap}>Volume Leaders</TabButton>
           <TabButton active={activeTab === 'wedge-scan'} onClick={() => setActiveTab('wedge-scan')} icon={TrendingDown}>Wedge Scan</TabButton>
           <TabButton active={activeTab === 'reversion'} onClick={() => setActiveTab('reversion')} icon={TrendingDown}>Reversion Hunter</TabButton>
           <TabButton active={activeTab === 'gainers'} onClick={() => setActiveTab('gainers')} icon={TrendingUp}>Momentum Hunter</TabButton>
@@ -40,9 +38,7 @@ export default function App() {
         {activeTab === 'scanner' && <ScannerView onScanSingle={(sym) => { setPredictTicker(sym); setActiveTab('predict') }} />}
         {activeTab === 'review'  && <ReviewView />}
         {activeTab === 'macro'        && <MacroDashboardView />}
-        {activeTab === 'macro-score'  && <MacroPredictedView />}
-        {activeTab === 'options'      && <LeumiOptionsView />}
-        {activeTab === 'volume-leaders' && <VolumeLeadersView />}
+        {activeTab === 'macro-score'  && <MacroPredictedView />}        {activeTab === 'volume-leaders' && <VolumeLeadersView />}
         {activeTab === 'wedge-scan'     && <WedgeScanView />}
         {activeTab === 'reversion'      && <ReversionView />}
         {activeTab === 'gainers'        && <GainersView />}
@@ -1019,247 +1015,6 @@ function MacroScoreCard({ ind }) {
         <div className="h-full rounded-full transition-all duration-500"
           style={{ width: `${barPct}%`, backgroundColor: color }} />
       </div>
-    </div>
-  )
-}
-
-// ----------------------------------------------------
-// VIEW 6: LEUMI EMPLOYEE OPTIONS SIMULATOR
-// ----------------------------------------------------
-const IL_BRACKETS = [
-  { limit: 81480,    rate: 0.10 },
-  { limit: 116760,   rate: 0.14 },
-  { limit: 188280,   rate: 0.20 },
-  { limit: 261480,   rate: 0.31 },
-  { limit: 543960,   rate: 0.35 },
-  { limit: Infinity, rate: 0.47 },
-]
-function calcIncomeTax(income) {
-  let tax = 0, prev = 0
-  for (const { limit, rate } of IL_BRACKETS) {
-    if (income <= prev) break
-    tax += (Math.min(income, limit) - prev) * rate
-    prev = limit
-  }
-  return Math.round(tax)
-}
-
-function LeumiOptionsView() {
-  const [bonus, setBonus] = useState(10000)
-  const [strikePrice, setStrikePrice] = useState(70.7)
-  const [option1Price, setOption1Price] = useState(15.1)
-  const [option2Price, setOption2Price] = useState(18.7)
-  const [stockPrice, setStockPrice] = useState(90)
-  const [annualSalary, setAnnualSalary] = useState(240000)
-
-  const salaryPart = bonus * 0.80
-  const employeePart = bonus * 0.20
-  const employerPart = bonus * 0.20
-
-  const series1   = option1Price > 0 ? Math.floor(employeePart / option1Price) : 0
-  const series2a  = option2Price > 0 ? Math.floor((employerPart / 2) / option2Price) : 0
-  const series2b  = option2Price > 0 ? Math.floor((employerPart / 2) / option2Price) : 0
-  const totalOpts = series1 + series2a + series2b
-
-  const inTheMoney = stockPrice > strikePrice
-  const gain        = inTheMoney ? stockPrice - strikePrice : 0
-  const totalProfit = totalOpts * gain
-  const taxOnSalary          = calcIncomeTax(annualSalary)
-  const taxAmount            = calcIncomeTax(annualSalary + totalProfit) - taxOnSalary
-  const effectiveRate        = totalProfit > 0 ? Math.round(taxAmount / totalProfit * 100) : 0
-  const afterTax             = totalProfit - taxAmount
-  const breakEven   = strikePrice + option1Price
-
-  // Net Exercise: A*(B-C)/B — actual shares received, no cash payment
-  const s1NetShares    = inTheMoney && stockPrice > 0 ? Math.floor(series1 * (stockPrice - strikePrice) / stockPrice) : 0
-  const s2NetShares    = inTheMoney && stockPrice > 0 ? Math.floor((series2a + series2b) * (stockPrice - strikePrice) / stockPrice) : 0
-  const totalNetShares = s1NetShares + s2NetShares
-
-  const fmt = (n, d = 0) => Math.round(n).toLocaleString('en-US', { maximumFractionDigits: d })
-  const nis = (n, d = 0) => `₪${fmt(n, d)}`
-
-  const basePrices = [
-    strikePrice * 0.8, strikePrice * 0.9, strikePrice,
-    strikePrice + option1Price * 0.5, strikePrice + option1Price,
-    strikePrice * 1.1, strikePrice * 1.25, strikePrice * 1.5, strikePrice * 2
-  ].map(Math.round)
-  const scenarioPrices = [...new Set([...basePrices, Math.round(stockPrice)])].sort((a, b) => a - b)
-
-  return (
-    <div className="w-full max-w-5xl animate-signal" dir="rtl">
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-1">
-        <h2 className="text-xl font-bold font-mono text-neon-blue">אופציות עובדי לאומי</h2>
-        <span className="text-xs text-gray-500 font-mono">סימולטור תוכנית אופציות 2025 | IBI קפיטל</span>
-      </div>
-
-      <div className="glass-card bg-yellow-500/5 border-yellow-500/20 p-3 mb-3 text-xs text-yellow-200 font-mono leading-relaxed">
-        {'\u{2705}'} מחיר מימוש: <strong>₪70.7</strong> &nbsp;|&nbsp;
-        שווי אופציה סדרה 1: <strong>₪15.1</strong> &nbsp;|&nbsp;
-        שווי אופציה סדרה 2: <strong>₪18.7</strong> &nbsp;|&nbsp;
-        {'\u{1f4c5}'} <strong>1 ביוני 2026</strong> &mdash; מועד הענקה (מותנה באישור בורסה)
-      </div>
-
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-5">
-        <div className="glass-card bg-blue-500/5 border-blue-500/20 p-3 text-xs text-blue-200 font-mono leading-relaxed">
-          {'\u{1f512}'} <strong>תקופת חסימה (Lock-up):</strong> סדרה 1 ניתנת <strong>למימוש מיידי מ-1/6/26</strong> — אך המניות שמתקבלות נשארות אצל הנאמן ולא ניתן למכור לפני <strong>1/6/27</strong> (12 חודש, סעיף 102). מימוש ≠ מכירה.
-        </div>
-        <div className="glass-card bg-purple-500/5 border-purple-500/20 p-3 text-xs text-purple-200 font-mono leading-relaxed">
-          {'\u{1f3e6}'} <strong>תנאי הלימות הון:</strong> מימוש מנות 2א+2ב מותנה בכך שהבנק עמד ביחסי הלימות ההון המינימליים בשנה הקודמת. אם לא עמד — המימוש <em>נדחה</em> (לא מבוטל) עד שיעמוד.
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 mb-5">
-        <OptionsInput label="מענק שנתי ברוטו (₪)" sub="עבור שנת 2025" value={bonus} onChange={setBonus} step={500} />
-        <OptionsInput label="מחיר מימוש (₪)" sub="Strike — נקבע: ₪70.7" value={strikePrice} onChange={setStrikePrice} />
-        <OptionsInput label="מחיר מניה תחזית (₪)" sub="תרחיש לחישוב רווח" value={stockPrice} onChange={setStockPrice} />
-        <OptionsInput label="שווי אופציה — סדרה 1 (₪)" sub="הבשלה מיידית | נקבע: ₪15.1" value={option1Price} onChange={setOption1Price} step={0.1} />
-        <OptionsInput label="שווי אופציה — סדרה 2 (₪)" sub="הבשלה שנה/שנתיים | נקבע: ₪18.7" value={option2Price} onChange={setOption2Price} step={0.1} />
-        <OptionsInput label="משכורת שנתית (₪)" sub="לחישוב מדרגת מס שולי על רווח האופציות" value={annualSalary} onChange={setAnnualSalary} step={12000} />
-      </div>
-
-      <div className="glass-card p-5 mb-4">
-        <p className="text-xs font-mono text-gray-400 uppercase tracking-wider mb-4">חלוקת הבונוס</p>
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          <OptionsStat label="מענק שנתי" val={nis(bonus)} sub="100%" />
-          <OptionsStat label="למשכורת (1 באפריל)" val={nis(salaryPart)} sub="80%" color="blue" />
-          <OptionsStat label="סדרה 1 — עובד" val={nis(employeePart)} sub="20% לאופציות" color="purple" />
-          <OptionsStat label="סדרה 2 — מעסיק \u{1f381}" val={nis(employerPart)} sub="הטבת בנק זהה" color="green" />
-        </div>
-      </div>
-
-      <div className="glass-card p-5 mb-4">
-        <p className="text-xs font-mono text-gray-400 uppercase tracking-wider mb-4">מספר האופציות</p>
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          <OptionsStat label="סדרה 1" val={fmt(series1)} sub="הבשלה 1/6/26 · פוקעת 1/6/29" color="purple" />
-          <OptionsStat label="סדרה 2 — מנה א'" val={fmt(series2a)} sub="הבשלה 1/6/27 · פוקעת 1/6/30" color="blue" />
-          <OptionsStat label="סדרה 2 — מנה ב'" val={fmt(series2b)} sub="הבשלה 1/6/28 · פוקעת 1/6/31" color="blue" />
-          <OptionsStat label='סה"כ אופציות' val={fmt(totalOpts)} sub="כל הסדרות" color="green" />
-        </div>
-        <div className="mt-4 text-xs text-gray-500 font-mono flex flex-wrap gap-x-5 gap-y-1">
-          <span>
-            נקודת פריצה סדרה 1:&nbsp;
-            <span className="text-yellow-400 font-bold">₪{fmt(breakEven)}</span>
-            &nbsp;<span className="text-gray-600">= ₪{fmt(strikePrice)} + ₪{fmt(option1Price)}</span>
-            {stockPrice > breakEven
-              ? <span className="text-green-400 mr-2"> ✓</span>
-              : stockPrice > strikePrice
-              ? <span className="text-yellow-400 mr-2"> ⚠</span>
-              : <span className="text-red-400 mr-2"> ✗</span>}
-          </span>
-          <span>
-            נקודת פריצה סדרה 2:&nbsp;
-            <span className="text-yellow-400 font-bold">₪{fmt(strikePrice)}</span>
-            &nbsp;<span className="text-gray-600">(מתנת הבנק — כל רווח מעל המימוש)</span>
-            {stockPrice > strikePrice
-              ? <span className="text-green-400 mr-2"> ✓</span>
-              : <span className="text-red-400 mr-2"> ✗</span>}
-          </span>
-        </div>
-      </div>
-
-      <div className="glass-card p-5 mb-4">
-        <p className="text-xs font-mono text-gray-400 uppercase tracking-wider mb-4">
-          רווח בתרחיש הנוכחי — מניה ב-₪{fmt(stockPrice)}
-        </p>
-        {inTheMoney ? (
-          <>
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 mb-3">
-              <OptionsStat label="רווח לאופציה" val={nis(gain, 1)} sub={`${fmt(stockPrice)} − ${fmt(strikePrice)}`} color="green" />
-              <OptionsStat label='רווח ברוטו סה"כ' val={nis(totalProfit)} sub="לפני מס" color="green" />
-              <OptionsStat label={`מס שולי (${effectiveRate}%)`} val={nis(taxAmount)} sub="הכנסת עבודה — מדרגות" color="red" />
-              <OptionsStat label='רווח אחרי מס' val={nis(afterTax)} sub="ברוטו − מס" color="green" />
-            </div>
-            <div className="border-t border-white/10 pt-3">
-              <p className="text-xs font-mono text-gray-500 mb-2">מימוש נטו (Exercise Net) — A×(B−C)/B — מניות בפועל שמקבלים ללא תשלום במזומן</p>
-              <div className="grid grid-cols-3 gap-3">
-                <OptionsStat label="מניות סדרה 1" val={fmt(s1NetShares)} sub={`${fmt(series1)} אופציות × (${fmt(stockPrice)}−${fmt(strikePrice)})/${fmt(stockPrice)}`} color="purple" />
-                <OptionsStat label="מניות סדרה 2" val={fmt(s2NetShares)} sub={`${fmt(series2a + series2b)} אופציות × (B−C)/B`} color="blue" />
-                <OptionsStat label='סה"כ מניות' val={fmt(totalNetShares)} sub={`שווי: ${nis(totalNetShares * stockPrice)}`} color="green" />
-              </div>
-            </div>
-          </>
-        ) : (
-          <div className="text-center py-4 text-red-400 font-mono text-sm">
-            ❌ מחיר המניה (₪{fmt(stockPrice)}) נמוך ממחיר המימוש (₪{fmt(strikePrice)}) — לא ניתן לממש
-          </div>
-        )}
-      </div>
-
-      <div className="glass-card p-5 mb-5">
-        <p className="text-xs font-mono text-gray-400 uppercase tracking-wider mb-4">טבלת תרחישים</p>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm font-mono">
-            <thead>
-                <tr className="text-xs text-gray-500 border-b border-white/10">
-                  <th className="text-right pb-2 pr-2 font-normal">מחיר מניה</th>
-                  <th className="text-right pb-2 font-normal">רווח סדרה 1</th>
-                  <th className="text-right pb-2 font-normal">רווח סדרה 2</th>
-                  <th className="text-right pb-2 font-normal">ברוטו</th>
-                  <th className="text-right pb-2 font-normal text-red-400">מס שולי</th>
-                  <th className="text-right pb-2 font-normal">אחרי מס</th>
-                </tr>
-            </thead>
-            <tbody>
-              {scenarioPrices.map(price => {
-                const itm  = price > strikePrice
-                const g    = itm ? price - strikePrice : 0
-                const p1   = series1 * g
-                const p2   = (series2a + series2b) * g
-                const tot  = p1 + p2
-                 const tax  = calcIncomeTax(annualSalary + tot) - taxOnSalary
-                 const atax = tot - tax
-                const isCur = Math.round(stockPrice) === price
-                const col  = tot === 0 ? 'text-gray-500' : atax > 0 ? 'text-green-400' : 'text-red-400'
-                return (
-                  <tr key={price} className={`border-b border-white/5 ${isCur ? 'bg-neon-blue/5' : ''}`}>
-                    <td className="py-1.5 pr-2 text-white font-bold">
-                      ₪{fmt(price)}{isCur && <span className="text-neon-blue text-xs mr-1"> ◄</span>}
-                    </td>
-                    <td className={`py-1.5 ${col}`}>₪{fmt(p1)}</td>
-                    <td className={`py-1.5 ${col}`}>₪{fmt(p2)}</td>
-                    <td className={`py-1.5 font-bold ${col}`}>₪{fmt(tot)}</td>
-                     <td className={`py-1.5 text-red-400`}>₪{fmt(tax)}</td>
-                     <td className={`py-1.5 ${atax > 0 ? 'text-green-400' : 'text-gray-500'}`}>₪{fmt(atax)}</td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <div className="glass-card bg-orange-500/5 border-orange-500/20 p-4 text-xs text-orange-200 leading-relaxed">
-        ⚠️ <strong>כתב ויתור:</strong> הסימולטור הוא לצרכי הערכה ראשונית בלבד. חלוקת הבונוס 80/20 היא הנחת עבודה — הכמות המדויקת תופיע בכתב ההקצאה האישי. חישובי המס הם אומדן לפי מדרגות 2025 בלבד. מומלץ להתייעץ עם יועץ מס לפני קבלת החלטה.
-      </div>
-    </div>
-  )
-}
-
-function OptionsInput({ label, sub, value, onChange, step = 1 }) {
-  return (
-    <div className="glass-card p-4">
-      <p className="text-xs font-mono text-gray-400 mb-1">{label}</p>
-      {sub && <p className="text-xs text-gray-600 mb-2">{sub}</p>}
-      <input
-        type="number"
-        value={value}
-        onChange={e => onChange(parseFloat(e.target.value) || 0)}
-        step={step}
-        min={0}
-        className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white font-mono text-lg focus:outline-none focus:border-neon-blue/50"
-        dir="ltr"
-      />
-    </div>
-  )
-}
-
-function OptionsStat({ label, val, sub, color }) {
-  const c = { blue: 'text-neon-blue', purple: 'text-purple-400', green: 'text-green-400', red: 'text-red-400' }[color] || 'text-white'
-  return (
-    <div className="bg-white/5 rounded-lg p-3 text-center">
-      <p className="text-xs text-gray-500 font-mono mb-1">{label}</p>
-      <p className={`text-xl font-bold font-mono ${c}`}>{val}</p>
-      {sub && <p className="text-xs text-gray-600 mt-1">{sub}</p>}
     </div>
   )
 }

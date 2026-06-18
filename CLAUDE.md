@@ -178,8 +178,9 @@ FastAPI (`api.py`) + React (`frontend/src/App.jsx`, built with Vite → `fronten
 
 **Rule:** Never move scanner-related logic back into `api.py`. The refactor boundary is hard.
 
-## 9 Tabs
-Single predict | Scanner (with ALMOST BUY) | Daily report | FRED dashboard | Macro score | Leumi Options | Volume Leaders | Wedge Scan | Reversion Hunter
+## 8 Tabs
+Single predict | Scanner (with ALMOST BUY) | Daily report | FRED dashboard | Macro score | Volume Leaders | Wedge Scan | Reversion Hunter
+> Leumi Options tab removed Jun 18 2026 (friends finished using the calculator). Was a standalone frontend-only `LeumiOptionsView` in App.jsx — no backend/DB/cron. Removal touched App.jsx only (tab button + render conditional + component block + `Calculator` lucide import).
 
 ---
 
