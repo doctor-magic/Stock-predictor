@@ -1208,7 +1208,51 @@ NEXT MILESTONE:
   DO NOT build optimize_gates.py until ~50 resolved outcomes (~mid-July).
   The SQL to analyze gates is trivial; the data is not yet there.
 
-GIT STATE (Jun 14 2026): NOT committed.
+GIT STATE (Jun 14 2026): NOT committed.   [SUPERSEDED — see JUN 15-18 section below: all committed + pushed]
   live_tracker.py changes (auth fix, env loading, fail-fast) are deployed but not pushed.
   db.py change (setup_resolve fix) is deployed but not pushed.
   CLAUDE.md (auth rule) is local only.
+
+
+JUN 15-18 2026 — PHASE 0/1 SHIPPED + RESOLUTION-PIPELINE CHECKS
+================================================================
+
+SHIPPED & PUSHED (origin/main, latest commit 7ff08e8):
+  test_scanners.py  46 unittest cases (zero deps) — locks the precedence ladders of
+                    compute_verdict / compute_momentum / gainers_verdict (epsilon
+                    boundaries, null-defenses, precedence traps). Phase 0 [DONE].
+  deploy.sh         Verified deploy pipeline: unittest gate -> unified scp(3 files)
+                    -> restart -> health curl (200|401, sleep+retry for cold-start)
+                    -> frontend disk-hash check. --backend-only opt-out. Hang-proof
+                    SSH (ConnectTimeout=4 + BatchMode=yes + curl --max-time). Verified
+                    end-to-end in prod. CANONICAL deploy now (manual scp = fallback).
+  ROADMAP.md        Acceptance-criteria roadmap, Phases 0-5 + a Phase 2 backlog.
+  .gitignore        Protects .env / *.db / caches (prevented an .env leak on Jun 14).
+
+RESOLUTION PIPELINE STATUS (Jun 17-18 read-only checks):
+  tracker.db = HEALTHY. Jun 3 batch resolved correctly on the Jun 17 cron (10 full
+    trading days, exit=Jun 17 close). Cross-validated vs an independent manual
+    yfinance compute: same hit/miss direction on all 7. The "10-day lag" was NOT a
+    bug — just pending the next run; resolver counts trading days as intended.
+    Jun 4 resolves next run, Jun 5 the run after (staggered, not all 22 at once).
+  setup_resolve() = BROKEN. setup_log stuck at 0/151 resolved. Three compounding
+    issues: (1) LAZY — runs ONLY when /api/setup-stats is hit (db.py:296; no cron);
+    (2) BURST — when triggered it fires ~151 rapid sequential yf.download -> Yahoo
+    rate-limits the server IP -> all empty/raise; (3) SILENT-SKIP — except: pass
+    swallows it and prints "Done" with 0 resolved. A single isolated download (GLXY)
+    works fine, so data+logic are OK — the burst kills itself. Same disease as the
+    FRED rate-limit. Fix queued in ROADMAP Phase 2: nightly incremental resolve cron
+    + throttle/batch + log instead of pass. Gate-effectiveness data does NOT
+    accumulate until this is fixed.
+
+FIRST SHADOW TEST (Jun 3 batch, n=7, all beta>1.4) — COLLECTION ONLY, NOT CALIBRATION:
+  3/7 hit, avg fwd_ret -3.95%. Tail-driven: SMCI -42.01% alone flips the cohort
+  (other 6 avg +2.4%). Winners HOOD +23.3% / STX +16.6% / IBKR +8.2%; losers
+  APP -18.7% / PLTR -11.3% / SHOP -3.8% / SMCI -42.0%. Confidence did NOT rank
+  outcomes (HOOD 80% hit but APP 73% was 2nd-worst; IBKR 60% + STX 65% hit) — the
+  model is overconfident on volatile names and does not price beta into confidence.
+  Directional support for the beta gate (cuts the fat LEFT tail, not the win rate).
+  n=7 is a statistical curiosity. NO threshold changes until 50+ resolved (~mid-July).
+
+GIT STATE (Jun 18 2026): ALL committed AND pushed. origin/main = 7ff08e8.
+  Working tree clean. Supersedes the Jun 14 "NOT committed" note above.
