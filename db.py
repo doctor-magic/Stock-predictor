@@ -1,8 +1,23 @@
 import sqlite3
 import os
 from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "scanner_cache.db")
+
+_ET = ZoneInfo("America/New_York")
+
+
+def _signal_date() -> str:
+    """US market trading date (ET) as YYYY-MM-DD.
+
+    setup_log / fk_events rows describe US-stock signals, so their `date` must
+    match yfinance daily bars (ET) and the resolver's forward-return windows.
+    The server runs in Asia/Jerusalem (UTC+3), so `date.today()` rolled to
+    tomorrow for any scan logged 21:00-24:00 UTC — mis-stamping evening signals
+    a day ahead of their UTC `log_ts`. Anchoring on ET fixes it at the source.
+    """
+    return datetime.now(_ET).date().isoformat()
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -94,7 +109,7 @@ def fk_db_init():
 
 def fk_log_event(sym, price, change_pct, rsi, rvol, vwap_gap_pct):
     try:
-        today = date.today().isoformat()
+        today = _signal_date()
         con = sqlite3.connect(_FK_LOG_DB, timeout=30)
         existing = con.execute("SELECT id FROM fk_events WHERE symbol=? AND date=?", (sym, today)).fetchone()
         if not existing:
@@ -215,7 +230,7 @@ def setup_db_init():
 
 def setup_log_event(source: str, row: dict):
     try:
-        today = date.today().isoformat()
+        today = _signal_date()
         con = sqlite3.connect(_SETUP_LOG_DB, timeout=30)
         exists = con.execute(
             "SELECT id FROM setup_log WHERE source=? AND symbol=? AND date=?",
