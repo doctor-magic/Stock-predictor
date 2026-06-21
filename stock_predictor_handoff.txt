@@ -1256,3 +1256,64 @@ FIRST SHADOW TEST (Jun 3 batch, n=7, all beta>1.4) — COLLECTION ONLY, NOT CALI
 
 GIT STATE (Jun 18 2026): ALL committed AND pushed. origin/main = 7ff08e8.
   Working tree clean. Supersedes the Jun 14 "NOT committed" note above.
+
+
+JUN 21 2026 (Sun) — DATA-POLLUTION AUDIT + TZ DATE HOTFIX + LEUMI TAB REMOVED
+============================================================================
+
+SHIPPED & PUSHED (origin/main):
+  908012e  feat(frontend): remove Leumi Options tab. Friends finished using the
+           calculator. Frontend-only (App.jsx): dropped tab button, render conditional,
+           LeumiOptionsView + OptionsInput/OptionsStat + IL_BRACKETS/calcIncomeTax, and
+           the now-unused Calculator lucide import. 9 tabs -> 8. No backend/DB/cron.
+  30ade7d  fix(db): align logging dates with ET trading day using zoneinfo. SEE TZ BUG below.
+
+JUNETEENTH (Fri Jun 19) DATA-POLLUTION AUDIT — crons fire by day-of-week (Mon-Fri) with NO
+US-market-holiday guard, so they ran on the closed-market holiday on stale Thu data:
+  tracker.db        4 phantom signals (DELL/GE/ANET/CCL, all high-beta) — live_tracker cron
+                    ran Fri 20:05 UTC. DELETED.
+  intraday_cache.db 10,920 rows under date 2026-06-19 (~double normal ~6,700) — fetch_intraday
+                    cron ran Fri; a phantom trading day would have skewed the 20-trading-day
+                    RVOL median in scanners.get_tod_rvol_cached. DELETED. (the dangerous one)
+  falling_knife_log.db  clean (0 phantoms — FK logs 13-15 ET, nothing to catch on a closed day).
+  Backups: *.bak-20260621 on server (consistent SQLite .backup() snapshots, taken BEFORE deletes).
+
+PLOT TWIST — setup_log.db "Jun 19" rows were NOT holiday pollution but a TIMEZONE BUG:
+  Forensics on the 25 rows: log_ts = 2026-06-18T21:00:48 UTC, one 0.2s burst (a single
+  /api/gainers scan) — but the date column read 2026-06-19. Server TZ = Asia/Jerusalem (UTC+3):
+  db.py stamped `date` via date.today() (Israel local) while log_ts used utcnow() (UTC). Any
+  scan logged 21:00-24:00 UTC gets TOMORROW's Israel date. The 25 were a LEGIT Thu 17:00 ET
+  gainers scan mis-dated to Jun 19 — likely an evening dup of the daytime Jun-18 gainers; the
+  resolver is dead so zero impact. DELETED (recoverable from backup; kept deleted).
+  -> Crons run before 21:00 UTC, so they are NOT TZ-affected — this is purely an endpoint-write bug.
+
+TZ BUG FIX (commit 30ade7d; deploy.sh --backend-only; 46 tests green; HTTP 401 health OK):
+  Added _signal_date() in db.py = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+  (ET trading day, consistent with yfinance in setup_resolve). Applied at BOTH write sites:
+  setup_log_event AND the identical latent pattern in fk_log_event (FK runs 13-15 ET — not yet
+  triggered, same root). Cache (save_scan_results/get_latest_scan) + resolve-timing today()
+  gates left untouched (out of scope). Verified on server: 21:00 UTC moment -> ET date 2026-06-18.
+
+ROOT-OWNED DB FILES (infra finding):
+  stock-app.service runs as User=root -> setup_log.db + falling_knife_log.db are root:root, so
+  elimaoz99 over SSH can only READ them. BUT sudo NOPASSWD actually allows /bin/chown +
+  /usr/bin/chattr (not just `restart`) — verified via `sudo -n -l`. So the fix is self-serviceable:
+  `sudo -n chown elimaoz99:elimaoz99 setup_log.db` worked (corrects the old "restart ONLY" note).
+  tracker.db / intraday_cache.db / scanner_cache.db are elimaoz99-owned.
+
+STILL OPEN (unchanged today):
+  #2 RESOLVER — setup_log still BROKEN, now 0/198 resolved. Same disease as Jun 18 (lazy +
+     burst + silent except: pass). Now on stable ground (dates correct). HARD RULE: if any
+     holiday/TZ phantoms ever exist again, delete them BEFORE reviving the resolver.
+  #3 HOLIDAY GUARD — add a market-open check before Fri Jul 3 (observed Independence Day).
+     Must sit in BOTH the cron scripts AND the endpoint logging path (gainers logging is
+     endpoint-driven, not a documented cron).
+
+NEXT MILESTONES:
+  ~Jun 26-28 — tracker.db Jun 14-18 batch resolves (more beta-tagged shadow-test data).
+               NOTE: Jun 3/4/5 are ALREADY resolved; nothing new lands before then.
+  ~mid-July  — 50+ resolved; only then calibrate the beta gate / build optimize_gates.py.
+  Before Jul 3 — land the holiday guard.
+
+GIT STATE (Jun 21 2026): ALL committed AND pushed. origin/main = 30ade7d (before this handoff
+  commit). Working tree clean apart from this handoff update.
