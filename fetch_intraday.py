@@ -12,6 +12,8 @@ import yfinance as yf
 from datetime import date, timedelta, datetime
 from zoneinfo import ZoneInfo
 
+from market_calendar import is_us_market_session
+
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "intraday_cache.db")
 MAX_DAYS = 20
 ET = ZoneInfo("America/New_York")
@@ -94,6 +96,9 @@ def main():
     et_now = datetime.now(ET)
     today_str = et_now.strftime("%Y-%m-%d")
     print(f"[{et_now.strftime('%H:%M ET')}] Intraday cache update — {today_str}")
+    if not is_us_market_session(et_now.date()):
+        print(f"  US market closed {today_str} (weekend/holiday) — skipping fetch.")
+        return
     con = sqlite3.connect(DB_PATH)
     try:
         init_db(con)

@@ -18,6 +18,8 @@ import urllib.request
 from datetime import date, timedelta
 from pathlib import Path
 
+from market_calendar import is_us_market_session
+
 import numpy as np
 import pandas as pd
 import yfinance as yf
@@ -514,9 +516,15 @@ def main() -> None:
     resolved:    list[dict] = []
 
     if args.log:
-        print("Fetching BUY signals from GCP API...")
-        new_signals = log_signals(conn)
-        print(f"  New signals logged: {len(new_signals)}")
+        # Skip logging fresh signals on US holidays/weekends (prevents phantom
+        # rows from a stale /api/scan). Resolution still runs — it works off real
+        # historical bars and is holiday-safe.
+        if is_us_market_session():
+            print("Fetching BUY signals from GCP API...")
+            new_signals = log_signals(conn)
+            print(f"  New signals logged: {len(new_signals)}")
+        else:
+            print("US market closed today (weekend/holiday) — skipping signal logging.")
 
         print("Resolving past outcomes...")
         resolved = resolve_outcomes(conn)

@@ -3,6 +3,8 @@ import os
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
+from market_calendar import is_us_market_session
+
 DB_PATH = os.path.join(os.path.dirname(__file__), "scanner_cache.db")
 
 _ET = ZoneInfo("America/New_York")
@@ -231,6 +233,12 @@ def setup_db_init():
 def setup_log_event(source: str, row: dict):
     try:
         today = _signal_date()
+        # Holiday/weekend choke point: never log endpoint-driven setup rows on a
+        # non-trading day. This is the ONLY guard that covers the */25 volume-leaders
+        # warm cron and any open browser hitting the API on a US holiday — those
+        # have no cron entrypoint to wrap. Covers all sources (VL/gainers/reversion).
+        if not is_us_market_session(date.fromisoformat(today)):
+            return
         con = sqlite3.connect(_SETUP_LOG_DB, timeout=30)
         exists = con.execute(
             "SELECT id FROM setup_log WHERE source=? AND symbol=? AND date=?",
