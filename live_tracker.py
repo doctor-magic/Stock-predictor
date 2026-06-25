@@ -383,11 +383,16 @@ def resolve_outcomes(conn: sqlite3.Connection) -> list[dict]:
         exit_np   = np.busday_offset(str(logged_date), FORWARD_DAYS, roll="forward")
         exit_date = date.fromisoformat(str(exit_np))
         exit_price = fetch_close_on(sym, exit_date)
+        # Adjusted signal-day close as the baseline — SAME auto_adjust basis as the
+        # exit, so splits/dividends cancel. The raw stored entry_price as denominator
+        # (adjusted exit / raw entry) injects a fake return on any corporate action
+        # inside the window. entry_price stays stored/displayed for reference.
+        entry_adj = fetch_close_on(sym, logged_date)
 
-        if exit_price is None or entry_price is None:
+        if exit_price is None or entry_adj is None:
             continue
 
-        fwd_ret = (exit_price - entry_price) / entry_price
+        fwd_ret = (exit_price - entry_adj) / entry_adj
         hit     = 1 if fwd_ret >= HIT_THRESHOLD else 0
 
         conn.execute(

@@ -270,45 +270,76 @@ def setup_log_event(source: str, row: dict):
         pass
 
 
-def setup_resolve():
+def setup_resolve(max_rows: int = 50):
+    """Resolve a BOUNDED, THROTTLED batch of mature setup_log rows.
+
+    The old version selected ALL unresolved rows and fired one yf.download each
+    in a tight loop (200+), which tripped Yahoo's 429 IP rate-limit and then
+    swallowed it via a silent `except: pass` (printed success with 0 resolved).
+    Rewritten to be active/restrained/distributed:
+      • only rows aged >= 7 calendar days (>= 5 trading-day closes available);
+      • capped at `max_rows` per run — the nightly cron drains any backlog over
+        a few runs instead of bursting;
+      • time.sleep(0.5) between calls + per-row commit (partial progress survives
+        a crash) + real logging instead of silent pass.
+    Resolution is driven by resolve_setups.py (03:00 UTC cron), NOT the endpoint.
+    """
     try:
         import yfinance as _yf
+        import time as _time
         from datetime import timedelta
         con = sqlite3.connect(_SETUP_LOG_DB, timeout=30)
+        cutoff = (date.today() - timedelta(days=7)).isoformat()
         rows = con.execute(
-            "SELECT id, symbol, date, price FROM setup_log WHERE resolved=0"
+            "SELECT id, symbol, date, price FROM setup_log "
+            "WHERE resolved=0 AND date <= ? ORDER BY date LIMIT ?",
+            (cutoff, max_rows)
         ).fetchall()
-        today = date.today()
+        attempted = resolved_n = failed = 0
         for row_id, sym, date_str, entry_price in rows:
             try:
                 event_date = date.fromisoformat(date_str)
-                if (today - event_date).days < 1:
-                    continue
                 hist = _yf.download(sym, start=date_str,
                                     end=str(event_date + timedelta(days=10)),
                                     interval="1d", auto_adjust=True, progress=False)
-                if hist.empty or len(hist) < 2 or entry_price is None:
+                attempted += 1
+                if hist.empty or len(hist) < 2:
+                    _time.sleep(0.5)
                     continue
                 closes = hist["Close"].values.flatten()
+                # Adjusted day-0 close as the baseline — SAME auto_adjust basis as the
+                # forward closes, so splits/dividends cancel instead of poisoning the
+                # return. Using the raw stored `price` as the denominator (adjusted
+                # numerator / raw denominator) injects a fake return on any corporate
+                # action inside the window. `price` is kept in the row for reference.
+                base = float(closes[0])
                 c1 = float(closes[1]) if len(closes) > 1 else None
                 c5 = float(closes[5]) if len(closes) > 5 else None
-                r1 = round((c1 / entry_price - 1) * 100, 2) if c1 else None
-                r5 = round((c5 / entry_price - 1) * 100, 2) if c5 else None
-                resolved = 1 if c5 is not None else 0
+                r1 = round((c1 / base - 1) * 100, 2) if c1 else None
+                r5 = round((c5 / base - 1) * 100, 2) if c5 else None
+                is_res = 1 if c5 is not None else 0
                 con.execute(
                     "UPDATE setup_log SET close_1d=?, close_5d=?, ret_1d=?, ret_5d=?, resolved=? WHERE id=?",
-                    (c1, c5, r1, r5, resolved, row_id)
+                    (c1, c5, r1, r5, is_res, row_id)
                 )
-            except Exception:
-                pass
-        con.commit()
+                con.commit()
+                if is_res:
+                    resolved_n += 1
+                _time.sleep(0.5)
+            except Exception as e:
+                failed += 1
+                print(f"[setup_resolve] {sym} {date_str} failed: {e}", flush=True)
+                _time.sleep(0.5)
         con.close()
-    except Exception:
-        pass
+        print(f"[setup_resolve] candidates={len(rows)} attempted={attempted} "
+              f"resolved={resolved_n} failed={failed}", flush=True)
+    except Exception as e:
+        print(f"[setup_resolve] fatal: {e}", flush=True)
 
 
 def get_setup_breakdown():
-    setup_resolve()
+    # Read-only. Resolution is decoupled to the nightly resolve_setups.py cron
+    # (03:00 UTC) so the yfinance burst never hits this web-request path.
     con = sqlite3.connect(_SETUP_LOG_DB, timeout=30)
     rows = con.execute("""
         SELECT source, verdict, beta_blocked, COUNT(*) as n,
