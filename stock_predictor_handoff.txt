@@ -1317,3 +1317,80 @@ NEXT MILESTONES:
 
 GIT STATE (Jun 21 2026): ALL committed AND pushed. origin/main = 30ade7d (before this handoff
   commit). Working tree clean apart from this handoff update.
+
+
+JUN 25 2026 (Thu) — RESOLVER REVIVAL + ADJUSTMENT-BUG FENCE + HOLIDAY GUARD
+==========================================================================
+
+SHIPPED & PUSHED (origin/main):
+  6e9ac8b  fix(resolver): revive setup_log resolver + fence both resolvers vs adjustment bug
+  825c26f  feat(crons): US-market holiday/weekend guard across all DB-writing paths
+  origin/main = 825c26f. Working tree clean apart from this handoff update.
+
+#2 RESOLVER — REVIVED (closes the long-standing setup_log 0/N death):
+  Was: 0 resolved out of 218 for weeks. Three confirmed causes in code: LAZY (ran only from
+  /api/setup-stats), BURST (one yf.download per row x 200+ -> Yahoo 429), SILENT (except: pass
+  printed success with 0 resolved).
+  Fix (db.setup_resolve, max_rows=50): BOUNDED (WHERE resolved=0 AND date<=today-7d ORDER BY
+  date LIMIT ?) + THROTTLED (time.sleep(0.5)) + per-row commit + real logging
+  (candidates/attempted/resolved/failed). DECOUPLED from get_setup_breakdown (endpoint now
+  read-only). New entrypoint resolve_setups.py -> cron `0 3 * * *` (03:00 UTC) drains ~50/night.
+  First pulse (max_rows=15): candidates=15 resolved=15 failed=0 in 10.9s, no 429. Unresolved 218->203.
+
+ADJUSTMENT-BUG FENCE (data-integrity, same commit 6e9ac8b) — BOTH resolvers, do NOT revert:
+  Bug: return = adjusted_exit / RAW_entry. entry_price was the raw screener last_price stored at
+  T=0; exit came from yf.download(auto_adjust=True). A split or ex-dividend INSIDE the window made
+  numerator and denominator different bases -> fake return (split ~ -50% phantom; straddling ex-div
+  ~ -div/price bias). Fix: use the ADJUSTED day-0 close as the denominator (db: closes[0];
+  live_tracker: fetch_close_on(sym, logged_date)) — same auto_adjust basis as the exit, so
+  corporate actions cancel. Raw price kept for reference only.
+  EXPOSURE CHECK (read-only, run from the Mac to protect the server IP): tracker.db Jun cohort
+  (22 symbols) had 0 splits and 7 ex-dividends, but EVERY ex-div fell OUTSIDE its resolution window
+  (before entry or after exit) -> cohort NOT actively poisoned; the Jun-28 decision rests on clean
+  data. fk_resolve_yesterday has the SAME latent pattern — NOT yet fixed (follow-up). STX ~$1054 /
+  WDC ~$575 entry_prices verified REAL (AI-storage run-up), not corruption.
+
+#3 HOLIDAY GUARD — DONE (commit 825c26f), closes the Juneteenth pollution vector before Jul 3:
+  New standalone market_calendar.py (stdlib only): is_us_market_session(d=None), ANCHORED TO ET
+  (datetime.now(America/New_York)) to match db._signal_date() — avoids the Asia/Jerusalem rollover.
+  Weekend + hardcoded 2026 NYSE FULL-DAY holidays (half-days 11-27 / 12-24 excluded = market open).
+  Injected at 3 points: db.setup_log_event (THE choke point — the only guard for the */25
+  volume-leaders warm cron + open browsers hitting the API on a holiday; covers VL/gainers/reversion),
+  live_tracker --log (skips signal logging; resolve still runs), fetch_intraday.main.
+  resolve_setups.py deliberately NOT guarded (resolver on real historical bars -> holiday-agnostic).
+  Verified on server: Jul-3-2026 -> False, today -> True; all crons import clean (no ImportError).
+  WARN: NYSE list covers 2026 only — extend NYSE_HOLIDAYS_2026 + _COVERED_YEARS for 2027 (helper
+  prints a stderr warning on uncovered years; weekend filter still applies).
+
+DIAGNOSED, NO CODE SHIPPED:
+  "Scanner shows only ALMOST BUY, no BUY" — market-driven, NOT a bug. Scanner runs light mode and
+  labels signal=BUY from 0.57; the UI shows a REAL BUY only >=0.70 (the 0.57-0.70 band = ALMOST BUY).
+  Real BUY (>=0.70) was abundant May->Jun 16 (max conf 0.78-0.88); drought began exactly Jun 17
+  (max conf stuck 0.64-0.69). Precedent May 14-15 self-resolved Jun 16. Do NOT lower 0.70.
+  Corrected a stale note: tracker.db logs the full BUY-tier (>=0.57), NOT >=0.70.
+  v_accel column empty in Momentum Hunter — by-design timing: needs >=15 five-min bars = 75 min
+  after open (first ~10:45 ET = 17:45 Israel). Israel users watch before it is ready; silent-None
+  also collapses gainers verdicts to WATCH for the first 75 min. Honest fix (warming-up state +
+  period="2d" today-filter + log) deferred to Phase 2.
+
+OPS:
+  launchd job on the Mac (com.elim.stockcheck.20260628) scheduled Sun Jun 28 08:00 Israel —
+  read-only SSH check of whether the Jun 14-18 cohort resolved + whether the resolver is alive;
+  self-removes after one run.
+
+STILL OPEN:
+  v_accel UX (silent-None) — Phase 2.
+  User=root for stock-app.service — Phase 2 hardening (a web-app RCE = instant root on the VM).
+  fk_resolve_yesterday — same adjustment twin as the two main resolvers; follow-up.
+  Extend NYSE_HOLIDAYS_2026 for 2027 before year-end.
+
+NEXT MILESTONES:
+  Tonight  — resolve_setups 03:00 UTC drains ~50; live_tracker 20:05 UTC runs with the fence +
+             holiday guard active.
+  ~Jun 28  — tracker.db Jun 14-18 batch resolves (beta-tagged) -> beta-gate shadow-test decision,
+             now on adjustment-clean data. launchd check fires that morning.
+  ~mid-July — 50+ resolved; only then calibrate the beta gate / build optimize_gates.py.
+  Jul 10   — VM downgrade e2-standard-2 -> e2-medium (GCP credits expire).
+
+GIT STATE (Jun 25 2026): ALL committed AND pushed. origin/main = 825c26f. Working tree clean
+  apart from this handoff update.
