@@ -1394,3 +1394,22 @@ NEXT MILESTONES:
 
 GIT STATE (Jun 25 2026): ALL committed AND pushed. origin/main = 825c26f. Working tree clean
   apart from this handoff update.
+
+
+JUN 26 2026 (Fri) — VOLUME-LEADERS CACHE-WARM CRON 401 (3rd May-2026 auth victim)
+================================================================================
+  913124b  fix(cron): authenticate the volume-leaders cache-warm call.
+  The */25 cron called /api/volume-leaders with NO credentials, so after the May-2026
+  Basic Auth hardening it silently returned 401 every 25 min for weeks (output -> /dev/null).
+  Effect: the backend cache only stayed warm while a browser had the tab open; on first
+  mount you got a frozen cache (seen: 17:05 stale at 17:31). Same root cause as the Jun-14
+  live_tracker 401. New warm_volume_cache.sh sends the first BASIC_AUTH_USERS pair (mirrors
+  live_tracker._basic_auth_header) + logs the HTTP code to volume_leaders_cron.log; server
+  crontab swapped to call it. Verified: manual run -> HTTP 200, fetched_at jumped to call
+  time (cache breathing on its own again).
+  TAKEAWAY: 3rd silent failure buried in /dev/null / unwatched logs (live_tracker, setup
+  resolver, this). A FRESHNESS HEARTBEAT monitor (alert on stale outputs, not exceptions —
+  the worst ones were silent no-ops, not crashes) is the #1 Phase-2 task after Jun 28.
+
+GIT STATE (Jun 26 2026): ALL committed AND pushed. origin/main = 913124b. Working tree clean
+  apart from this handoff update.
