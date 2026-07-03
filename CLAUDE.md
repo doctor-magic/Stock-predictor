@@ -162,13 +162,20 @@ ssh -i ~/.ssh/gcp_stock_rsa elimaoz99@35.239.74.178 "sudo journalctl -u stock-ap
 | Machine | e2-standard-2 (2 vCPU, 8GB RAM) — ~₪174/month. Do NOT use e2-small (yfinance spikes to ~1.5GB). |
 | GCP credits | expire July 10 2026 → downgrade to e2-medium (plan below) |
 
-### Downgrade plan (execute July 10 2026)
+### Downgrade plan (execute SUNDAY July 5 2026 — market closed; remaining credit days = free canary window with free rollback until Jul 10)
+Readiness verified Jul 3 2026: service `enabled` (auto-starts after reboot ✓), disk 21GB free, static IP reserved, rest-state RAM 908MB/8GB. **NO swap configured — create one right after the downgrade (mandatory on 4GB).**
 1. GCP Console → Compute Engine → VM → **Stop**
-2. Edit → Machine Type → **e2-medium** (4GB RAM) → Save
+2. Edit → Machine Type → **e2-medium** (2 shared vCPU, 4GB RAM) → Save
 3. **Start**
-4. Verify: `sudo systemctl status stock-app.service` + open site
+4. Create 2GB swapfile (needs interactive sudo — NOT covered by the NOPASSWD list):
+   `sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile`
+   then persist: add `/swapfile none swap sw 0 0` to /etc/fstab
+5. Verify: `systemctl is-active stock-app.service` + `/api/health` + `crontab -l` intact + open site
+6. Mon–Thu Jul 6–9: monitor daily during market hours — `cat /sys/fs/cgroup/system.slice/stock-app.service/memory.peak` + `free -m`. Memory pressure → rollback in Console while still on credits.
 - Target cost: ~₪60/month (vs ₪174 now)
 - Also disable: VM Manager (₪3.14/mo) + Network Intelligence Center (₪3.16/mo)
+- Expect ~2× slower full market scans (shared-core) — scan semaphore + 300s cooldown already protect
+- Gate the */25 warm cron to market hours BEFORE the downgrade (constant 24/7 load the smaller machine shouldn't absorb)
 - Cloud Run is NOT an option: SQLite local state + cron jobs + sklearn cold-start make it unsuitable
 
 ## Stack
