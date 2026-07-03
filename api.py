@@ -45,12 +45,23 @@ def _load_basic_auth_users() -> dict[str, str]:
 
 _BASIC_AUTH_USERS = _load_basic_auth_users()
 _ENABLE_AUTH = os.getenv("ENABLE_AUTH", "true").lower() == "true"
+if _ENABLE_AUTH and not _BASIC_AUTH_USERS:
+    import sys as _sys
+    print("WARNING: ENABLE_AUTH=true but BASIC_AUTH_USERS is empty — "
+          "all API requests will get 503 until api_data.env is fixed.",
+          file=_sys.stderr, flush=True)
 
 def _require_auth(credentials: HTTPBasicCredentials = Depends(_security)) -> str:
     if not _ENABLE_AUTH:
         return "auth_disabled"
     if not _BASIC_AUTH_USERS:
-        return "no_users_configured"
+        # Fail CLOSED: an empty user list with auth enabled means the env file
+        # did not load (see the Jun 2026 api_data.env ordering incident) — reject
+        # loudly instead of silently serving the API to everyone.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Auth enabled but BASIC_AUTH_USERS is not configured.",
+        )
     correct_password = _BASIC_AUTH_USERS.get(credentials.username)
     if correct_password is None or not secrets.compare_digest(credentials.password.encode('utf-8'), correct_password.encode('utf-8')):
         raise HTTPException(
@@ -312,14 +323,14 @@ def _load_macro_state():
     try:
         with open(_MACRO_STATE_FILE) as f:
             d = _json.load(f)
-            return d.get("state", "BULL_STRONG"), int(d.get("days", 0))
+            return d.get("state", "BULL_STRONG"), int(d.get("days", 0)), d.get("count_date")
     except Exception:
-        return "BULL_STRONG", 0
+        return "BULL_STRONG", 0, None
 
-def _save_macro_state(state: str, days: int):
+def _save_macro_state(state: str, days: int, count_date: str):
     try:
         with open(_MACRO_STATE_FILE, "w") as f:
-            _json.dump({"state": state, "days": days,
+            _json.dump({"state": state, "days": days, "count_date": count_date,
                         "ts": datetime.now(timezone.utc).isoformat()}, f)
     except Exception:
         pass
@@ -348,37 +359,49 @@ def _get_event_ctx():
     return {"is_event": False, "type": None, "offset": None}
 
 def _vix_state_step(vix_series, spy_above_sma200: bool):
-    """Asymmetric state machine. Returns (state, days, vix_signals_dict)."""
+    """Asymmetric state machine. Returns (state, days, vix_signals_dict).
+
+    `days` counts US trading DAYS spent in the current state — the counter
+    advances at most once per calendar day, and only on market-session days.
+    (It previously advanced on every cache-miss call, so "min_days: 5"
+    graduated after ~5 web requests instead of 5 trading days.)
+    """
+    from market_calendar import is_us_market_session, us_trading_date
     s = vix_series.dropna()
     vix_now = float(s.iloc[-1]) if len(s) > 0 else 18.0
     roc3, roc5, scaled = _calc_vix_signals(s)
 
     with _macro_state_lock:
-        state, days = _load_macro_state()
+        state, days, count_date = _load_macro_state()
+        today_str = us_trading_date().isoformat()  # ET anchor, like db._signal_date()
+        day_tick = 1 if (count_date != today_str and is_us_market_session()) else 0
+        # keep the stored date fresh even on no-tick days so a later trading
+        # day still registers exactly one tick
+        save_date = today_str if day_tick else (count_date or today_str)
 
         # Hard circuit breaker → CAUTION from any state
         if vix_now >= 35 or roc5 > 25:
             next_s = "CAUTION"
-            next_d = 0 if next_s != state else days + 1
-            _save_macro_state(next_s, next_d)
+            next_d = 0 if next_s != state else days + day_tick
+            _save_macro_state(next_s, next_d, save_date)
             return next_s, next_d, {"roc3": roc3, "roc5": roc5, "scaled": scaled}
 
         # Soft downgrade — fast fear spike
         if scaled > 20 or (roc3 > 15 and vix_now > 17):
             if state in _DOWNGRADE_MAP:
                 next_s = _DOWNGRADE_MAP[state]
-                _save_macro_state(next_s, 0)
+                _save_macro_state(next_s, 0, save_date)
                 return next_s, 0, {"roc3": roc3, "roc5": roc5, "scaled": scaled}
 
         # VIX Crush: reduce cooldown the day after a macro event
         crush_bonus = 0
         ev = _get_event_ctx()
-        if ev["is_event"] and ev["offset"] == 1 and len(s) >= 2:
+        if day_tick and ev["is_event"] and ev["offset"] == 1 and len(s) >= 2:
             crush = (float(s.iloc[-2]) - vix_now) / float(s.iloc[-2])
             if crush > 0.12:
                 crush_bonus = 2
 
-        effective_days = days + 1 + crush_bonus
+        effective_days = days + day_tick + crush_bonus
 
         # Asymmetric graduation (slow recovery)
         g = _GRADUATION.get(state)
@@ -388,10 +411,10 @@ def _vix_state_step(vix_series, spy_above_sma200: bool):
             else:
                 order = ["CAUTION", "NEUTRAL", "BULL_WEAK", "BULL_STRONG"]
                 next_s = order[order.index(state) + 1]
-                _save_macro_state(next_s, 0)
+                _save_macro_state(next_s, 0, save_date)
                 return next_s, 0, {"roc3": roc3, "roc5": roc5, "scaled": scaled}
 
-        _save_macro_state(state, effective_days)
+        _save_macro_state(state, effective_days, save_date)
         return state, effective_days, {"roc3": roc3, "roc5": roc5, "scaled": scaled}
 
 _FRED_DISK_CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fred_cache.json")
@@ -873,6 +896,7 @@ def get_volume_leaders(min_market_cap: int = 200_000_000, force: bool = False):
         wedge  = {}
         regime  = "unknown"
         adx_val = 0.0
+        closes  = pd.Series(dtype=float)  # must not leak from a previous symbol if the try fails
         try:
             multi = len(tickers) > 1
             closes  = hist["Close"][sym].dropna()  if multi else hist["Close"].dropna()

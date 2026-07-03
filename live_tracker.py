@@ -18,7 +18,7 @@ import urllib.request
 from datetime import date, timedelta
 from pathlib import Path
 
-from market_calendar import is_us_market_session
+from market_calendar import is_us_market_session, NYSE_HOLIDAYS_2026
 
 import numpy as np
 import pandas as pd
@@ -214,8 +214,13 @@ def _get_market_context() -> tuple[float | None, str | None, float | None]:
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────────
+# np.busday_* only excludes weekends by default; without the NYSE holiday list a
+# holiday week resolves signals one trading day early (9 real sessions counted as 10).
+_NYSE_HOLIDAYS = sorted(NYSE_HOLIDAYS_2026)
+
+
 def trading_days_elapsed(from_date: date) -> int:
-    return int(np.busday_count(str(from_date), str(date.today())))
+    return int(np.busday_count(str(from_date), str(date.today()), holidays=_NYSE_HOLIDAYS))
 
 
 def fetch_close_on(sym: str, target_date: date) -> float | None:
@@ -382,7 +387,8 @@ def resolve_outcomes(conn: sqlite3.Connection) -> list[dict]:
         if trading_days_elapsed(logged_date) < FORWARD_DAYS:
             continue
 
-        exit_np   = np.busday_offset(str(logged_date), FORWARD_DAYS, roll="forward")
+        exit_np   = np.busday_offset(str(logged_date), FORWARD_DAYS, roll="forward",
+                                     holidays=_NYSE_HOLIDAYS)
         exit_date = date.fromisoformat(str(exit_np))
         exit_price = fetch_close_on(sym, exit_date)
         # Adjusted signal-day close as the baseline — SAME auto_adjust basis as the

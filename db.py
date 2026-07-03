@@ -22,7 +22,7 @@ def _signal_date() -> str:
     return datetime.now(_ET).date().isoformat()
 
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS scan_results (
@@ -46,9 +46,9 @@ def save_scan_results(market_id: str, results: list):
     { 'symbol': ..., 'symbol_name': ..., 'signal': ..., 'confidence': ..., 'precision': ..., 'last_price': ... }
     """
     today = date.today().isoformat()
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     cursor = conn.cursor()
-    
+
     # Optional: Delete old scans for this market to save space, or just keep history.
     # We will keep history but only query the latest.
     cursor.execute("DELETE FROM scan_results WHERE market_id = ? AND scan_date = ?", (market_id, today))
@@ -67,7 +67,7 @@ def save_scan_results(market_id: str, results: list):
 def get_latest_scan(market_id: str):
     """Return all cached results for market_id from today, or empty list."""
     today = date.today().isoformat()
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
     
