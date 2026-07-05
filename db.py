@@ -112,6 +112,10 @@ def fk_db_init():
 def fk_log_event(sym, price, change_pct, rsi, rvol, vwap_gap_pct):
     try:
         today = _signal_date()
+        # Same holiday/weekend choke point as setup_log_event — endpoint-driven
+        # writes have no cron entrypoint to guard.
+        if not is_us_market_session(date.fromisoformat(today)):
+            return
         con = sqlite3.connect(_FK_LOG_DB, timeout=30)
         existing = con.execute("SELECT id FROM fk_events WHERE symbol=? AND date=?", (sym, today)).fetchone()
         if not existing:
@@ -222,10 +226,19 @@ def setup_db_init():
         ret_1d        REAL,
         ret_5d        REAL
     )""")
-    try:
-        con.execute("ALTER TABLE setup_log ADD COLUMN dist_from_sma50 REAL")
-    except Exception:
-        pass
+    for _mig in (
+        "ALTER TABLE setup_log ADD COLUMN dist_from_sma50 REAL",
+        # Restoration instrumentation (Jul 5 2026): ALL gate evaluations per row
+        # (JSON array, no short-circuit) + market context at signal time — so the
+        # next N>=50 can answer per-gate and per-regime questions.
+        "ALTER TABLE setup_log ADD COLUMN blocked_reasons TEXT",
+        "ALTER TABLE setup_log ADD COLUMN market_state TEXT",
+        "ALTER TABLE setup_log ADD COLUMN vix_state TEXT",
+    ):
+        try:
+            con.execute(_mig)
+        except Exception:
+            pass
     con.commit()
     con.close()
 
@@ -245,14 +258,18 @@ def setup_log_event(source: str, row: dict):
             (source, row.get("symbol"), today)
         ).fetchone()
         if not exists:
+            _reasons = row.get("blocked_reasons")
+            if isinstance(_reasons, (list, tuple)):
+                import json as _json
+                _reasons = _json.dumps(list(_reasons)) if _reasons else None
             con.execute("""
                 INSERT INTO setup_log (
                     source, symbol, date, log_ts, price,
                     verdict, ml_signal, ml_confidence,
                     vol_ratio, rsi, beta, beta_blocked, above_sma50,
                     regime, reversion_verdict, vwap_gap_pct, rvol_val, rvol_alert,
-                    dist_from_sma50
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    dist_from_sma50, blocked_reasons, market_state, vix_state
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
                 source, row.get("symbol"), today,
                 datetime.utcnow().isoformat(),
@@ -271,11 +288,49 @@ def setup_log_event(source: str, row: dict):
                 row.get("rvol"),
                 1 if row.get("rvol_alert") else 0,
                 row.get("dist_from_sma50"),
+                _reasons,
+                row.get("market_state"),
+                row.get("vix_state"),
             ))
             con.commit()
         con.close()
     except Exception:
         pass
+
+
+# ── DEVELOPING display breaker (pre-registered safety rule, Jul 3 2026) ───────
+# IF at N>=20 resolved gainers/DEVELOPING rows the mean ret_5d is worse than -5%
+# → the DISPLAY layer demotes DEVELOPING to WATCH. Logging coverage is NOT
+# narrowed — events keep being logged with their true verdict. Research
+# conclusions still wait for N>=50; this is a stop-loss, not a finding.
+_DEV_BREAKER_MIN_N    = 20
+_DEV_BREAKER_MEAN_PCT = -5.0
+_dev_breaker_cache: dict = {"ts": 0.0, "tripped": False}
+
+
+def developing_breaker_tripped() -> bool:
+    import time as _time
+    now = _time.time()
+    if now - _dev_breaker_cache["ts"] < 3600:
+        return _dev_breaker_cache["tripped"]
+    tripped = False
+    try:
+        con = sqlite3.connect(_SETUP_LOG_DB, timeout=30)
+        n, mean5 = con.execute(
+            "SELECT COUNT(*), AVG(ret_5d) FROM setup_log "
+            "WHERE source='gainers' AND verdict='DEVELOPING' AND resolved=1 AND ret_5d IS NOT NULL"
+        ).fetchone()
+        con.close()
+        tripped = bool(n is not None and n >= _DEV_BREAKER_MIN_N
+                       and mean5 is not None and mean5 < _DEV_BREAKER_MEAN_PCT)
+        if tripped:
+            print(f"[developing_breaker] TRIPPED: n={n} mean_5d={mean5:.2f}% — "
+                  f"DEVELOPING demoted to WATCH in display", flush=True)
+    except Exception:
+        pass
+    _dev_breaker_cache["ts"] = now
+    _dev_breaker_cache["tripped"] = tripped
+    return tripped
 
 
 def setup_resolve(max_rows: int = 50):

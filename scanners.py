@@ -88,7 +88,10 @@ def detect_falling_wedge(highs, lows, closes, volumes) -> dict:
         v_all = np.array(volumes, dtype=float).flatten()
         total = len(c_all)
 
-        min_compression = {30: 0.15, 45: 0.20, 60: 0.25}
+        # Raised May 15 2026 (0.15/0.20/0.25 → too many false signals; NIO case
+        # study validated these). Regressed silently in the Jun 7 refactor —
+        # restored Jul 5 2026. Must match the pre_scan.py copy.
+        min_compression = {30: 0.40, 45: 0.45, 60: 0.50}
 
         for lookback in (30, 45, 60):
             n = min(lookback, total)

@@ -1,18 +1,15 @@
 # Stock Predictor Pro — CLAUDE.md
 
-## ⚠️ OUT OF SERVICE — features lost in the Jun 7 2026 refactor (discovered Jul 3 2026)
-The Jun 7 refactor (`97fef77` + `9fe3557`) was built from a stale api.py, silently dropping features that were deployed in May 2026 but never committed. Verified Jul 3: absent from ALL git history (`git log --all -S`) AND from the live server (md5 match). The sections below describing them are kept as **re-implementation specs** (no git source exists) and are tagged ⚠️ NOT IN CODE:
+## ✅ RESTORED Jul 5 2026 — the six features lost in the Jun 7 refactor
+History: the Jun 7 refactor was built from a stale api.py, silently dropping May-2026 features that were deployed but never committed (discovered Jul 3, absent from all git history AND the live server). **All restored Jul 5 2026 from the specs below, with enhanced instrumentation (spec v2):** HOD Gap/ATR gate, RVOL slope gate, Power Hour whale alert, merger-pinned filter, FALLING KNIFE logging call, wedge compression thresholds (0.40/0.45/0.50 — now guarded by a synthetic-wedge regression test in test_scanners.py). Also restored: market_id whitelist + top_n/min_confidence clamps (pydantic Field). The frontend lit up automatically — field names were kept identical.
 
-1. **HOD Gap/ATR gate** (`_atr_daily_cache`, `hod_gap_ratio`, `setup_blocked_by`)
-2. **RVOL slope gate** (`_rvol_history` deque + 270s slot guard, `rvol_trend`)
-3. **Power Hour whale alert** (`pct_from_low`, `reversion_alert`)
-4. **Merger-pinned filter** (10d price range <5% + vol_ratio≥2.0 → skip)
-5. **FALLING KNIFE logging** — `db.fk_log_event()` exists but has NO caller; `fk_events` frozen since Jun 3 2026
-6. **Wedge compression thresholds** — `scanners.detect_falling_wedge()` regressed to 0.15/0.20/0.25 (rule: 0.40/0.45/0.50 raised May 15; `pre_scan.py` has the correct values)
-
-Also lost from the May 2026 security hardening: market_id whitelist, top_n clamp, min_confidence clamp (the scan rate limit, semaphore and task_id regex survived). `App.jsx` still renders the dead fields (`setup_blocked_by`, `rvol_trend`, `reversion_alert`) — harmless, invisible, ready for restoration.
-
-**Do not treat ⚠️-tagged sections as live behavior. Restore from these specs only after the setup_log/tracker analyses (both past their N≥50 thresholds as of Jul 3 2026) inform whether/how each gate earns its place.**
+**Instrumentation added with the restoration (why it exists — the old gates left ZERO measurable rows):**
+- `setup_log.blocked_reasons` (JSON array) — ALL gates evaluated per row, no short-circuit ("HOD"/"RVOL"/"BETA")
+- `setup_log.market_state` (tailwind/headwind/mixed) + `setup_log.vix_state` (VIX state machine) at signal time
+- VL logging coverage EXPANDED (never narrow): also logs rows whose setup fired or was gate-blocked, even at verdict HOLD
+- Early-close aware windows: `market_calendar.session_close_hour()` (13:00 on Nov 27 / Dec 24) — Power Hour = last hour before ACTUAL close; HOD window = 10:00→actual close
+- **DEVELOPING display breaker (pre-registered safety rule Jul 3):** at N≥20 resolved gainers/DEVELOPING with mean ret_5d < −5% → display demotes to WATCH (`db.developing_breaker_tripped()`, 1h cache); the LOG keeps the true verdict
+- Gate thresholds (HOD 0.35 etc.) are STARTING POINTS — calibrate only at the next N≥50 instrumented rows; beta gate decision still waits for tracker N≥50
 
 ## Quick Reference
 ```bash
@@ -59,9 +56,10 @@ cd /home/elimaoz99/stock_predictor && nohup venv/bin/python3 -u pre_scan.py >> p
 | SCAN_CONFIDENCE_THRESHOLD | 0.57 | api.py |
 | PREMIUM_SCAN_THRESHOLD | 0.65 | api.py |
 | _BETA_HIGH_THRESHOLD | 1.5 | api.py |
-| HOD gap threshold | ⚠️ NOT IN CODE (spec: 0.35) | lost Jun 7 |
-| RVOL slope threshold | ⚠️ NOT IN CODE (spec: 0.95 × mean(T-1,T-2)) | lost Jun 7 |
-| Power Hour: pct_from_low | ⚠️ NOT IN CODE (spec: < 2.0% at ET_hour == 15) | lost Jun 7 |
+| HOD gap threshold (`_HOD_GAP_MAX`) | 0.35 | api.py |
+| RVOL slope threshold | 0.95 × mean(T-1,T-2), slot guard 270s | api.py |
+| Power Hour: pct_from_low | < 2.0% at ET_hour == session_close_hour−1 | api.py |
+| DEVELOPING breaker | N≥20 AND mean ret_5d < −5% → display WATCH | db.py |
 | MODEL_VERSION | "2026-05_ema_dist_regime" | live_tracker.py |
 | Volume Leaders TTL | 1800s | api.py |
 | Reversion Hunter TTL | 900s | api.py |
@@ -76,7 +74,7 @@ cd /home/elimaoz99/stock_predictor && nohup venv/bin/python3 -u pre_scan.py >> p
 | `scanner_cache.db` | server + local | Scan results cache (sp500/nasdaq100) | `db.py` | `api.py` |
 | `intraday_cache.db` | server | 5m bars for time-of-day RVOL | `fetch_intraday.py` | `scanners.get_tod_rvol_cached()` |
 | `setup_log.db` | server | Scanner signal outcome tracking (VL + Rev + Gainers) | `db.setup_log_event()` via api.py | `/api/setup-stats` → `db.get_setup_breakdown()` |
-| `falling_knife_log.db` | server | Falling Knife signal outcome tracking | ⚠️ NO WRITER since Jun 7 2026 — `db.fk_log_event()` exists but api.py call site was lost in the refactor | `/api/falling-knife-stats` → `db.get_fk_stats()` |
+| `falling_knife_log.db` | server | Falling Knife signal outcome tracking | `db.fk_log_event()` via reversion endpoint, 13:00–15:00 ET (call site restored Jul 5 2026 — was lost Jun 7) | `/api/falling-knife-stats` → `db.get_fk_stats()` |
 | `tracker.db` | **server** (was local until Jun 14 2026) | Daily BUY signal log + outcome resolver | `live_tracker.py` cron (20:05 UTC Mon–Fri) | `live_tracker.py --report` |
 | `fred_cache.json` | server | FRED dashboard disk cache (survives restarts) | `api.py` | `api.py` (startup) |
 | `wedge_cache.json` | server | Wedge scan results from pre_scan.py | `pre_scan.py` | `/api/wedge-scan` |
@@ -244,14 +242,14 @@ VWAP is the target — not the entry.
 ### Core Engine
 - Yahoo screener: top 50 most-active → filtered by mktcap >$200M, vol>0, last trade <24h, avgVol3M×price ≥$2M
 - Intraday: VWAP (resets 9:30 ET), time-of-day RVOL (median-based, SQLite cache), ORB Breakout, LIQUID SURGE, VWAP Bounce
-- ⚠️ NOT IN CODE (lost Jun 7) — Merger-pinned filter: price range <5% over 10d + vol_ratio≥2.0 → skip
+- Merger-pinned filter: price range <5% over 10d + vol_ratio≥2.0 → skip (restored Jul 5 2026)
 - ML verdict: requires vol_ratio≥1.0 AND price>SMA50 AND confidence≥threshold
 - Regime: ADX-14 (Wilder's) × ATR-14 percentile → 9 regimes (ranging/weak_trend/strong_trend × lo/med/hi_vol)
 - Score 0–10: Signal(4) + RVOL(2) + RSI(1) + VWAP(1) + day%(1) + Setup(1) + Wedge(0.5)
 - SPY/QQQ market context bar (tailwind/headwind/mixed), 2min cache
 - Earnings badge: ⚠️ red ≤7d, 📅 yellow ≤14d
 
-### Momentum Gates (added May 22 2026) — ⚠️ NOT IN CODE since Jun 7 2026 (re-implementation spec)
+### Momentum Gates (added May 22 2026; restored Jul 5 2026 with blocked_reasons instrumentation)
 Two filters that suppress BUY setup signals when momentum is exhausted.
 Model DNA: **momentum chaser** — gates answer "is fuel still alive?" not "where is the wall?"
 
@@ -299,7 +297,7 @@ Suppresses ML BUY on high-beta stocks — model is Mean-Reversion on institution
 - Consistent with HOD/RVOL `— ⊘` pattern
 - Threshold 1.5 is empirical — calibrate via tracker.db after ~50 resolved trades
 
-### Power Hour Whale Alert (added May 27 2026) — ⚠️ NOT IN CODE since Jun 7 2026 (re-implementation spec)
+### Power Hour Whale Alert (added May 27 2026; restored Jul 5 2026 — window now session_close_hour−1, early-close aware)
 Concept: institutional players accumulate beaten-down stocks at daily lows during 15:00–16:00 ET.
 Validated by: QBTS (May 26), WOLF/PDD/NVTS/QCOM all surged in final 15–20 min on May 27.
 
@@ -367,10 +365,10 @@ Validated by: QBTS (May 26), WOLF/PDD/NVTS/QCOM all surged in final 15–20 min 
 - `scanners.classify_regime()` uses Wilder's smoothing (alpha=1/N), NOT pandas .ewm() — do not replace
 - `scanners.classify_regime()` requires `np.asarray(..., dtype=float).ravel()` on all inputs (yfinance 2.x MultiIndex guard)
 - Regime is observational only — no BUY filter until ≥50 resolved signals per regime in tracker.db
-- ⚠️ NOT IN CODE (lost Jun 7) — HOD gate: threshold 0.35, window 10:00–16:00 ET only, `_atr_daily_cache` — never inline per-request
-- ⚠️ NOT IN CODE (lost Jun 7) — RVOL slope: slot guard 270s, deque maxlen=3 — do not remove guard
+- HOD gate (restored Jul 5): threshold `_HOD_GAP_MAX`=0.35, window 10:00→`session_close_hour()` ET, live session only, `_atr_daily_cache` — never inline per-request
+- RVOL slope (restored Jul 5): slot guard 270s, deque maxlen=3 — do not remove guard
 - Beta gate: `_BETA_HIGH_THRESHOLD = 1.5`, SPY downloaded once per call, beta computed from 6mo hist already available. Do NOT remove try/except isolation. Do NOT make threshold a query param yet (premature — calibrate first)
-- ⚠️ NOT IN CODE (lost Jun 7) — Power Hour whale alert: `_rvol_history` deque slot guard = 270s — do not remove (prevents F5 spam corrupting slope). `pct_from_low < 2.0` threshold — do not loosen above 3% without evidence. Alert fires on `rvol_trend=None` (warming up) — only suppressed on `"down"`. Time gate strictly `ET_hour == 15` — do not extend to 14:xx (pre-power-hour has different dynamics).
+- Power Hour whale alert (restored Jul 5): `_rvol_history` deque slot guard = 270s — do not remove (prevents F5 spam corrupting slope). `pct_from_low < 2.0` threshold — do not loosen above 3% without evidence. Alert fires on `rvol_trend=None` (warming up) — only suppressed on `"down"`. Time gate: `ET_hour == session_close_hour()−1` (15 on full days, 12 on half-days) — do not extend earlier (pre-power-hour has different dynamics).
 
 ---
 
@@ -385,8 +383,8 @@ Validated by: QBTS (May 26), WOLF/PDD/NVTS/QCOM all surged in final 15–20 min 
 ---
 
 ### Security (May 2026 — do not revert)
-- task_id format enforcement, scan rate limit + semaphore — still in code
-- ⚠️ NOT IN CODE (lost Jun 7) — market_id whitelist, top_n clamp, min_confidence clamp (unknown market_id currently falls back to the 8-stock "us" preset in core_logic; low risk behind Basic Auth, restore with the other lost items)
+- task_id format enforcement, scan rate limit + semaphore
+- market_id whitelist (`_MARKET_ID_WHITELIST` in api.py → 400) + top_n/min_confidence clamps (pydantic `Field` in models.py → 422) — restored Jul 5 2026
 - Basic Auth fails CLOSED (Jul 3 2026, `4667b20`): ENABLE_AUTH=true with empty BASIC_AUTH_USERS → 503 on every request + startup stderr warning. An env-load failure must never silently open the API.
 
 ---
@@ -435,9 +433,10 @@ Everything is in sync: local `~/Desktop/Stock-predictor/` = server `/home/elimao
 - May–Jun 2026: Wedge Scan tab, SWING/Score columns, SPY/QQQ context, Earnings Calendar, Regime Classification, Premium Scan, Momentum Gates (HOD+RVOL), Beta Gate, Reversion Hunter (Tab 9), TradingView TV links, Power Hour Whale Alert, FRED disk cache, Reversion Hunter RVOL alert, Wedge Scan Touches column, Falling Knife Logger
 
 ## Pending actions
-- **Restore the 6 features lost in the Jun 7 refactor** (see OUT OF SERVICE section at top) — re-implement from the ⚠️-tagged specs, informed by the analyses below
-- **Analyses UNBLOCKED (Jul 3 2026):** setup_log.db has 261 resolved (>50 threshold) and tracker.db 53 resolved — run the pre-registered breakdowns before restoring gates
-- **July 10 2026:** VM downgrade e2-standard-2 → e2-medium (see Infrastructure section)
+- **Jul 5 2026: VM downgrade** e2-standard-2 → e2-medium (see Infrastructure section — canary window until credits expire Jul 10)
+- **Instrumented-gate calibration:** blocked_reasons/market_state/vix_state collection started Jul 6 2026 (first live market day post-restoration) — calibrate HOD 0.35 etc. at the next N≥50 resolved instrumented rows
+- **Tracker beta-gate decision:** locked query re-run at N≥50 resolved-with-beta (~mid-July; was 34 on Jul 3, direction = weak counter-gate)
+- **DEVELOPING breaker:** pre-registered rule armed (N≥20 AND mean<−5% → display demotion); n=11/mean −8.71% as of Jul 3
 - **After ~50 resolved signals in setup_log.db:** run `/api/setup-stats` breakdown → verify gate effectiveness (HIGH-BETA, HOD, RVOL blocked vs actual outcomes)
 - **After ~50 resolved signals with beta IS NOT NULL in tracker.db:**
   `SELECT CASE WHEN beta > 1.5 THEN 'high' ELSE 'normal' END, AVG(hit), COUNT(*) FROM signals WHERE beta IS NOT NULL GROUP BY 1`

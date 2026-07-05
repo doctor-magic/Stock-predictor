@@ -15,7 +15,9 @@ from zoneinfo import ZoneInfo
 from market_calendar import is_us_market_session
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "intraday_cache.db")
+ARCHIVE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "intraday_archive")
 MAX_DAYS = 20
+TRACK_DAYS = 10  # symbols absent from most_actives this long drop out of the fetch universe
 ET = ZoneInfo("America/New_York")
 
 
@@ -30,6 +32,13 @@ def init_db(con):
         )
     """)
     con.execute("CREATE INDEX IF NOT EXISTS idx_sym_slot ON intraday_bars(symbol, time_slot)")
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS actives_seen (
+            symbol TEXT NOT NULL,
+            date   TEXT NOT NULL,
+            PRIMARY KEY (symbol, date)
+        )
+    """)
     con.commit()
 
 
@@ -45,9 +54,16 @@ def get_most_actives():
 
 
 def get_tracked_symbols(con):
-    cutoff = (date.today() - timedelta(days=MAX_DAYS)).isoformat()
+    """Symbols seen in most_actives within the last TRACK_DAYS days.
+
+    Was: any symbol with bars in the last MAX_DAYS — but every nightly fetch gave
+    each tracked symbol fresh bars, so nothing ever left the set (157 symbols by
+    Jul 2026, growing forever). Membership now expires after TRACK_DAYS days of
+    absence from the screener; old bars age out via purge_old (into the archive).
+    """
+    cutoff = (date.today() - timedelta(days=TRACK_DAYS)).isoformat()
     cur = con.execute(
-        "SELECT DISTINCT symbol FROM intraday_bars WHERE date >= ?", (cutoff,)
+        "SELECT DISTINCT symbol FROM actives_seen WHERE date >= ?", (cutoff,)
     )
     return [r[0] for r in cur.fetchall()]
 
@@ -86,10 +102,27 @@ def fetch_and_store(symbols, today_str, con):
 
 def purge_old(con):
     cutoff = (date.today() - timedelta(days=MAX_DAYS + 1)).isoformat()
-    cur = con.execute("DELETE FROM intraday_bars WHERE date < ?", (cutoff,))
+    rows = con.execute(
+        "SELECT symbol, date, time_slot, volume FROM intraday_bars WHERE date < ?",
+        (cutoff,)
+    ).fetchall()
+    if rows:
+        # Cold storage before delete — per-slot volume history has research value
+        # (future backtests / volume-anomaly models). ~KBs per day gzipped.
+        import gzip, csv
+        os.makedirs(ARCHIVE_DIR, exist_ok=True)
+        path = os.path.join(ARCHIVE_DIR, f"intraday_bars_{date.today().isoformat()}.csv.gz")
+        with gzip.open(path, "wt", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["symbol", "date", "time_slot", "volume"])
+            w.writerows(rows)
+        con.execute("DELETE FROM intraday_bars WHERE date < ?", (cutoff,))
+        con.commit()
+        print(f"  Archived+purged {len(rows)} rows -> {os.path.basename(path)}")
+    # keep actives_seen bounded (only TRACK_DAYS matter; 60d is generous slack)
+    con.execute("DELETE FROM actives_seen WHERE date < ?",
+                ((date.today() - timedelta(days=60)).isoformat(),))
     con.commit()
-    if cur.rowcount:
-        print(f"  Purged {cur.rowcount} old rows")
 
 
 def main():
@@ -103,6 +136,11 @@ def main():
     try:
         init_db(con)
         active  = get_most_actives()
+        con.executemany(
+            "INSERT OR REPLACE INTO actives_seen (symbol, date) VALUES (?, ?)",
+            [(s, today_str) for s in active]
+        )
+        con.commit()
         tracked = get_tracked_symbols(con)
         symbols = list(set(active) | set(tracked))
         print(f"  Universe: {len(symbols)} symbols (actives={len(active)}, tracked={len(tracked)})")

@@ -289,5 +289,82 @@ class TestGainersVerdict(unittest.TestCase):
         self.assertEqual(scanners.gainers_verdict(None, False, None), "WATCH")
 
 
+class TestMarketCalendar(unittest.TestCase):
+    """market_calendar: holiday table + half-day close hours (added Jul 5 2026)."""
+
+    def test_full_day_close_hour(self):
+        from datetime import date
+        from market_calendar import session_close_hour
+        self.assertEqual(session_close_hour(date(2026, 7, 6)), 16)   # regular Monday
+
+    def test_half_day_close_hours(self):
+        from datetime import date
+        from market_calendar import session_close_hour
+        self.assertEqual(session_close_hour(date(2026, 11, 27)), 13)  # post-Thanksgiving
+        self.assertEqual(session_close_hour(date(2026, 12, 24)), 13)  # Christmas Eve
+
+    def test_half_days_are_trading_days(self):
+        # Half-days are OPEN sessions — the guard must NOT block them
+        from datetime import date
+        from market_calendar import is_us_market_session
+        self.assertTrue(is_us_market_session(date(2026, 11, 27)))
+        self.assertTrue(is_us_market_session(date(2026, 12, 24)))
+
+    def test_holiday_and_weekend_closed(self):
+        from datetime import date
+        from market_calendar import is_us_market_session
+        self.assertFalse(is_us_market_session(date(2026, 7, 3)))   # Independence Day (obs.)
+        self.assertFalse(is_us_market_session(date(2026, 7, 5)))   # Sunday
+
+
+def _has_scipy():
+    try:
+        import scipy  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def _synthetic_wedge(compression_target: float):
+    """30-bar falling wedge with an exact target compression.
+
+    Upper line: 100 - 0.5*i (peaks touch it every 5 bars).
+    Lower line starts at (100 - width_start) and converges so that
+    width_end = width_start * (1 - compression_target).
+    Closes sit mid-channel (no breakout); volume declines.
+    """
+    n = 30
+    width_start = 12.0
+    width_end = width_start * (1.0 - compression_target)
+    upper = [100.0 - 0.5 * i for i in range(n)]
+    lower_start = upper[0] - width_start
+    lower_end = upper[-1] - width_end
+    lower_slope = (lower_end - lower_start) / (n - 1)
+    lower = [lower_start + lower_slope * i for i in range(n)]
+    highs = [upper[i] if i % 5 == 0 else upper[i] - 2.0 for i in range(n)]
+    lows = [lower[i] if i % 5 == 2 else lower[i] + 2.0 for i in range(n)]
+    closes = [(upper[i] + lower[i]) / 2 for i in range(n)]
+    volumes = [1000.0 - 20.0 * i for i in range(n)]
+    return highs, lows, closes, volumes
+
+
+@unittest.skipUnless(_has_scipy(), "scipy not installed")
+class TestWedgeCompressionThresholds(unittest.TestCase):
+    """Regression tripwire for the Jun 7 2026 refactor bug: thresholds silently
+    reverted from 0.40/0.45/0.50 to the pre-May-15 0.15/0.20/0.25. A ~0.30
+    compression wedge must NOT be detected; a ~0.65 one must be."""
+
+    def test_weak_compression_rejected(self):
+        h, l, c, v = _synthetic_wedge(0.30)
+        self.assertEqual(scanners.detect_falling_wedge(h, l, c, v), {},
+                         "0.30 compression detected — thresholds regressed below 0.40?")
+
+    def test_strong_compression_detected(self):
+        h, l, c, v = _synthetic_wedge(0.65)
+        result = scanners.detect_falling_wedge(h, l, c, v)
+        self.assertTrue(result.get("detected"),
+                        "0.65 compression NOT detected — detector broken or thresholds too high")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

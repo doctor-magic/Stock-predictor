@@ -11,7 +11,11 @@ import time
 import json as _json
 import urllib.request as _req
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+from collections import deque as _deque
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FuturesTimeout
+
+_ET_TZ = ZoneInfo("America/New_York")
 
 # self-load api_data.env so FRED_API_KEY is available without EnvironmentFile in systemd
 _env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "api_data.env")
@@ -194,9 +198,17 @@ def _cross_sectional_rank(results: list, top_n: int) -> list:
     return buys + others
 
 
+_MARKET_ID_WHITELIST = {"sp500", "nasdaq100", "us", "tase"}
+
+
 @app.post("/api/scan")
 async def scan_market(req: ScanRequest, request: Request):
     client_ip = request.client.host
+
+    # market_id whitelist restored Jul 5 2026 (May-2026 hardening, lost Jun 7).
+    # Unknown ids silently fell back to the 8-stock "us" preset in core_logic.
+    if req.market_id not in _MARKET_ID_WHITELIST:
+        raise HTTPException(status_code=400, detail="Unknown market_id.")
 
     # Premium mode uses its own cache key so it never mixes with full-universe results
     cache_key = "premium" if req.premium_only else req.market_id
@@ -799,8 +811,16 @@ _volume_leaders_cache: dict = {"ts": 0, "data": None}
 _VOLUME_LEADERS_TTL = 1800  # 30 min
 _BETA_HIGH_THRESHOLD = 1.5  # 6-month rolling beta above this → suppress ML BUY
 
+# ── Momentum gates (restored Jul 5 2026 — lost in the Jun 7 refactor) ─────────
+_HOD_GAP_MAX = 0.35           # HOD gap / ATR-14 gate — STARTING POINT, calibrate at N≥50
+_SLOT_SEC    = 270            # RVOL history slot guard (blocks F5 spam from faking a slope)
+_rvol_history: dict = {}      # sym → deque(maxlen=3) of (rvol, ts), newest-first
+_atr_daily_cache: dict = {}   # sym → ATR-14 from daily bars; cleared on ET date change
+_atr_cache_date: str | None = None
+
 @app.get("/api/volume-leaders")
 def get_volume_leaders(min_market_cap: int = 200_000_000, force: bool = False):
+    global _atr_cache_date
     now = time.time()
     if not force and _volume_leaders_cache["data"] and now - _volume_leaders_cache["ts"] < _VOLUME_LEADERS_TTL:
         return _volume_leaders_cache["data"]
@@ -875,6 +895,19 @@ def get_volume_leaders(min_market_cap: int = 200_000_000, force: bool = False):
     except Exception as e:
         logger.warning("SPY download failed — beta gate disabled: %s", e)
 
+    # Market context at signal time — instrumentation for setup_log (spec v2).
+    # get_market_context() is TTL-cached (2 min); the payload call below reuses it.
+    from market_calendar import session_close_hour
+    _mkt_ctx = scanners.get_market_context() or {}
+    market_state = ("tailwind" if _mkt_ctx.get("tailwind")
+                    else "headwind" if _mkt_ctx.get("headwind") else "mixed")
+    vix_state, _, _ = _load_macro_state()
+    et_now = datetime.now(_ET_TZ)
+    close_hour = session_close_hour(et_now.date())   # 16, or 13 on NYSE half-days
+    if _atr_cache_date != et_now.date().isoformat():
+        _atr_daily_cache.clear()
+        _atr_cache_date = et_now.date().isoformat()
+
     results = []
     for quote in filtered:
         sym = quote["symbol"]
@@ -896,7 +929,10 @@ def get_volume_leaders(min_market_cap: int = 200_000_000, force: bool = False):
         wedge  = {}
         regime  = "unknown"
         adx_val = 0.0
-        closes  = pd.Series(dtype=float)  # must not leak from a previous symbol if the try fails
+        # must not leak from a previous symbol if the try fails (beta/gates use them outside it)
+        closes = pd.Series(dtype=float)
+        highs  = pd.Series(dtype=float)
+        lows   = pd.Series(dtype=float)
         try:
             multi = len(tickers) > 1
             closes  = hist["Close"][sym].dropna()  if multi else hist["Close"].dropna()
@@ -917,6 +953,13 @@ def get_volume_leaders(min_market_cap: int = 200_000_000, force: bool = False):
             wedge = scanners.detect_falling_wedge(highs.values, lows.values, closes.values, volumes.values)
         except Exception as e:
             logger.warning("Technical indicators failed for %s: %s", sym, e)
+
+        # Merger-pinned filter (restored Jul 5 2026 — lost in the Jun 7 refactor):
+        # high RVOL + ~flat 10-day range = M&A/take-private arb (e.g. MCW pinned at
+        # the $7.00 buyout price) — untradeable, fakes breakout signals. Skip.
+        if len(closes) >= 10 and vol_ratio >= 2.0 and \
+                float(closes.iloc[-10:].max() - closes.iloc[-10:].min()) / float(closes.iloc[-1]) < 0.05:
+            continue
 
         # 6-month rolling beta vs SPY
         beta = None
@@ -952,6 +995,71 @@ def get_volume_leaders(min_market_cap: int = 200_000_000, force: bool = False):
             beta_blocked = True
 
         intra = intraday.get(sym, {})
+        is_live = intra.get("is_live", False)
+
+        # ── Momentum gates (restored Jul 5 2026; spec v2: evaluate ALL gates —
+        # no short-circuit — so blocked_reasons records every gate that fired) ──
+        # ATR-14 (Wilder via ewm alpha=1/14) from the daily bars already in hand;
+        # computed once per symbol per ET day (_atr_daily_cache).
+        atr14_val = _atr_daily_cache.get(sym)
+        if atr14_val is None and len(closes) >= 15:
+            try:
+                _pc = closes.shift(1)
+                _tr = pd.concat([highs - lows, (highs - _pc).abs(), (lows - _pc).abs()],
+                                axis=1).max(axis=1)
+                atr14_val = float(_tr.ewm(alpha=1 / 14, adjust=False).mean().iloc[-1])
+                _atr_daily_cache[sym] = atr14_val
+            except Exception:
+                atr14_val = None
+
+        # Gate 1 — HOD gap / ATR-14: live regular session only, post-ORB (10:00 → close)
+        hod_gap_ratio = None
+        hod = quote.get("regularMarketDayHigh")
+        if (is_live and 10 <= et_now.hour < close_hour
+                and hod and current_price and atr14_val and atr14_val > 0):
+            hod_gap_ratio = round((hod - current_price) / atr14_val, 3)
+
+        # Gate 2 — RVOL slope: deque(3), 270s slot guard (F5 spam can't fake a slope)
+        rvol_now = intra.get("rvol")
+        rvol_trend = None
+        if rvol_now is not None:
+            dq = _rvol_history.setdefault(sym, _deque(maxlen=3))
+            _ts = time.time()
+            if dq and _ts - dq[0][1] < _SLOT_SEC:
+                dq[0] = (rvol_now, dq[0][1])          # same slot — update in place
+            else:
+                dq.appendleft((rvol_now, _ts))
+            if len(dq) == 3:
+                _prev_mean = (dq[1][0] + dq[2][0]) / 2
+                if _prev_mean > 0:
+                    rvol_trend = ("down" if rvol_now < _prev_mean * 0.95
+                                  else "up" if rvol_now > _prev_mean * 1.05 else "flat")
+
+        blocked_reasons = []
+        if hod_gap_ratio is not None and hod_gap_ratio > _HOD_GAP_MAX:
+            blocked_reasons.append("HOD")
+        if rvol_trend == "down":
+            blocked_reasons.append("RVOL")
+        if beta_blocked:
+            blocked_reasons.append("BETA")
+
+        setup = intra.get("setup")
+        setup_blocked_by = None
+        if setup and (("HOD" in blocked_reasons) or ("RVOL" in blocked_reasons)):
+            setup_blocked_by = blocked_reasons[0]     # HOD/RVOL precede BETA in the list
+            setup = None                              # suppressed — momentum exhausted
+
+        # Power Hour whale alert — last hour before the ACTUAL close (early-close aware)
+        day_low = quote.get("regularMarketDayLow")
+        pct_from_low = None
+        if current_price and day_low and current_price > 0:
+            pct_from_low = round((current_price - day_low) / current_price * 100, 2)
+        reversion_alert = bool(
+            is_live and et_now.hour == close_hour - 1
+            and pct_from_low is not None and pct_from_low < 2.0
+            and rvol_trend != "down"
+        )
+
         results.append({
             "symbol": sym,
             "name": _NAME_OVERRIDES.get(sym, quote.get("shortName", sym)),
@@ -974,9 +1082,15 @@ def get_volume_leaders(min_market_cap: int = 200_000_000, force: bool = False):
             "orb_breakout":  intra.get("orb_breakout"),
             "above_vwap":    intra.get("above_vwap"),
             "vwap_bounce":   intra.get("vwap_bounce"),
-            "setup":          intra.get("setup"),
+            "setup":            setup,
+            "setup_blocked_by": setup_blocked_by,
+            "blocked_reasons":  blocked_reasons,
+            "hod_gap_ratio":    hod_gap_ratio,
+            "rvol_trend":       rvol_trend,
+            "pct_from_low":     pct_from_low,
+            "reversion_alert":  reversion_alert,
             "breakout_time":  intra.get("breakout_time"),
-            "is_live":        intra.get("is_live", False),
+            "is_live":        is_live,
             "analysis_date": intra.get("analysis_date"),
             "wedge":          wedge.get("detected", False),
             "wedge_breakout": wedge.get("breakout", False),
@@ -989,9 +1103,14 @@ def get_volume_leaders(min_market_cap: int = 200_000_000, force: bool = False):
             "beta_blocked": beta_blocked,
             "dist_from_sma50": dist_from_sma50,
         })
-        # Log all non-trivial verdicts for outcome tracking (not just BUY)
-        if verdict not in ("HOLD", "N/A"):
-            _db.setup_log_event("volume_leaders", results[-1])
+        # Log all non-trivial verdicts for outcome tracking (not just BUY).
+        # Coverage EXPANDED Jul 5 2026 (never narrow): also log rows whose setup
+        # fired or was gate-blocked — HOD/RVOL effectiveness is unmeasurable
+        # otherwise. market_state/vix_state ride along for regime cross-cuts.
+        if verdict not in ("HOLD", "N/A") or setup or setup_blocked_by:
+            _db.setup_log_event("volume_leaders", {
+                **results[-1], "market_state": market_state, "vix_state": vix_state,
+            })
 
     results.sort(key=lambda x: x["volume"] or 0, reverse=True)
 
@@ -1243,6 +1362,12 @@ def get_reversion_leaders(min_market_cap: int = 500_000_000, force: bool = False
         # Downgrade to FALLING KNIFE if no base detected (explicit False only)
         if reversion_verdict != "WATCH" and intra.get("base_forming") is False:
             reversion_verdict = "FALLING KNIFE"
+            # FK outcome logging (restored Jul 5 2026 — call site lost in the Jun 7
+            # refactor; fk_events was frozen since Jun 3). Detection window
+            # 13:00–15:00 ET; holiday guard lives inside fk_log_event.
+            if intra.get("is_live") and 13 <= datetime.now(_ET_TZ).hour < 15:
+                _db.fk_log_event(sym, price, quote.get("regularMarketChangePercent"),
+                                 rsi, intra.get("rvol"), vwap_gap_pct)
 
         results.append({
             "symbol":            sym,
@@ -1269,7 +1394,13 @@ def get_reversion_leaders(min_market_cap: int = 500_000_000, force: bool = False
         })
 
         if reversion_verdict in ("DEEP BUY", "POTENTIAL BOUNCE"):
-            _db.setup_log_event("reversion_hunter", results[-1])
+            _mkt = scanners.get_market_context() or {}
+            _db.setup_log_event("reversion_hunter", {
+                **results[-1],
+                "market_state": ("tailwind" if _mkt.get("tailwind")
+                                 else "headwind" if _mkt.get("headwind") else "mixed"),
+                "vix_state": _load_macro_state()[0],
+            })
 
     _vord = {"DEEP BUY": 0, "POTENTIAL BOUNCE": 1, "OVERSOLD": 2, "FALLING KNIFE": 3, "WATCH": 4}
     results.sort(key=lambda x: (
@@ -1398,6 +1529,15 @@ def get_gainers(force: bool = False):
         overhead_blocked = overhead.get("overhead_blocked", False)
         verdict          = scanners.gainers_verdict(v_accel, overhead_blocked, vwap_gap_pct)
 
+        # DEVELOPING display breaker (pre-registered safety rule, Jul 3 2026):
+        # display demotes to WATCH once tripped; the LOG keeps the true verdict
+        # so measurement coverage is never narrowed.
+        display_verdict = verdict
+        developing_demoted = False
+        if verdict == "DEVELOPING" and _db.developing_breaker_tripped():
+            display_verdict = "WATCH"
+            developing_demoted = True
+
         results.append({
             "symbol":            sym,
             "name":              _NAME_OVERRIDES.get(sym, quote.get("shortName", sym)),
@@ -1416,11 +1556,19 @@ def get_gainers(force: bool = False):
             "dist_to_resist_pct": overhead.get("dist_to_resist_pct"),
             "overhead_blocked":  overhead_blocked,
             "atr14":             overhead.get("atr14"),
-            "verdict":           verdict,
+            "verdict":           display_verdict,
+            "developing_demoted": developing_demoted,
             "vol_ratio":         vol_ratio_g,
         })
+        # Log on the TRUE verdict (not the demoted display one) — never narrow coverage
         if verdict not in ("WATCH",):
-            _db.setup_log_event("gainers", results[-1])
+            _mkt_g = scanners.get_market_context() or {}
+            _db.setup_log_event("gainers", {
+                **results[-1], "verdict": verdict,
+                "market_state": ("tailwind" if _mkt_g.get("tailwind")
+                                 else "headwind" if _mkt_g.get("headwind") else "mixed"),
+                "vix_state": _load_macro_state()[0],
+            })
 
     _VORD = {"BREAKOUT CONFIRMED": 0, "DEVELOPING": 1, "WATCH": 2, "FADE RISK": 3, "OVERHEAD WALL": 4}
     results.sort(key=lambda x: _VORD.get(x["verdict"], 9))

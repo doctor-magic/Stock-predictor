@@ -32,6 +32,14 @@ NYSE_HOLIDAYS_2026 = frozenset({
 
 _COVERED_YEARS = frozenset({2026})
 
+# NYSE HALF-DAYS (13:00 ET close). The market IS open — is_us_market_session()
+# returns True — but time-windowed logic (Power Hour, HOD gate) must derive its
+# windows from the ACTUAL close, not a hardcoded 16:00.
+EARLY_CLOSES_2026 = frozenset({
+    "2026-11-27",  # day after Thanksgiving
+    "2026-12-24",  # Christmas Eve
+})
+
 
 def us_trading_date() -> date:
     """Today's date in US-Eastern — same anchor as db._signal_date()."""
@@ -53,3 +61,14 @@ def is_us_market_session(d: "date | None" = None) -> bool:
         print(f"[market_calendar] WARNING: {d.year} NYSE holidays not in table — "
               f"extend NYSE_HOLIDAYS (weekend filter still applied)", file=sys.stderr, flush=True)
     return d.isoformat() not in NYSE_HOLIDAYS_2026
+
+
+def session_close_hour(d: "date | None" = None) -> int:
+    """ET hour the session ends (exclusive): 16 on full days, 13 on half-days.
+
+    Callers deriving intraday windows (Power Hour = last hour before close,
+    HOD gate = 10:00 → close) must use this instead of a hardcoded 16.
+    """
+    if d is None:
+        d = us_trading_date()
+    return 13 if d.isoformat() in EARLY_CLOSES_2026 else 16
