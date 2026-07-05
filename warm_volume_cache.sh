@@ -12,6 +12,24 @@ cd /home/elimaoz99/stock_predictor || exit 1
 ENVF=api_data.env
 TS=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 
+# Market-hours gate (added Jul 5 2026, pre-downgrade): the warm forces the FULL
+# volume-leaders pipeline (Yahoo screener + yfinance batches + on-demand ML) —
+# running it 24/7 incl. weekends/holidays wastes the shared-core e2-medium and
+# burns Yahoo IP budget for data that cannot change. Warm only 09:00-16:59 ET
+# on NYSE trading days (market_calendar is the same guard the crons use).
+GATE=$(venv/bin/python3 - <<'PY'
+from datetime import datetime
+from zoneinfo import ZoneInfo
+from market_calendar import is_us_market_session
+now = datetime.now(ZoneInfo("America/New_York"))
+print("RUN" if (is_us_market_session(now.date()) and 9 <= now.hour < 17) else "SKIP")
+PY
+)
+if [ "$GATE" != "RUN" ]; then
+  echo "[$TS] market closed/off-hours — warm skipped"
+  exit 0
+fi
+
 # First "user:pass" pair from BASIC_AUTH_USERS (strip surrounding quotes + spaces).
 RAW=$(grep -E '^BASIC_AUTH_USERS=' "$ENVF" 2>/dev/null | head -1 | cut -d= -f2-)
 RAW="${RAW%\"}"; RAW="${RAW#\"}"
