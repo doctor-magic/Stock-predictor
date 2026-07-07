@@ -316,6 +316,20 @@ class TestMarketCalendar(unittest.TestCase):
         self.assertFalse(is_us_market_session(date(2026, 7, 3)))   # Independence Day (obs.)
         self.assertFalse(is_us_market_session(date(2026, 7, 5)))   # Sunday
 
+    def test_pre_open_logging_guard(self):
+        # Jul-7-2026 QNT incident: pre-open (00:22 ET) must NOT be loggable —
+        # screeners still serve yesterday's quotes under today's ET date.
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        from market_calendar import has_session_opened
+        ET = ZoneInfo("America/New_York")
+        self.assertFalse(has_session_opened(datetime(2026, 7, 7, 0, 22, tzinfo=ET)))   # pre-open
+        self.assertFalse(has_session_opened(datetime(2026, 7, 7, 9, 29, tzinfo=ET)))   # 1 min early
+        self.assertTrue(has_session_opened(datetime(2026, 7, 7, 9, 30, tzinfo=ET)))    # open
+        self.assertTrue(has_session_opened(datetime(2026, 7, 7, 15, 59, tzinfo=ET)))   # live session
+        self.assertTrue(has_session_opened(datetime(2026, 7, 7, 21, 0, tzinfo=ET)))    # post-close, same ET day — quotes ARE today's
+        self.assertFalse(has_session_opened(datetime(2026, 7, 5, 12, 0, tzinfo=ET)))   # Sunday noon
+
 
 def _has_scipy():
     try:

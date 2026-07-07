@@ -3,7 +3,7 @@ import os
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
-from market_calendar import is_us_market_session
+from market_calendar import has_session_opened
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "scanner_cache.db")
 
@@ -112,9 +112,9 @@ def fk_db_init():
 def fk_log_event(sym, price, change_pct, rsi, rvol, vwap_gap_pct):
     try:
         today = _signal_date()
-        # Same holiday/weekend choke point as setup_log_event — endpoint-driven
-        # writes have no cron entrypoint to guard.
-        if not is_us_market_session(date.fromisoformat(today)):
+        # Same session choke point as setup_log_event — endpoint-driven writes
+        # have no cron entrypoint to guard (holiday/weekend AND pre-open).
+        if not has_session_opened():
             return
         con = sqlite3.connect(_FK_LOG_DB, timeout=30)
         existing = con.execute("SELECT id FROM fk_events WHERE symbol=? AND date=?", (sym, today)).fetchone()
@@ -246,11 +246,12 @@ def setup_db_init():
 def setup_log_event(source: str, row: dict):
     try:
         today = _signal_date()
-        # Holiday/weekend choke point: never log endpoint-driven setup rows on a
-        # non-trading day. This is the ONLY guard that covers the */25 volume-leaders
-        # warm cron and any open browser hitting the API on a US holiday — those
-        # have no cron entrypoint to wrap. Covers all sources (VL/gainers/reversion).
-        if not is_us_market_session(date.fromisoformat(today)):
+        # Session choke point: never log endpoint-driven setup rows on a
+        # non-trading day OR in the pre-open window (midnight→09:30 ET), when
+        # screeners still serve yesterday's quotes under today's ET date
+        # (Jul-7-2026 QNT incident). This is the ONLY guard that covers the
+        # */25 warm cron and any open browser — no cron entrypoint to wrap.
+        if not has_session_opened():
             return
         con = sqlite3.connect(_SETUP_LOG_DB, timeout=30)
         exists = con.execute(

@@ -72,3 +72,22 @@ def session_close_hour(d: "date | None" = None) -> int:
     if d is None:
         d = us_trading_date()
     return 13 if d.isoformat() in EARLY_CLOSES_2026 else 16
+
+
+def has_session_opened(now: "datetime | None" = None) -> bool:
+    """True from 09:30 ET on a trading day until midnight ET. False pre-open.
+
+    Guards signal LOGGING against the pre-open window (midnight→09:30 ET):
+    the ET date has already rolled to today, but Yahoo screeners still serve
+    the PREVIOUS session's quotes — logging then stamps yesterday's data with
+    today's date (the Jul-7-2026 QNT incident: 25 stale pre-open rows, which
+    then BLOCK the real intraday rows via UNIQUE(source,symbol,date)).
+    After the close (16:00→24:00 ET) logging stays allowed — quotes then ARE
+    today's data; the per-day dedup prevents duplicates.
+    """
+    if now is None:
+        now = datetime.now(_ET)
+    if not is_us_market_session(now.date()):
+        return False
+    session_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
+    return now >= session_open
