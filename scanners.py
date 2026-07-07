@@ -20,6 +20,10 @@ _INTRADAY_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "intrada
 _market_context_cache: dict = {"ts": 0, "data": None}
 _MARKET_CONTEXT_TTL = 120   # 2 min
 
+_lev_sentiment_cache: dict = {"ts": 0, "data": None}
+_LEV_SENTIMENT_TTL = 300    # 5 min
+_LEV_PAIRS = {"semis": ("SOXS", "SOXL"), "qqq": ("SQQQ", "TQQQ")}   # (short, long)
+
 _gainers_daily_cache: dict = {}           # sym → {date, sma200, nearest_resist, atr14, …}
 _vaccel_cache: dict        = {}           # sym → {ts, vaccel}
 _VACCEL_TTL                = 300          # 5 min
@@ -395,10 +399,49 @@ def get_intraday_signals(tickers: list) -> dict:
     return out
 
 
+def _compute_lev_ratios(dollar_vol: dict) -> dict:
+    """Pure math: short/long dollar-volume ratio per _LEV_PAIRS. None on missing/zero denominator."""
+    out = {}
+    for name, (short, long_) in _LEV_PAIRS.items():
+        dv_s, dv_l = dollar_vol.get(short), dollar_vol.get(long_)
+        out[name] = round(dv_s / dv_l, 2) if dv_s and dv_l else None
+    return out
+
+
+def get_lev_sentiment():
+    """Leveraged-ETF sentiment: SOXS:SOXL + SQQQ:TQQQ dollar-volume ratios (short/long).
+    OBSERVATIONAL ONLY (spec Jul 7 2026) — feeds the header strip + setup_log lev_sent_*
+    columns for the pre-registered N>=50 question. NOT a gate; must never block a scan.
+    Dollar volume (vol x price), not share volume — the pairs trade at different unit prices."""
+    now = time.time()
+    if _lev_sentiment_cache["data"] is not None and now - _lev_sentiment_cache["ts"] < _LEV_SENTIMENT_TTL:
+        return _lev_sentiment_cache["data"]
+    try:
+        import yfinance as yf
+        syms = [s for pair in _LEV_PAIRS.values() for s in pair]
+        raw = yf.download(syms, period="1d", interval="1d", progress=False, auto_adjust=True)
+        dollar_vol = {}
+        for sym in syms:
+            try:
+                close = float(raw["Close"][sym].dropna().iloc[-1])
+                vol   = float(raw["Volume"][sym].dropna().iloc[-1])
+                dollar_vol[sym] = close * vol
+            except Exception:
+                dollar_vol[sym] = None
+        out = _compute_lev_ratios(dollar_vol)
+        _lev_sentiment_cache["ts"]   = now
+        _lev_sentiment_cache["data"] = out
+        return out
+    except Exception:
+        return _lev_sentiment_cache["data"]
+
+
 def get_market_context() -> dict:
     now = time.time()
     if _market_context_cache["data"] and now - _market_context_cache["ts"] < _MARKET_CONTEXT_TTL:
-        return _market_context_cache["data"]
+        ctx = _market_context_cache["data"]
+        ctx["lev"] = get_lev_sentiment()
+        return ctx
     try:
         import yfinance as yf
         raw = yf.download(["SPY", "QQQ"], period="1d", interval="1m", progress=False, auto_adjust=True)
@@ -432,9 +475,10 @@ def get_market_context() -> dict:
         }
         _market_context_cache["ts"]   = now
         _market_context_cache["data"] = context
+        context["lev"] = get_lev_sentiment()
         return context
     except Exception:
-        return _market_context_cache["data"] or {"SPY": None, "QQQ": None, "tailwind": None, "headwind": None}
+        return _market_context_cache["data"] or {"SPY": None, "QQQ": None, "tailwind": None, "headwind": None, "lev": None}
 
 
 def get_overhead_supply(sym: str, price: float) -> dict:

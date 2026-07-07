@@ -65,6 +65,7 @@ cd /home/elimaoz99/stock_predictor && nohup venv/bin/python3 -u pre_scan.py >> p
 | Reversion Hunter TTL | 900s | api.py |
 | Macro strip TTL | 300s | api.py |
 | FRED dashboard TTL | 21600s | api.py |
+| Lev sentiment TTL (`_LEV_SENTIMENT_TTL`) | 300s | scanners.py |
 
 ---
 
@@ -317,6 +318,15 @@ Validated by: QBTS (May 26), WOLF/PDD/NVTS/QCOM all surged in final 15–20 min 
 - `{row.reversion_alert && (<span className="relative flex h-3 w-3 flex-shrink-0" title="...">...)}`
 - Tooltip: `🚨 Power Hour — X.X% מהתחתית, נפח עולה`
 - No extra setInterval needed — existing `REFRESH_SECS=300` auto-refresh covers power hour
+
+### Leveraged Sentiment Strip (added Jul 7 2026 — OBSERVATIONAL ONLY, not a gate)
+Leveraged-ETF flow as market sentiment: **dollar-volume** ratio short/long — `SOXS:SOXL` (semis) + `SQQQ:TQQQ` (NDX). Born from the ETF-tab discussion: the most-active ETF list is ~90% leveraged mirrors of stocks already scanned, so no tab — just the ratio as context.
+- `scanners.get_lev_sentiment()` — one batched yf.download of the 4 fixed tickers, cache `_LEV_SENTIMENT_TTL=300s`, try/except → stale-or-None (must never break a scan). Pure math in `_compute_lev_ratios()` (unit-tested).
+- **Dollar volume, NOT share volume** — the pairs trade at wildly different unit prices (Jul 7: SOXL $160.51 vs SOXS $4.91 — share ratio 9:1 "fear" was actually dollar ratio 0.28 dip-buying).
+- Rides inside `get_market_context()` as `lev: {semis, qqq}` — no new endpoint, no cron.
+- Logged RAW per signal: `setup_log.lev_sent_semis` / `lev_sent_qqq` (idempotent migrations in db.py) alongside market_state/vix_state.
+- Frontend: neutral gray `⚖` spans in the VL market-context bar. **NO Fear/Greed labels yet** — baseline is ~0.3 not 1.0 (longs carry more AUM); calibrate labels from the logged distribution after ~2 weeks. Do NOT add display thresholds before that.
+- Pre-registered N≥50 question + bucket re-registration rule live in the spec memory (lev-sentiment-spec). Promotion to any gate/filter requires that test to pass — until then display+collect only.
 
 ---
 

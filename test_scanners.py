@@ -289,6 +289,51 @@ class TestGainersVerdict(unittest.TestCase):
         self.assertEqual(scanners.gainers_verdict(None, False, None), "WATCH")
 
 
+class TestLevSentiment(unittest.TestCase):
+    """Leveraged-ETF sentiment ratios (added Jul 7 2026, observational only).
+    Ratio = short/long DOLLAR volume; None on any missing/zero leg — a sentiment
+    failure must never break a scan."""
+
+    def test_ratio_math_dollar_volume(self):
+        # SOXS $10 x 60M = $600M vs SOXL $20 x 15M = $300M -> 2.0 (share ratio would be 4.0)
+        out = scanners._compute_lev_ratios({
+            "SOXS": 10.0 * 60e6, "SOXL": 20.0 * 15e6,
+            "SQQQ": 30.0 * 10e6, "TQQQ": 75.0 * 8e6,
+        })
+        self.assertEqual(out["semis"], 2.0)
+        self.assertEqual(out["qqq"], 0.5)
+
+    def test_zero_long_leg_gives_none(self):
+        out = scanners._compute_lev_ratios({"SOXS": 1e6, "SOXL": 0, "SQQQ": 1e6, "TQQQ": 1e6})
+        self.assertIsNone(out["semis"])
+        self.assertEqual(out["qqq"], 1.0)
+
+    def test_missing_leg_gives_none_per_pair_only(self):
+        out = scanners._compute_lev_ratios({"SOXS": None, "SOXL": 5e6, "SQQQ": 2e6, "TQQQ": 4e6})
+        self.assertIsNone(out["semis"])
+        self.assertEqual(out["qqq"], 0.5)
+
+    def test_fetch_failure_returns_stale_or_none(self):
+        # yfinance blowing up must fall back to the cached value (None when cold)
+        saved = dict(scanners._lev_sentiment_cache)
+        try:
+            scanners._lev_sentiment_cache["ts"] = 0
+            scanners._lev_sentiment_cache["data"] = None
+            import builtins
+            real_import = builtins.__import__
+            def _boom(name, *a, **k):
+                if name == "yfinance":
+                    raise RuntimeError("network down")
+                return real_import(name, *a, **k)
+            builtins.__import__ = _boom
+            try:
+                self.assertIsNone(scanners.get_lev_sentiment())
+            finally:
+                builtins.__import__ = real_import
+        finally:
+            scanners._lev_sentiment_cache.update(saved)
+
+
 class TestMarketCalendar(unittest.TestCase):
     """market_calendar: holiday table + half-day close hours (added Jul 5 2026)."""
 

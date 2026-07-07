@@ -901,6 +901,7 @@ def get_volume_leaders(min_market_cap: int = 200_000_000, force: bool = False):
     _mkt_ctx = scanners.get_market_context() or {}
     market_state = ("tailwind" if _mkt_ctx.get("tailwind")
                     else "headwind" if _mkt_ctx.get("headwind") else "mixed")
+    _lev_ctx = _mkt_ctx.get("lev") or {}
     vix_state, _, _ = _load_macro_state()
     et_now = datetime.now(_ET_TZ)
     close_hour = session_close_hour(et_now.date())   # 16, or 13 on NYSE half-days
@@ -1110,6 +1111,7 @@ def get_volume_leaders(min_market_cap: int = 200_000_000, force: bool = False):
         if verdict not in ("HOLD", "N/A") or setup or setup_blocked_by:
             _db.setup_log_event("volume_leaders", {
                 **results[-1], "market_state": market_state, "vix_state": vix_state,
+                "lev_sent_semis": _lev_ctx.get("semis"), "lev_sent_qqq": _lev_ctx.get("qqq"),
             })
 
     results.sort(key=lambda x: x["volume"] or 0, reverse=True)
@@ -1400,6 +1402,8 @@ def get_reversion_leaders(min_market_cap: int = 500_000_000, force: bool = False
                 "market_state": ("tailwind" if _mkt.get("tailwind")
                                  else "headwind" if _mkt.get("headwind") else "mixed"),
                 "vix_state": _load_macro_state()[0],
+                "lev_sent_semis": (_mkt.get("lev") or {}).get("semis"),
+                "lev_sent_qqq":   (_mkt.get("lev") or {}).get("qqq"),
             })
 
     _vord = {"DEEP BUY": 0, "POTENTIAL BOUNCE": 1, "OVERSOLD": 2, "FALLING KNIFE": 3, "WATCH": 4}
@@ -1568,6 +1572,8 @@ def get_gainers(force: bool = False):
                 "market_state": ("tailwind" if _mkt_g.get("tailwind")
                                  else "headwind" if _mkt_g.get("headwind") else "mixed"),
                 "vix_state": _load_macro_state()[0],
+                "lev_sent_semis": (_mkt_g.get("lev") or {}).get("semis"),
+                "lev_sent_qqq":   (_mkt_g.get("lev") or {}).get("qqq"),
             })
 
     _VORD = {"BREAKOUT CONFIRMED": 0, "DEVELOPING": 1, "WATCH": 2, "FADE RISK": 3, "OVERHEAD WALL": 4}

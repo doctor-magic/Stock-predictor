@@ -234,6 +234,11 @@ def setup_db_init():
         "ALTER TABLE setup_log ADD COLUMN blocked_reasons TEXT",
         "ALTER TABLE setup_log ADD COLUMN market_state TEXT",
         "ALTER TABLE setup_log ADD COLUMN vix_state TEXT",
+        # Leveraged-ETF sentiment at signal time (Jul 7 2026, observational only):
+        # RAW short/long dollar-volume ratios (SOXS:SOXL, SQQQ:TQQQ) — labels live in
+        # the display layer. Pre-registered N>=50 question keys off lev_sent_semis > 2.
+        "ALTER TABLE setup_log ADD COLUMN lev_sent_semis REAL",
+        "ALTER TABLE setup_log ADD COLUMN lev_sent_qqq REAL",
     ):
         try:
             con.execute(_mig)
@@ -269,8 +274,9 @@ def setup_log_event(source: str, row: dict):
                     verdict, ml_signal, ml_confidence,
                     vol_ratio, rsi, beta, beta_blocked, above_sma50,
                     regime, reversion_verdict, vwap_gap_pct, rvol_val, rvol_alert,
-                    dist_from_sma50, blocked_reasons, market_state, vix_state
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    dist_from_sma50, blocked_reasons, market_state, vix_state,
+                    lev_sent_semis, lev_sent_qqq
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
                 source, row.get("symbol"), today,
                 datetime.utcnow().isoformat(),
@@ -292,6 +298,8 @@ def setup_log_event(source: str, row: dict):
                 _reasons,
                 row.get("market_state"),
                 row.get("vix_state"),
+                row.get("lev_sent_semis"),
+                row.get("lev_sent_qqq"),
             ))
             con.commit()
         con.close()

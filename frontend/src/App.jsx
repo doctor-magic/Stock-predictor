@@ -1196,6 +1196,11 @@ function VolumeLeadersView() {
           const label = isTailwind ? '✅ Market Tailwind' : isHeadwind ? '⚠️ Market Headwind' : '↔ Mixed Market'
           const labelCls = isTailwind ? 'text-green-400' : isHeadwind ? 'text-red-400' : 'text-yellow-400'
           const fmtPct = (v) => v == null ? '—' : (v >= 0 ? '+' : '') + v.toFixed(2) + '%'
+          const lev = marketContext.lev
+          // Raw ratios only, NEUTRAL display — long ETFs carry far larger dollar volume
+          // (Jul 7 2026: SOXL $160 vs SOXS $4.91 → baseline ~0.3, not 1.0), so Fear/Greed
+          // labels wait for a logged baseline distribution. The log stores the raw ratios.
+          const levTitle = (pair) => `יחס נפח דולרי ${pair} (שורט:לונג) — סנטימנט ממונף, תצפיתי בלבד`
           return (
             <div className={`flex items-center gap-4 px-4 py-2 rounded-lg border mb-4 text-xs font-mono flex-wrap ${barCls}`}>
               <span className={`font-bold ${labelCls}`}>{label}</span>
@@ -1207,6 +1212,16 @@ function VolumeLeadersView() {
               {qqq && (
                 <span className={qqq.above_vwap ? 'text-green-400' : 'text-red-400'}>
                   QQQ {qqq.above_vwap ? '▲' : '▼'} VWAP ${qqq.vwap} ({fmtPct(qqq.pct_from_vwap)})
+                </span>
+              )}
+              {lev?.semis != null && (
+                <span className="text-gray-400" title={levTitle('SOXS:SOXL')}>
+                  ⚖ SEMIS SOXS:SOXL {lev.semis.toFixed(2)}:1
+                </span>
+              )}
+              {lev?.qqq != null && (
+                <span className="text-gray-400" title={levTitle('SQQQ:TQQQ')}>
+                  ⚖ NDX SQQQ:TQQQ {lev.qqq.toFixed(2)}:1
                 </span>
               )}
             </div>
