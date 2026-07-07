@@ -1413,3 +1413,140 @@ JUN 26 2026 (Fri) — VOLUME-LEADERS CACHE-WARM CRON 401 (3rd May-2026 auth vict
 
 GIT STATE (Jun 26 2026): ALL committed AND pushed. origin/main = 913124b. Working tree clean
   apart from this handoff update.
+
+
+JUL 3 2026 (Fri, NYSE holiday) — FULL CODE REVIEW: JUN-7 REFACTOR REGRESSION + 5 BUG FIXES + N>=50 ANALYSES
+===========================================================================================================
+THE BIG FINDING — the Jun 7 refactor (97fef77+9fe3557) was built from a STALE api.py and silently
+wiped 6 deployed-never-committed May features from production. Triple-verified: git log --all -S
+"hod_gap_ratio" = empty (never in ANY commit), server md5 == local git (prod lost them too),
+grep on live server = 0 hits. Lost: HOD Gap/ATR gate, RVOL slope gate, Power Hour whale alert,
+merger-pinned filter, FALLING KNIFE logging call (fk_events frozen at 1 row since Jun 3),
+wedge compression thresholds (scanners.py regressed to 0.15/0.20/0.25 vs the May-15 0.40/0.45/0.50),
+plus market_id whitelist / top_n / min_confidence clamps from the May hardening. App.jsx still
+rendered the dead fields (invisible, harmless). CLAUDE.md documented all of it as live = doc/code
+drift for ~4 weeks. Root enabler: pre_scan.py-style "server is authoritative, git is stale".
+
+SHIPPED (all deployed via deploy.sh + verified):
+  34722c3  chore(pre_scan): imported the authoritative 342-line server copy into git — closes the
+           exact deployed-not-committed gap that caused the whole incident.
+  4667b20  fix: five correctness bugs found in the same review:
+           (1) get_volume_leaders beta block used `closes` OUTSIDE the try that defines it —
+               stale leak from the previous symbol = beta computed against the WRONG stock
+               (or NameError->500 on first-symbol failure);
+           (2) VIX state machine counted CALLS not days — days++ on every strategic-context
+               cache miss, so min_days=5 graduated in ~2.5h of traffic; now ticks at most once
+               per ET trading day (count_date in macro_state.json);
+           (3) Basic Auth failed OPEN when BASIC_AUTH_USERS empty ("no_users_configured" let
+               everyone in) — now 503 + startup stderr warning (env-load failure = loud, not public);
+           (4) scanner_cache.db connections had no timeout=30 (violated own rule);
+           (5) live_tracker busday_count/offset ignored NYSE holidays — holiday weeks resolved
+               outcomes one trading day early; now passes NYSE_HOLIDAYS_2026.
+  CLAUDE.md: "OUT OF SERVICE" banner + NOT-IN-CODE tags on every lost-feature section (specs kept
+  as re-implementation source — no git source exists).
+
+ANALYSES RUN (both pre-registered thresholds crossed):
+  tracker.db locked query (unchanged, anti-HARKing): N=34 resolved-with-beta -> COLLECTION ONLY.
+  high(b>1.5) n=21 hit 47.6% median +2.55% vs normal n=13 hit 30.8% median -1.24% — direction
+  UNCHANGED from Jun-30 (weak COUNTER-gate evidence). Huge caveat: repeated names dominate
+  (HOOD x6 all wins, DLTR x3, HWM x5) with overlapping windows -> effective N << 34. Decision at
+  N>=50 (~mid-July).
+  setup_log first breakdown (261 resolved, Jun 8-25): OVERHEAD WALL n=105 med -3.63% win 35%,
+  FADE RISK n=85 med -2.03% win 35% -> the protective blocking VALIDATED directionally.
+  DEVELOPING n=11 mean -8.71% win 18% -> WORST bucket (red flag, no action, n small).
+  BREAKOUT CONFIRMED n=7 mean +3.15% win 86% -> the only positive verdict IS positive.
+  KEY LIMIT: zero data on the LOST gates (setup_blocked_by never logged) -> restoration cannot be
+  data-driven; restore spec-faithful WITH logging so the NEXT ~50 rows measure them.
+
+PLANNING: restoration spec v2 locked with 5 user-driven upgrades — (a) evaluate ALL gates, log
+  blocked_reasons as JSON array (no short-circuit credit-stealing); (b) market_state+vix_state
+  columns at signal time; (c) intraday archive-before-purge (cold storage); (d) EARLY_CLOSES
+  half-day awareness (Nov 27 / Dec 24 close 13:00 ET); (e) DEVELOPING display breaker
+  PRE-REGISTERED as a safety rule (N>=20 & mean<-5% -> demote display to WATCH, log unchanged).
+  VM downgrade readiness verified (service enabled, disk ok, static IP) and MOVED UP to Sun Jul 5 —
+  remaining credit days = free canary window with free rollback.
+
+JUL 5 2026 (Sun) — POST-HOLIDAY GUARD PASS + FULL RESTORATION SHIPPED + VM DOWNGRADED
+=====================================================================================
+HOLIDAY GUARD FIELD TEST (first live fire, Jul-3 Independence Day): PASS on all fronts. Zero
+  Jul-3 rows in all three DBs; both cron logs show the guard "skipping" lines from Fri evening;
+  Thursday data intact; setup_log choke held through a full weekend of */25 warm-cron force=true.
+  Juneteenth incident class formally CLOSED.
+SHIPPED:
+  (pre-restore) feat(warm-cron): gated to 09:00-16:59 ET trading days via market_calendar —
+  was forcing the full VL pipeline (screener+yfinance+on-demand ML) every 25 min 24/7.
+  7422e25  feat(restore): ALL 6 lost features re-implemented from spec + whitelist/clamps
+  (400/422 verified live) + the full spec-v2 instrumentation. Field names kept identical ->
+  App.jsx lit up with ZERO frontend changes. fetch_intraday: archive-before-purge (csv.gz) +
+  actives_seen universe purge TRACK_DAYS=10 (ends the monotonic 157-symbol growth). Tests 46->52
+  incl. a SYNTHETIC-WEDGE regression tripwire (a 0.30-compression wedge must NOT detect; 0.65 must)
+  so the threshold regression can never silently return. Deploy note: market_calendar.py,
+  fetch_intraday.py, models.py are NOT in deploy.sh's file list — scp them manually when touched.
+VM DOWNGRADE (user in Console, Claude verifying): e2-standard-2 -> e2-medium. Service auto-started
+  (enabled bet paid off — first reboot in 75 days), health 200, crontab intact, DBs intact,
+  static IP held. SWAP: deliberately NOT created — user challenged the need; rest-state math
+  (745MB used / 3.16GB avail vs 1.2-1.5GB yfinance spikes) says fine; decision = wait for
+  live-load memory.peak data instead of pre-provisioning. Data-driven infra, same discipline.
+
+JUL 7 2026 (Tue) — DAY-1 CANARY HELD + PRE-OPEN LOGGING BUG (QNT) + ANALYSIS SELF-AUDIT + DROUGHT RE-TRIAGE
+===========================================================================================================
+DAY-1 CANARY (Jul 6 = first live trading day on e2-medium WITH restored features): HELD.
+  Zero OOM, NRestarts=0, 24x HTTP 200 warm hits on the heaviest endpoint during the session
+  (+48 off-hours skips = gate working). Benign 06:46 IDT restart (likely unattended-upgrades)
+  reset memory.peak -> session peak unknown, recapture pending.
+INSTRUMENTATION LIVE: all 62 Jul-6 setup_log rows carry market_state+vix_state; restored gates
+  fired AND recorded — INTC ["RVOL"], TSLA ["RVOL"], GRAB ["HOD"] where GRAB is a HOLD row the
+  old coverage would have dropped (coverage-expansion proven). N>=50 calibration clock started.
+PRE-OPEN STALE-LOGGING BUG (user-surfaced by asking about QNT): at 00:22 ET the gainers endpoint
+  served Yahoo's stale Jul-6 closes (is_live=False, +11.55% = YESTERDAY'S move) while
+  db._signal_date() had already rolled to Jul-7 -> 25 of yesterday's signals re-logged as today's.
+  Double harm: non-independent duplicates in the N>=50 pool AND UNIQUE(source,symbol,date) would
+  BLOCK the real intraday rows at the open. The holiday guard passes (Jul-7 IS a trading day) —
+  it checked the DATE, not whether the SESSION opened. 4th member of the date/session bug family
+  (TZ rollover, holiday, weekend, now pre-open).
+  d82f6fa  fix(db): market_calendar.has_session_opened() — loggable from 09:30 ET -> midnight ET
+  on trading days only (post-close stays loggable: quotes ARE today's; dedup handles repeats).
+  Guards BOTH setup_log_event and fk_log_event choke points. Cleanup: .backup() snapshot
+  setup_log.db.bak-20260707 then surgical delete of the 25 rows (log_ts < 13:30 UTC only).
+  Live-verified pre-open: guard False + real write attempt blocked. Tests 52->58.
+ANALYSIS SELF-AUDIT (user asked "was our analysis ideal?" — it wasn't):
+  Flaw 1 (substantive): used CLOSE-based ret_5d but a signal-follower enters at SIGNAL price —
+  same execution-slippage bias already documented for FK and NOT applied. On signal-price basis
+  QNT +8.27%->+4.99%, RCUS flipped win->LOSS (-1.62%); the "no vwap_gap gate" conclusion SURVIVED
+  (extended still beat non-extended, r +0.66->+0.43) — but by luck, not method.
+  Flaw 2: QNT circularity — the hypothesis-generating observation dominated the n=7 test set.
+  Flaw 3: post-hoc bucket boundaries. Clean: TZ-residue audit found 0 mismatched rows in 434.
+  NEW STANDARDS: dual-basis (close + signal-price) in every setup_log analysis; H1 (vol_ratio<1.5
+  inside BREAKOUT CONFIRMED not harmful) + H2 (vwap_gap>3% not harmful) PRE-REGISTERED for the
+  N>=50 confirmatory test — buckets <=1/1-3/>3 fixed, median signal-price ret_5d net of 0.16%
+  commission, min n=15/bucket, QNT Jun-18 rows EXCLUDED. The truly tradable question (VWAP-bounce
+  entry outcomes) is NOT answerable from setup_log -> Retrospective Pipeline territory.
+  Exploratory findings (NO code changes): vol_ratio-low inside BREAKOUT beat vol_ratio-high
+  (opposite of intuition); vwap_gap Simpson split — harmful across all-gainers n=211 (win 42/35/26%
+  monotonic) but the pool is 97% avoid-verdicts; within BREAKOUT n=7 the extended ones ran hardest.
+  Intraday fade != 5d outcome (QNT faded both appearances, recovered +8.27% the first time) ->
+  REINFORCES "signal=awareness, enter on VWAP bounce" rather than any new gate.
+BUY DROUGHT RE-TRIAGED (user: "no high-conf BUY for a while — is the system OK?"): system healthy,
+  strongest evidence yet it's by-design — 478-491 models/day all through, and the gate OPENED
+  exactly once mid-drought: Jun-26, 3 REAL BUYs max conf 0.794, 2-3 sessions after the Jun-23
+  -3.29% Nasdaq selloff. Mean-reversion model bought the dip, silent at the highs (SPY +3.1%/5d,
+  VIX 15.6; top HOLD confidences 0.80-0.84 = confidence exists, attached to HOLD). Tracker's live
+  0.57-0.70 band (~41% hit on 34) reinforces NOT lowering 0.70. Momentum tabs are the rally tool.
+
+STILL OPEN:
+  Verify real Jul-7 rows DO log after today's 16:30 IDT open (the guard must not block truth).
+  Day-2 follow-through on the 8 Jul-6 signals after tonight's close.
+  Recapture service memory.peak under full market load (reset by the benign restart).
+  FK pipeline end-to-end still unproven — fk_events has 1 row; needs a human hit on
+  /api/reversion-leaders inside 13:00-15:00 ET (no warmer exists for it).
+  VM Manager + Network Intelligence Center — disable in Console if not yet done.
+  v_accel UX / User=root / 2027 NYSE holidays — unchanged from Jun 25 list.
+
+NEXT MILESTONES:
+  Jul 6-9   — e2-medium canary window (free rollback until credits expire Jul 10).
+  ~mid-July — tracker N>=50 -> beta-gate decision (locked query, unchanged);
+              instrumented-gate rows accumulating toward their own N>=50 calibration.
+  Nov 27 / Dec 24 — first half-day sessions exercising session_close_hour().
+
+GIT STATE (Jul 7 2026): ALL committed AND pushed. origin/main = d82f6fa. Working tree clean
+  apart from this handoff update.
