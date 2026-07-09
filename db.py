@@ -355,6 +355,18 @@ def setup_resolve(max_rows: int = 50):
       • time.sleep(0.5) between calls + per-row commit (partial progress survives
         a crash) + real logging instead of silent pass.
     Resolution is driven by resolve_setups.py (03:00 UTC cron), NOT the endpoint.
+
+    Download window is event_date + 16 CALENDAR days: resolution needs closes[5]
+    (6 bars), and 10 days left only 5 bars whenever a market holiday fell inside
+    a Friday-dated row's window (Jun-12/Juneteenth, Jun-26/Jul-4th cohorts sat
+    unresolvable at the head of the ORDER BY date queue and starved the
+    max_rows budget — found Jul 9 2026). 16 days guarantees >= 6 bars through
+    two weekends plus a holiday.
+
+    Stale tombstone: a row still unresolvable 30+ calendar days after its event
+    (delisted / renamed symbol) is marked resolved=-1 — final, excluded both
+    from future candidate scans (resolved=0) and from all stats (resolved=1) —
+    so it can never clog the queue head.
     """
     try:
         import yfinance as _yf
@@ -362,20 +374,27 @@ def setup_resolve(max_rows: int = 50):
         from datetime import timedelta
         con = sqlite3.connect(_SETUP_LOG_DB, timeout=30)
         cutoff = (date.today() - timedelta(days=7)).isoformat()
+        stale_cutoff = (date.today() - timedelta(days=30)).isoformat()
         rows = con.execute(
             "SELECT id, symbol, date, price FROM setup_log "
             "WHERE resolved=0 AND date <= ? ORDER BY date LIMIT ?",
             (cutoff, max_rows)
         ).fetchall()
-        attempted = resolved_n = failed = 0
+        attempted = resolved_n = failed = stale_n = 0
         for row_id, sym, date_str, entry_price in rows:
             try:
                 event_date = date.fromisoformat(date_str)
+                is_stale = date_str <= stale_cutoff
                 hist = _yf.download(sym, start=date_str,
-                                    end=str(event_date + timedelta(days=10)),
+                                    end=str(event_date + timedelta(days=16)),
                                     interval="1d", auto_adjust=True, progress=False)
                 attempted += 1
                 if hist.empty or len(hist) < 2:
+                    if is_stale:
+                        con.execute("UPDATE setup_log SET resolved=-1 WHERE id=?", (row_id,))
+                        con.commit()
+                        stale_n += 1
+                        print(f"[setup_resolve] {sym} {date_str} tombstoned (no data, 30+ days)", flush=True)
                     _time.sleep(0.5)
                     continue
                 closes = hist["Close"].values.flatten()
@@ -389,14 +408,19 @@ def setup_resolve(max_rows: int = 50):
                 c5 = float(closes[5]) if len(closes) > 5 else None
                 r1 = round((c1 / base - 1) * 100, 2) if c1 else None
                 r5 = round((c5 / base - 1) * 100, 2) if c5 else None
-                is_res = 1 if c5 is not None else 0
+                # 30+ days old with data but still no 6th bar (halted mid-window
+                # etc.) — tombstone rather than retry forever; keep partial c1.
+                is_res = 1 if c5 is not None else (-1 if is_stale else 0)
                 con.execute(
                     "UPDATE setup_log SET close_1d=?, close_5d=?, ret_1d=?, ret_5d=?, resolved=? WHERE id=?",
                     (c1, c5, r1, r5, is_res, row_id)
                 )
                 con.commit()
-                if is_res:
+                if is_res == 1:
                     resolved_n += 1
+                elif is_res == -1:
+                    stale_n += 1
+                    print(f"[setup_resolve] {sym} {date_str} tombstoned (no 6th bar, 30+ days)", flush=True)
                 _time.sleep(0.5)
             except Exception as e:
                 failed += 1
@@ -404,7 +428,7 @@ def setup_resolve(max_rows: int = 50):
                 _time.sleep(0.5)
         con.close()
         print(f"[setup_resolve] candidates={len(rows)} attempted={attempted} "
-              f"resolved={resolved_n} failed={failed}", flush=True)
+              f"resolved={resolved_n} stale={stale_n} failed={failed}", flush=True)
     except Exception as e:
         print(f"[setup_resolve] fatal: {e}", flush=True)
 
