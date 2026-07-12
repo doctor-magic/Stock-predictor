@@ -75,8 +75,8 @@ cd /home/elimaoz99/stock_predictor && nohup venv/bin/python3 -u pre_scan.py >> p
 | `scanner_cache.db` | server + local | Scan results cache (sp500/nasdaq100) | `db.py` | `api.py` |
 | `intraday_cache.db` | server | 5m bars for time-of-day RVOL | `fetch_intraday.py` | `scanners.get_tod_rvol_cached()` |
 | `setup_log.db` | server | Scanner signal outcome tracking (VL + Rev + Gainers) | `db.setup_log_event()` via api.py | `/api/setup-stats` → `db.get_setup_breakdown()` |
-| `falling_knife_log.db` | server | Falling Knife signal outcome tracking | `db.fk_log_event()` via reversion endpoint, 13:00–15:00 ET (call site restored Jul 5 2026 — was lost Jun 7) | `/api/falling-knife-stats` → `db.get_fk_stats()` |
-| `tracker.db` | **server** (was local until Jun 14 2026) | Daily BUY signal log + outcome resolver | `live_tracker.py` cron (20:05 UTC Mon–Fri) | `live_tracker.py --report` |
+| `falling_knife_log.db` | server | Falling Knife signal outcome tracking | `db.fk_log_event()` via reversion endpoint, 13:00–15:00 ET (call site restored Jul 5 2026 — was lost Jun 7; pipeline verified end-to-end Jul 10 incl. a root-owned-file write bug fixed by chown) | `/api/falling-knife-stats` → `db.get_fk_stats()` |
+| `tracker.db` | **server** (was local until Jun 14 2026) | Daily BUY signal log + outcome resolver | `live_tracker.py` cron (20:05 server/IL time Mon–Fri) | `live_tracker.py --report` |
 | `fred_cache.json` | server | FRED dashboard disk cache (survives restarts) | `api.py` | `api.py` (startup) |
 | `wedge_cache.json` | server | Wedge scan results from pre_scan.py | `pre_scan.py` | `/api/wedge-scan` |
 | `macro_state.json` | server | VIX state machine persistence | `api.py` | `api.py` |
@@ -156,26 +156,20 @@ ssh -i ~/.ssh/gcp_stock_rsa elimaoz99@35.239.74.178 "sudo journalctl -u stock-ap
 | SSH | `ssh -i ~/.ssh/gcp_stock_rsa elimaoz99@35.239.74.178` |
 | Active dir | `/home/elimaoz99/stock_predictor/` (**NOT** `stock_app/`) |
 | Service | `stock-app.service` (systemd, uvicorn port 8000) |
-| Sudo | passwordless **only** for `systemctl restart stock-app.service` |
+| Sudo | passwordless for `systemctl restart stock-app.service` + `chown` + `chattr` (verified `sudo -n -l` Jun 21 2026; used Jul 10 to fix the root-owned FK db) |
 | Static IP | `35.239.74.178` (`stock-app-ip`) — survives Stop/Start |
-| Machine | e2-standard-2 (2 vCPU, 8GB RAM) — ~₪174/month. Do NOT use e2-small (yfinance spikes to ~1.5GB). |
-| GCP credits | expire July 10 2026 → downgrade to e2-medium (plan below) |
+| Machine | **e2-medium** (2 shared vCPU, 4GB RAM) — ~₪60/month, downgraded Jul 5 2026 and canary-PROVEN (full-session peak 320MB on a heavy red day, Jul 7). Do NOT use e2-small (yfinance spikes to ~1.5GB). |
+| GCP credits | expired July 10 2026 — VM now billed; downgrade landed 5 days before the deadline |
 
-### Downgrade plan (execute SUNDAY July 5 2026 — market closed; remaining credit days = free canary window with free rollback until Jul 10)
-Readiness verified Jul 3 2026: service `enabled` (auto-starts after reboot ✓), disk 21GB free, static IP reserved, rest-state RAM 908MB/8GB. **NO swap configured — create one right after the downgrade (mandatory on 4GB).**
-1. GCP Console → Compute Engine → VM → **Stop**
-2. Edit → Machine Type → **e2-medium** (2 shared vCPU, 4GB RAM) → Save
-3. **Start**
-4. Create 2GB swapfile (needs interactive sudo — NOT covered by the NOPASSWD list):
-   `sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile`
-   then persist: add `/swapfile none swap sw 0 0` to /etc/fstab
-5. Verify: `systemctl is-active stock-app.service` + `/api/health` + `crontab -l` intact + open site
-6. Mon–Thu Jul 6–9: monitor daily during market hours — `cat /sys/fs/cgroup/system.slice/stock-app.service/memory.peak` + `free -m`. Memory pressure → rollback in Console while still on credits.
-- Target cost: ~₪60/month (vs ₪174 now)
-- Also disable: VM Manager (₪3.14/mo) + Network Intelligence Center (₪3.16/mo)
-- Expect ~2× slower full market scans (shared-core) — scan semaphore + 300s cooldown already protect
-- Gate the */25 warm cron to market hours BEFORE the downgrade (constant 24/7 load the smaller machine shouldn't absorb)
-- Cloud Run is NOT an option: SQLite local state + cron jobs + sklearn cold-start make it unsuitable
+### ✅ Downgrade EXECUTED Jul 5 2026 — canary PROVEN by Jul 10 (durable facts kept below)
+e2-standard-2 → e2-medium via Console Stop/Edit/Start. Service auto-started (first reboot in 75 days), health 200, crontab + DBs + static IP intact. Day-1 and day-2 canary held: zero OOM, NRestarts=0, full-session `memory.peak` = 320MB on a heavy red day.
+- **Swap deliberately NOT created** — user challenged the mandate; live-load data (320MB peak vs 4GB) proved it unnecessary. Do not add one "just in case"; decide from `memory.peak`, not folklore.
+- Rollback if ever needed: Console resize back (now paid, no longer free-canary).
+- Monitor cmd: `cat /sys/fs/cgroup/system.slice/stock-app.service/memory.peak` + `free -m`.
+- The */25 warm cron was gated to 09:00–16:59 ET trading days BEFORE the downgrade (keep gated).
+- Expect ~2× slower full scans (shared-core) — scan semaphore + 300s cooldown already protect.
+- Cloud Run is NOT an option: SQLite local state + cron jobs + sklearn cold-start make it unsuitable.
+- Still open in Console: disable VM Manager (₪3.14/mo) + Network Intelligence Center (₪3.16/mo).
 
 ## Stack
 FastAPI (`api.py`) + React (`frontend/src/App.jsx`, built with Vite → `frontend/dist/`)
@@ -186,9 +180,10 @@ FastAPI (`api.py`) + React (`frontend/src/App.jsx`, built with Vite → `fronten
 - `db.py` — **316 lines** — SQLite logic: scan cache (original) + FK log functions + setup log functions. `fk_db_init`/`setup_db_init` run at module load. WAL mode on the two high-write logs ONLY (`setup_log.db`, `falling_knife_log.db`); the read-mostly cache DBs (`scanner_cache.db`, `intraday_cache.db`) do NOT use WAL.
 - `core_logic.py` — ML model (HistGradientBoostingClassifier, 20 features), CONFIDENCE_THRESHOLD=0.70
 - `models.py` — Pydantic models
-- `pre_scan.py` — overnight cron (5:00 UTC): wedge scan + Telegram alert (in git since Jul 3 2026 — 342 lines, pulled from server; repo == server)
-- `fetch_intraday.py` — cron 20:30 UTC: downloads 1m bars → resamples to 5m → `intraday_cache.db`
-- `live_tracker.py` — daily BUY signal logger + outcome resolver. **Runs as a server cron (20:05 UTC Mon–Fri) since Jun 14 2026** (was a local Mac script). Writes `/home/elimaoz99/stock_predictor/tracker.db`. Calls `/api/scan` with Basic Auth — any auth/endpoint change in api.py must update it too. Usage: `live_tracker.py --log | --report`
+- `pre_scan.py` — overnight cron (05:00 server/IL time): wedge scan + Telegram alert (in git since Jul 3 2026 — 342 lines, pulled from server; repo == server)
+- `fetch_intraday.py` — cron 20:30 server/IL time: downloads 1m bars → resamples to 5m → `intraday_cache.db`
+- `watchdog.py` — cron 09:30 server/IL time (added Jul 12 2026): read-only daily health digest → Telegram (pre_scan channel). Alert-only by hard rule — never restarts/fixes/writes.
+- `live_tracker.py` — daily BUY signal logger + outcome resolver. **Runs as a server cron (20:05 server/IL time Mon–Fri) since Jun 14 2026** (was a local Mac script). Writes `/home/elimaoz99/stock_predictor/tracker.db`. Calls `/api/scan` with Basic Auth — any auth/endpoint change in api.py must update it too. Usage: `live_tracker.py --log | --report`
 
 **Where to add new code:**
 - New scanner gates, verdict logic, intraday analysis, or momentum/mean-reversion logic → `scanners.py`
@@ -367,6 +362,11 @@ Leveraged-ETF flow as market sentiment: **dollar-volume** ratio short/long — `
 - **Gainers**: logs all verdicts EXCEPT WATCH — includes BREAKOUT CONFIRMED, DEVELOPING, FADE RISK, OVERHEAD WALL
 - Narrowing the logged set causes selection bias in `/api/setup-stats` — you'd only measure BUY outcomes and never see if gates blocked winners
 
+### setup_log is FORWARD-ONLY (hard rule, Jul 10 2026 — do not violate)
+- **Never backfill feature values into rows older than the feature's deploy date** — no matter how plausible the historical reconstruction. A feature not captured live at signal time does not exist for that row.
+- New columns: idempotent `ALTER TABLE ADD COLUMN` with NULL default (the dist_from_sma50 pattern) is the ONLY sanctioned migration. Analyses filter `WHERE <col> IS NOT NULL`.
+- Why: the whole pre-registration program (shadow query, lev_sent, sitting addenda) rests on live-captured features; retro-filling silently reintroduces look-ahead risk and mixes measurement regimes.
+
 ---
 
 ### Volume Leaders
@@ -414,11 +414,17 @@ Leveraged-ETF flow as market sentiment: **dollar-volume** ratio short/long — `
 ---
 
 ## Crons (server)
-- 05:00 UTC daily → `pre_scan.py` → wedge scan → Telegram
-- 14:45 UTC → `fetch_raw_messages.py`
-- 14:50 UTC → `fetch_clal_48h.py`
-- 15:00 UTC → `generate_report.py` → Telegram
-- 20:30 UTC Mon-Fri → `fetch_intraday.py` → `intraday_cache.db`
+⚠️ **Times are SERVER-LOCAL = Asia/Jerusalem, NOT UTC** (old labels here said "UTC" — wrong; crond uses the system TZ. Proof, Jul 12 2026: the `0 3 * * *` resolver line logs `start ...T00:00:01+00:00` = 03:00 IL). ET-sensitive behavior is guarded inside the scripts (`market_calendar`), not by cron times.
+- 03:00 daily → `resolve_setups.py` → setup_log outcome resolver, 50 rows/night (deliberately NOT holiday-guarded — resolves on real historical bars)
+- 05:00 daily → `pre_scan.py` → wedge scan → Telegram
+- 09:30 daily → `watchdog.py` → read-only health digest → Telegram (`# WATCHDOG-DAILY`; alert-only, never fixes; added Jul 12 2026)
+- 14:45 Mon–Fri → `fetch_raw_messages.py`
+- 14:50 Mon–Fri → `fetch_clal_48h.py`
+- 15:00 Mon–Fri → `generate_report.py` → Telegram
+- 20:05 Mon–Fri → `live_tracker.py --log --no-telegram` → tracker.db
+- 20:30 Mon–Fri → `fetch_intraday.py` → `intraday_cache.db`
+- */25 always → `warm_volume_cache.sh` (internally gated to 09:00–16:59 ET trading days)
+- (legacy stock_app: 12:00/18:00 `fetch_24h.py`, 12:05/18:05 `tg_scraper.py`)
 
 ## Local Scripts (Mac, ~/Desktop/Stock-predictor/)
 - `backtest_month.py` — backtests ML (thresholds: 0.70/0.30). Two universe groups: TICKERS_LARGECAP (40) + TICKERS_HIGHBETA (20). FEATURES use normalized EMA: ema9_dist/ema21_dist/ema50_dist — do NOT revert to raw dollar values.
@@ -443,12 +449,11 @@ Everything is in sync: local `~/Desktop/Stock-predictor/` = server `/home/elimao
 - May–Jun 2026: Wedge Scan tab, SWING/Score columns, SPY/QQQ context, Earnings Calendar, Regime Classification, Premium Scan, Momentum Gates (HOD+RVOL), Beta Gate, Reversion Hunter (Tab 9), TradingView TV links, Power Hour Whale Alert, FRED disk cache, Reversion Hunter RVOL alert, Wedge Scan Touches column, Falling Knife Logger
 
 ## Pending actions
-- **Jul 5 2026: VM downgrade** e2-standard-2 → e2-medium (see Infrastructure section — canary window until credits expire Jul 10)
-- **Instrumented-gate calibration:** blocked_reasons/market_state/vix_state collection started Jul 6 2026 (first live market day post-restoration) — calibrate HOD 0.35 etc. at the next N≥50 resolved instrumented rows
-- **Tracker beta-gate decision:** locked query re-run at N≥50 resolved-with-beta (~mid-July; was 34 on Jul 3, direction = weak counter-gate)
+- **THE SITTING — Jul 24 2026 or later** (user on vacation Jul 19–23; moved from ~Jul 21). One sitting closes: locked beta-gate query decision (N≥50 REACHED Jul 12: 52 resolved-with-beta — **NO PEEKING before the sitting**), restoration H1/H2 (watch: only 22 resolved BREAKOUT CONFIRMED as of Jul 12 vs min n=15/bucket — thin buckets ⇒ defer, don't loosen), lev_sent bucket re-registration + label calibration (semis PRIMARY — retail agentic-bot confounder on the qqq pair), scanner-health threshold locking, payoff-ratio + CLUSTER-bootstrap addenda (resample trading DAYS, B=10k, seed=42, interpretive only). **CLOSED CONFIRMATORY FAMILY: only the shadow query, H1, H2, and lev buckets may drive code change** — everything else descriptive. Full spec in the handoff Jul 10/12 entries + memory.
+- **Code freeze until the sitting** — no new filters/gates/params; collection only.
+- **Instrumented-gate calibration:** blocked_reasons/market_state/vix_state collection started Jul 6 2026 — calibrate HOD 0.35 etc. at the next N≥50 resolved instrumented rows (separate clock from the sitting)
 - **DEVELOPING breaker:** pre-registered rule armed (N≥20 AND mean<−5% → display demotion); n=11/mean −8.71% as of Jul 3
-- **After ~50 resolved signals in setup_log.db:** run `/api/setup-stats` breakdown → verify gate effectiveness (HIGH-BETA, HOD, RVOL blocked vs actual outcomes)
-- **After ~50 resolved signals with beta IS NOT NULL in tracker.db:**
-  `SELECT CASE WHEN beta > 1.5 THEN 'high' ELSE 'normal' END, AVG(hit), COUNT(*) FROM signals WHERE beta IS NOT NULL GROUP BY 1`
 - **After ~50 resolved signals per regime:** run per-regime precision analysis → Phase 2 regime filter
+- **Parked post-sitting candidates (pre-register before use):** overnight-gap covariate (log-only), MAE/MFE outcome columns at resolution
 - **Step 3 of refactor (future):** move `get_volume_leaders`, `get_reversion_leaders`, `get_gainers` to `scanners.py` — completes the architecture split
+- **Phase 2 infra:** service still runs as User=root (all log DBs elimaoz99-owned since Jul 10); extend NYSE_HOLIDAYS for 2027; v_accel UX
