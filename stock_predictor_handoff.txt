@@ -25,7 +25,9 @@ SCP (copy file to server):
 - GCP VM, Ubuntu, IP: 35.239.74.178
 - SSH user: elimaoz99 (NOT elima_oz, NOT root)
 - SSH key: ~/.ssh/gcp_stock_rsa
-- Sudo: elimaoz99 has passwordless sudo ONLY for "systemctl restart stock-app.service".
+- Sudo: elimaoz99 has passwordless sudo for: "systemctl restart stock-app.service",
+  /bin/chown, /usr/bin/chown, /usr/bin/chattr (verified via `sudo -n -l` Jun 21 2026; the old
+  "restart only" note here was wrong — chown was used Jul 10 to fix the root-owned FK db).
   For anything else (editing system files, changing service unit) ask the user to do it manually.
 
 
@@ -1550,3 +1552,127 @@ NEXT MILESTONES:
 
 GIT STATE (Jul 7 2026): ALL committed AND pushed. origin/main = d82f6fa. Working tree clean
   apart from this handoff update.
+
+
+JUL 7 2026 (EVE) — LEVERAGED SENTIMENT STRIP SHIPPED (OBSERVATIONAL ONLY)
+==========================================================================
+  d2d318a  feat(sentiment): SOXS:SOXL + SQQQ:TQQQ DOLLAR-volume short/long ratios as market
+  sentiment. Born from the ETF-tab request — the most-active ETF list is ~90% leveraged mirrors
+  of already-scanned stocks, so NO new tab; the ratio rides get_market_context() as
+  lev:{semis,qqq} (no new endpoint, no cron), logged RAW per signal (setup_log.lev_sent_semis /
+  lev_sent_qqq, idempotent migrations, all 3 call sites) + neutral gray strip in the VL bar.
+  DESIGN-CHANGING DISCOVERY during the live smoke test: baseline is ~0.3 NOT 1.0 — long
+  leveraged ETFs carry far larger DOLLAR volume (SOXL $11.4B vs SOXS $3.2B on a heavy red day);
+  the "SOXS 9:1 fear" share-volume read was a unit-price artifact, dollar basis showed 0.28 =
+  dip-buying. Consequences: NO Fear/Greed labels in v1; labels + bucket boundaries re-registered
+  from ~2 weeks of logged distribution BEFORE any outcome unblinding. Display + collect only —
+  promotion to any gate requires the pre-registered N>=50 test.
+
+JUL 9 2026 — RESOLVER STARVATION FIX
+=====================================
+  d518ed8  fix: setup_resolve's own 10-day lookback window starved the backlog — rows born in
+  the resolver's dead period aged past the window and could never resolve. Window widened to
+  16d + a resolved=-1 tombstone for rows >30d old (kills zombie retries) + "stale=" counter in
+  the nightly log line. 33 stuck rows drained live at deploy; verified on the Jul-10 cron.
+
+JUL 10 2026 (Fri) — FK VERIFY CLOSED + ROOT-DB WRITE BUG FIXED + SITTING SPEC LOCKED
+=====================================================================================
+CLOSES three "STILL OPEN" items from the Jul 7 entry:
+  Jul-7 rows logged post-open: YES — 29 clean rows after the d82f6fa guard (bug fix proven).
+  Day-2 follow-through on the 8 Jul-6 signals: captured — ALL 8 deepened, mean -6.9% vs QQQ
+  -2.1% (awareness-not-entry vindicated; final read at ret_5d).
+  memory.peak recaptured: 320MB full-session peak on a heavy red day -> e2-medium downgrade
+  PROVEN, swap deliberately not created. Canary closed, credits deadline passed safely.
+
+FK PIPELINE END-TO-END — VERIFIED AND CLOSED (the last Jul-7 open item):
+  Root cause of fk_events silence was COVERAGE, not code: zero human/warm traffic ever hit
+  /api/reversion-leaders inside the 13:00-15:00 ET logging window since the Jul-5 restoration.
+  Self-removing FKVERIFY-TEMP crontab curls (20:10/20:50/21:30 IL = 13:10-14:30 ET, JSON bodies
+  saved to /tmp so "no candidates" is distinguishable from "bug") fired 3/3 HTTP 200.
+  Zero fk_events rows = CORRECT-BY-SPEC: IONS (the live candidate, -23.9% in the morning) had
+  recovered to -8.3% and based — RSI 32.6 (oversold) but vwap_gap only -0.67% (needs <-2.0) and
+  ml HOLD -> verdict WATCH, and WATCH never downgrades to FALLING KNIFE. Gap-down-then-base is
+  by design NOT a knife. Crontab self-cleanup verified (0 lines left) + /tmp wiped.
+  THE BONUS BUG (found by a synthetic write test, would have bitten months later):
+  falling_knife_log.db was still root:root 644 -> fk_log_event from user context failed with
+  "attempt to write a readonly database", SWALLOWED by the bare except. The API service (root)
+  could write, but the 03:00 resolver (runs as elimaoz99, reaches fk_resolve_yesterday via
+  db.py) could NEVER have marked future FK rows resolved — silent forever-stuck rows. Fixed:
+  sudo -n chown to elimaoz99 (NOPASSWD covers chown — header section corrected accordingly),
+  synthetic insert->verify->delete test green, table left clean (1 row = CRCL Jun-3).
+  ALL log DBs now elimaoz99-owned. User=root on the service itself remains Phase 2.
+
+EXTERNAL EXIT-ANALYSIS REJECTED (methodology defense in action): an outside-agent script ran
+  a 9-cell SL/TP grid over 67 resolved tracker rows and concluded "-15% disaster stop is
+  optimal (+3.41% vs +2.77%)". Verification killed it: 48/67 rows (72%) are sub-gate
+  (conf 0.57-0.70, never traded) including ALL 3 SMCI rows that supply the catastrophe; 5 of the 6
+  real-BUY -15% breaches are ONE early-June episode (APP x3 consecutive-day entries, PLTR, WDC)
+  -> ~2 independent events, uncalibratable (same anti-HARKing bar as the fk_events >=30 rule);
+  WDC Jun-5 hit -16.4% MAE and +39.0% MFE in the SAME window — the proposed stop sits mid-noise
+  and plausibly kills the system's best runner. What SURVIVED: tight take-profits destroy the
+  right tail (TP=5% -> avg +0.08%/trade) — consistent with the fixed-horizon design, which has
+  NO exit geometry and is structurally immune to disposition/geometry artifacts. Script backed
+  up off-server and deleted from the prod dir. MAE/MFE outcome columns parked as a possible
+  post-milestone, pre-registered addition.
+
+SITTING SPEC LOCKED (the ~Jul-21 milestone bundle, all recorded in memory):
+  1. Locked shadow query re-runs UNCHANGED (3 pre-committed decision rules).
+  2. Payoff-ratio addendum (dual-basis, medians alongside means).
+  3. Bootstrap CI addendum — CLUSTER bootstrap: resample whole TRADING DAYS not rows (rows
+     cluster ~45-49/day and co-move; the June episode above is the live proof), B=10,000,
+     seed=42, median ret_5d, 95% CI + P10 "sane worst case". INTERPRETIVE ONLY.
+  4. Scanner-health criterion locked at the sitting (ops task, anchored on Jun-23->26).
+  5. CLOSED CONFIRMATORY FAMILY — exactly 4 tracks may drive code change: shadow query, H1,
+     H2, lev_sent buckets. Everything else run at the sitting is descriptive, no matter how
+     significant it looks; at most it seeds the next pre-registered question.
+  Parked post-milestone: overnight-gap covariate (log-only path), MAE/MFE outcome columns.
+  NEW HARD RULE (memory + here): setup_log is FORWARD-ONLY — never backfill feature values
+  into rows older than the feature's deploy date; new columns start NULL and fill forward.
+  CONFOUNDER recorded for the lev re-registration: a visible retail wave of agentic bots
+  (broker-productized) trades TQQQ/SQQQ momentum mechanically, skewing SQQQ dollar-volume UP
+  on red days exactly when a fear read matters -> lev_sent_semis (less bot-crowded) becomes
+  the PRIMARY covariate, qqq secondary.
+
+JUL 12 2026 (Sun) — N>=50 CROSSED + WATCHDOG INSTALLED + SITTING MOVED TO JUL 24+
+==================================================================================
+RESOLVER BACKLOG DRAINED: Jul-11/12 crons resolved 49+18 with stale=0 failed=0; the Jul-2 x68
+  batch is gone (one straggler each from Jul-1/Jul-2 still retrying nightly; 30-day tombstone
+  is the backstop). Jul-6 x62 resolves on the Jul-13/14 runs.
+SHADOW POOL CROSSED N>=50: resolved-with-beta = 52. NO PEEKING — the sitting trigger is BOTH
+  legs (N>=50 AND ~2wk lev distribution), and the confirmatory family runs ONLY at the sitting.
+LEV FILL 3-for-3: Jul-8 45/45, Jul-9 49/49, Jul-10 38/38 rows at 100% lev_sent fill
+  (semis 0.25-0.37, qqq 0.46-0.52 — baseline confirmed).
+WATCH ITEM: resolved BREAKOUT CONFIRMED = 22; H1/H2 need n>=15 per bucket — if buckets are
+  thin at the sitting, H1/H2 defer to a later checkpoint (definitions do NOT loosen).
+WATCHDOG (finally closes the Jun-26 TAKEAWAY "freshness heartbeat = #1 Phase-2 task" — all
+  three silent failures were no-ops, not crashes):
+  watchdog.py + cron "30 9 * * *" (# WATCHDOG-DAILY) -> ONE Telegram digest/day on the existing
+  pre_scan channel (creds from api_data.env). Read-only checks, each exception-isolated:
+  API answering on :8000; resolver "done" within 26h + counters (failed>0 = red); yesterday's
+  setup_log rows + 100% lev fill (trading days only, via market_calendar); disk <90%;
+  MemAvailable >150MB. Green heartbeat daily BY DESIGN — sudden silence means the watchdog
+  itself died. HARD RULE: alert-only, it never restarts/fixes/writes anything.
+  Live-tested green + Telegram received. Imported into git the same day (no repeat of the
+  pre_scan deployed-not-committed gap).
+VACATION Jul 19-23 (user unavailable) -> THE SITTING MOVED TO JUL 24 OR LATER. Data keeps
+  accumulating (pure upside for the thin buckets); code freeze absolute; watchdog covers.
+
+STILL OPEN:
+  Jul-1/Jul-2 straggler rows (1 each) — watch the nightly stale counter; tombstone at 30d.
+  CLAUDE.md staleness sweep: Infrastructure still says e2-standard-2 + "downgrade planned"
+  (done Jul 5, proven Jul 10); crons list missing resolver (03:00 IL) + watchdog (09:30 IL);
+  pending-actions list has completed items. Sweep before the sitting.
+  VM Manager + Network Intelligence Center — disable in Console if not yet done.
+  v_accel UX / service User=root (Phase 2) / 2027 NYSE holidays — unchanged.
+
+NEXT MILESTONES:
+  Jul 13-14 — resolver drains the Jul-6 x62 batch.
+  Jul 19-23 — vacation; watchdog on duty; no changes of any kind.
+  Jul 24+   — THE SITTING (one sitting closes: locked query decision, H1/H2, lev bucket
+              re-registration + label calibration, health-threshold locking, payoff +
+              cluster-bootstrap addenda; the closed family caps what may drive change).
+  Nov 2026  — restore MIN_PRECISION_BUY 0.30 -> 0.48 (regime-mix criterion, not calendar).
+  Nov 27 / Dec 24 — first half-day sessions exercising session_close_hour().
+
+GIT STATE (Jul 12 2026): origin/main = d518ed8 before this update; working tree clean apart
+  from this handoff update + watchdog.py (imported from server, committed together).
