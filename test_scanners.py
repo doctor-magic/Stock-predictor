@@ -334,6 +334,50 @@ class TestLevSentiment(unittest.TestCase):
             scanners._lev_sentiment_cache.update(saved)
 
 
+class TestSectorHeatmap(unittest.TestCase):
+    """11-SPDR sector heatmap (added Jul 15 2026, display-only market context).
+    Day %-change per ETF; None on missing data — a sector failure must never
+    break a scan. No gate, no setup_log columns (spec Jul 13 2026)."""
+
+    def test_change_math(self):
+        closes = {sym: None for sym in scanners._SECTOR_ETFS}
+        closes["XLK"] = (100.0, 102.5)   # +2.5%
+        closes["XLE"] = (80.0, 78.0)     # -2.5%
+        out = scanners._compute_sector_changes(closes)
+        self.assertEqual(out["XLK"], 2.5)
+        self.assertEqual(out["XLE"], -2.5)
+        self.assertIsNone(out["XLF"])
+
+    def test_covers_all_11_sectors(self):
+        out = scanners._compute_sector_changes({})
+        self.assertEqual(len(out), 11)
+        self.assertTrue(all(v is None for v in out.values()))
+
+    def test_zero_prev_close_gives_none(self):
+        out = scanners._compute_sector_changes({"XLU": (0.0, 50.0)})
+        self.assertIsNone(out["XLU"])
+
+    def test_fetch_failure_returns_stale_or_none(self):
+        # yfinance blowing up must fall back to the cached value (None when cold)
+        saved = dict(scanners._sector_heatmap_cache)
+        try:
+            scanners._sector_heatmap_cache["ts"] = 0
+            scanners._sector_heatmap_cache["data"] = None
+            import builtins
+            real_import = builtins.__import__
+            def _boom(name, *a, **k):
+                if name == "yfinance":
+                    raise RuntimeError("network down")
+                return real_import(name, *a, **k)
+            builtins.__import__ = _boom
+            try:
+                self.assertIsNone(scanners.get_sector_heatmap())
+            finally:
+                builtins.__import__ = real_import
+        finally:
+            scanners._sector_heatmap_cache.update(saved)
+
+
 class TestMarketCalendar(unittest.TestCase):
     """market_calendar: holiday table + half-day close hours (added Jul 5 2026)."""
 

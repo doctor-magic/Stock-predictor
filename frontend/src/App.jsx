@@ -1228,6 +1228,36 @@ function VolumeLeadersView() {
           )
         })()}
 
+        {marketContext?.sectors && (() => {
+          // 11-SPDR sector heatmap — display-only market context (spec Jul 13 2026), no gate, no logging
+          const SECTOR_NAMES = {
+            XLK: 'Technology', XLF: 'Financials', XLE: 'Energy', XLV: 'Health Care',
+            XLY: 'Cons. Discretionary', XLP: 'Cons. Staples', XLI: 'Industrials',
+            XLB: 'Materials', XLU: 'Utilities', XLRE: 'Real Estate', XLC: 'Communications',
+          }
+          const entries = Object.entries(marketContext.sectors).filter(([, v]) => v != null)
+          if (!entries.length) return null
+          entries.sort((a, b) => b[1] - a[1])
+          const heatCls = (p) =>
+            p >= 1.5 ? 'bg-green-500/40 text-green-100' :
+            p >= 0.5 ? 'bg-green-500/20 text-green-300' :
+            p > -0.5 ? 'bg-gray-500/10 text-gray-300' :
+            p > -1.5 ? 'bg-red-500/20 text-red-300' :
+                       'bg-red-500/40 text-red-100'
+          const fmtChg = (v) => (v >= 0 ? '+' : '') + v.toFixed(2) + '%'
+          return (
+            <div className="grid grid-cols-4 sm:grid-cols-6 lg:grid-cols-11 gap-1 mb-4 text-xs font-mono">
+              {entries.map(([sym, pct]) => (
+                <div key={sym} className={`rounded px-1.5 py-1 text-center ${heatCls(pct)}`}
+                     title={`${SECTOR_NAMES[sym] || sym} — שינוי יומי, הקשר שוק בלבד`}>
+                  <div className="font-bold">{sym}</div>
+                  <div>{fmtChg(pct)}</div>
+                </div>
+              ))}
+            </div>
+          )
+        })()}
+
         {error && (
           <div className="flex items-center gap-2 text-red-400 text-sm mb-4">
             <AlertCircle className="w-4 h-4" />{error}

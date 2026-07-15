@@ -24,6 +24,15 @@ _lev_sentiment_cache: dict = {"ts": 0, "data": None}
 _LEV_SENTIMENT_TTL = 300    # 5 min
 _LEV_PAIRS = {"semis": ("SOXS", "SOXL"), "qqq": ("SQQQ", "TQQQ")}   # (short, long)
 
+_sector_heatmap_cache: dict = {"ts": 0, "data": None}
+_SECTOR_HEATMAP_TTL = 300   # 5 min
+_SECTOR_ETFS = {
+    "XLK": "Technology", "XLF": "Financials", "XLE": "Energy",
+    "XLV": "Health Care", "XLY": "Consumer Discretionary", "XLP": "Consumer Staples",
+    "XLI": "Industrials", "XLB": "Materials", "XLU": "Utilities",
+    "XLRE": "Real Estate", "XLC": "Communication Services",
+}
+
 _gainers_daily_cache: dict = {}           # sym → {date, sma200, nearest_resist, atr14, …}
 _vaccel_cache: dict        = {}           # sym → {ts, vaccel}
 _VACCEL_TTL                = 300          # 5 min
@@ -436,11 +445,49 @@ def get_lev_sentiment():
         return _lev_sentiment_cache["data"]
 
 
+def _compute_sector_changes(closes: dict) -> dict:
+    """Pure math: day %-change per sector ETF from (prev_close, last_close) pairs.
+    None on missing pair or zero previous close."""
+    out = {}
+    for sym in _SECTOR_ETFS:
+        pair = closes.get(sym)
+        out[sym] = round((pair[1] / pair[0] - 1) * 100, 2) if pair and pair[0] else None
+    return out
+
+
+def get_sector_heatmap():
+    """11 SPDR sector ETFs — day %-change as market context ("where the wind blows").
+    DISPLAY ONLY (spec Jul 13 2026) — no setup_log columns, no gate; a sector
+    failure must never break a scan. During the session the last daily bar is
+    live, so the change tracks intraday; after close it is the settled day."""
+    now = time.time()
+    if _sector_heatmap_cache["data"] is not None and now - _sector_heatmap_cache["ts"] < _SECTOR_HEATMAP_TTL:
+        return _sector_heatmap_cache["data"]
+    try:
+        import yfinance as yf
+        syms = list(_SECTOR_ETFS)
+        raw = yf.download(syms, period="5d", interval="1d", progress=False, auto_adjust=True)
+        closes = {}
+        for sym in syms:
+            try:
+                series = raw["Close"][sym].dropna()
+                closes[sym] = (float(series.iloc[-2]), float(series.iloc[-1])) if len(series) >= 2 else None
+            except Exception:
+                closes[sym] = None
+        out = _compute_sector_changes(closes)
+        _sector_heatmap_cache["ts"]   = now
+        _sector_heatmap_cache["data"] = out
+        return out
+    except Exception:
+        return _sector_heatmap_cache["data"]
+
+
 def get_market_context() -> dict:
     now = time.time()
     if _market_context_cache["data"] and now - _market_context_cache["ts"] < _MARKET_CONTEXT_TTL:
         ctx = _market_context_cache["data"]
         ctx["lev"] = get_lev_sentiment()
+        ctx["sectors"] = get_sector_heatmap()
         return ctx
     try:
         import yfinance as yf
@@ -476,9 +523,10 @@ def get_market_context() -> dict:
         _market_context_cache["ts"]   = now
         _market_context_cache["data"] = context
         context["lev"] = get_lev_sentiment()
+        context["sectors"] = get_sector_heatmap()
         return context
     except Exception:
-        return _market_context_cache["data"] or {"SPY": None, "QQQ": None, "tailwind": None, "headwind": None, "lev": None}
+        return _market_context_cache["data"] or {"SPY": None, "QQQ": None, "tailwind": None, "headwind": None, "lev": None, "sectors": None}
 
 
 def get_overhead_supply(sym: str, price: float) -> dict:
