@@ -31,6 +31,10 @@ _SECTOR_ETFS = {
     "XLV": "Health Care", "XLY": "Consumer Discretionary", "XLP": "Consumer Staples",
     "XLI": "Industrials", "XLB": "Materials", "XLU": "Utilities",
     "XLRE": "Real Estate", "XLC": "Communication Services",
+    # SOXX is an industry ETF (semis live inside XLK), not a GICS sector — included
+    # because XLK dilutes semi moves (Jul 16 2026: XLK -2.6% while the semi cluster was -9..-14%)
+    # and it pairs with the lev strip: SOXS:SOXL = leveraged flow, SOXX = the price move itself.
+    "SOXX": "Semiconductors (industry)",
 }
 
 _gainers_daily_cache: dict = {}           # sym → {date, sma200, nearest_resist, atr14, …}

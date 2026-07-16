@@ -1234,6 +1234,7 @@ function VolumeLeadersView() {
             XLK: 'Technology', XLF: 'Financials', XLE: 'Energy', XLV: 'Health Care',
             XLY: 'Cons. Discretionary', XLP: 'Cons. Staples', XLI: 'Industrials',
             XLB: 'Materials', XLU: 'Utilities', XLRE: 'Real Estate', XLC: 'Communications',
+            SOXX: 'Semiconductors — תעשייה, לא סקטור',
           }
           const entries = Object.entries(marketContext.sectors).filter(([, v]) => v != null)
           if (!entries.length) return null
@@ -1246,7 +1247,7 @@ function VolumeLeadersView() {
                        'bg-red-500/40 text-red-100'
           const fmtChg = (v) => (v >= 0 ? '+' : '') + v.toFixed(2) + '%'
           return (
-            <div className="grid grid-cols-4 sm:grid-cols-6 lg:grid-cols-11 gap-1 mb-4 text-xs font-mono">
+            <div className="grid grid-cols-4 sm:grid-cols-6 lg:grid-cols-12 gap-1 mb-4 text-xs font-mono">
               {entries.map(([sym, pct]) => (
                 <div key={sym} className={`rounded px-1.5 py-1 text-center ${heatCls(pct)}`}
                      title={`${SECTOR_NAMES[sym] || sym} — שינוי יומי, הקשר שוק בלבד`}>

@@ -348,9 +348,11 @@ class TestSectorHeatmap(unittest.TestCase):
         self.assertEqual(out["XLE"], -2.5)
         self.assertIsNone(out["XLF"])
 
-    def test_covers_all_11_sectors(self):
+    def test_covers_all_tiles(self):
+        # 11 GICS SPDR sectors + SOXX industry overlay (added Jul 16 2026)
         out = scanners._compute_sector_changes({})
-        self.assertEqual(len(out), 11)
+        self.assertEqual(len(out), 12)
+        self.assertIn("SOXX", out)
         self.assertTrue(all(v is None for v in out.values()))
 
     def test_zero_prev_close_gives_none(self):

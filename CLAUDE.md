@@ -325,7 +325,8 @@ Leveraged-ETF flow as market sentiment: **dollar-volume** ratio short/long — `
 - Pre-registered N≥50 question + bucket re-registration rule live in the spec memory (lev-sentiment-spec). Promotion to any gate/filter requires that test to pass — until then display+collect only.
 
 ### Sector Heatmap (added Jul 15 2026 — DISPLAY ONLY, not a gate, not logged)
-11 SPDR sector ETFs (XLK/XLF/XLE/XLV/XLY/XLP/XLI/XLB/XLU/XLRE/XLC) day %-change as market context ("where the wind blows" — complements the SPY/QQQ tailwind bar + lev strip; NOT a trading list).
+11 SPDR sector ETFs (XLK/XLF/XLE/XLV/XLY/XLP/XLI/XLB/XLU/XLRE/XLC) + SOXX day %-change as market context ("where the wind blows" — complements the SPY/QQQ tailwind bar + lev strip; NOT a trading list).
+- SOXX (added Jul 16 2026, **staged in repo — deploy AFTER Jul 24**, the Jul 16–23 deploy freeze was already active) is an industry overlay, not a GICS sector: XLK dilutes semi moves (Jul 16: XLK −2.6% vs semi names −9..−14%), and it pairs with the lev strip — SOXS:SOXL = leveraged flow, SOXX = the price move.
 - `scanners.get_sector_heatmap()` — one batched `yf.download(period="5d", interval="1d")`, cache `_SECTOR_HEATMAP_TTL=300s`, whole fetch try/except → stale-or-None (a sector failure must never break a scan). Pure math in `_compute_sector_changes()` (unit-tested). During the session the last daily bar is live → change tracks intraday.
 - Rides inside `get_market_context()` as `sectors: {XLK: pct, …}` — no new endpoint, no cron.
 - **NO setup_log columns, NO gate (spec Jul 13 2026).** If sector data is ever wanted as a logged covariate, that is a new-covariate decision belonging in a milestone bundle — never mid-collection.
