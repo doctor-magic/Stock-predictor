@@ -432,7 +432,7 @@ Leveraged-ETF flow as market sentiment: **dollar-volume** ratio short/long — `
 - 15:00 Mon–Fri → `generate_report.py` → Telegram
 - 20:05 Mon–Fri → `live_tracker.py --log --no-telegram` → tracker.db
 - 20:30 Mon–Fri → `fetch_intraday.py` → `intraday_cache.db`
-- */25 always → `warm_volume_cache.sh` (internally gated to 09:00–16:59 ET trading days)
+- */25 always → `warm_volume_cache.sh` (internally gated to 09:00–16:59 ET trading days). Warms `/api/volume-leaders` every run; alternates `/api/gainers` and `/api/reversion-leaders` on top (state in `warm_alt_state`, added Jul 26 2026 — before this, both had ZERO cron coverage: `setup_log` showed `reversion_hunter`=0 rows ever and `gainers` stopped Jul 21, because they only got hit by an actual browser visit)
 - (legacy stock_app: 12:00/18:00 `fetch_24h.py`, 12:05/18:05 `tg_scraper.py`)
 
 ## Local Scripts (Mac, ~/Desktop/Stock-predictor/)

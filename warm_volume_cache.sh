@@ -47,3 +47,26 @@ CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 60 \
 
 echo "[$TS] volume-leaders warm -> HTTP $CODE"
 [ "$CODE" = "200" ] || { echo "[$TS] WARN: non-200 from warm call" >&2; exit 1; }
+
+# Staggered warm for gainers + reversion-leaders (added Jul 26 2026): neither
+# had ANY cron coverage — setup_log showed reversion_hunter=0 rows ever (48
+# days) and gainers stopped Jul 21. Both depend on a browser hitting the tab,
+# which starves the setup_log sample (incl. the sitting's thin BREAKOUT
+# CONFIRMED bucket) independent of how rare the underlying verdict is.
+# Alternate per run (not every-run for both) to avoid doubling e2-medium load
+# and Yahoo call volume on top of the existing volume-leaders warm.
+STATE_FILE=warm_alt_state
+STATE=$(cat "$STATE_FILE" 2>/dev/null || echo 0)
+if [ "$STATE" = "0" ]; then
+  ALT_EP=gainers
+  NEXT=1
+else
+  ALT_EP=reversion-leaders
+  NEXT=0
+fi
+echo "$NEXT" > "$STATE_FILE"
+
+ALT_CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 60 \
+  --user "$CREDS" "http://localhost:8000/api/${ALT_EP}?force=true")
+echo "[$TS] ${ALT_EP} warm -> HTTP $ALT_CODE"
+[ "$ALT_CODE" = "200" ] || echo "[$TS] WARN: non-200 from ${ALT_EP} warm call" >&2
