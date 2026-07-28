@@ -47,4 +47,17 @@
 .review-md ul, .review-md ol { list-style: none; padding: 0; margin: 0.25rem 0; }
 .review-md li { font-size: 1.05rem; color: #e5e7eb; line-height: 1.9; padding: 0.6rem 0; border-bottom: 1px solid rgba(255,255,255,0.05); }
 .review-md li::before { content: "◆ "; color: rgba(0,210,255,0.4); font-size: 0.7rem; margin-left: 0.4rem; }
+/* Ordered lists carry real ranking in the reviews (positive/negative signals by order) —
+   the ◆ bullet above erased it. inline-block + direction:ltr keeps "1." from flipping in RTL. */
+.review-md ol { counter-reset: review-item; }
+.review-md ol > li { counter-increment: review-item; }
+.review-md ol > li::before {
+  content: counter(review-item) ".";
+  display: inline-block;
+  direction: ltr;
+  color: rgba(0,210,255,0.75);
+  font-size: 0.9rem;
+  font-weight: 600;
+  margin-left: 0.5rem;
+}
 .review-md hr { border-color: rgba(255,255,255,0.1); margin: 1rem 0; }

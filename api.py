@@ -255,33 +255,136 @@ async def scan_market(req: ScanRequest, request: Request):
     return {"status": "started", "task_id": task_id}
 
 
-@app.get("/api/recommendations")
-def get_recommendations():
-    directory = os.path.dirname(os.path.abspath(__file__))
-    files = sorted(glob.glob(os.path.join(directory, "stock_recommendations_*.txt")), key=os.path.getmtime, reverse=True)
+_REPORT_PREFIX = "stock_recommendations_"
+_REPORT_ID_RE  = re.compile(r"^stock_recommendations_[A-Za-z0-9_\-]+\.txt$")
 
-    months = {
-        "01": "ינואר", "02": "פברואר", "03": "מרץ",    "04": "אפריל",
-        "05": "מאי",   "06": "יוני",   "07": "יולי",   "08": "אוגוסט",
-        "09": "ספטמבר","10": "אוקטובר","11": "נובמבר", "12": "דצמבר",
-    }
+_REPORT_MONTHS_HE = {
+    "01": "ינואר", "02": "פברואר", "03": "מרץ",    "04": "אפריל",
+    "05": "מאי",   "06": "יוני",   "07": "יולי",   "08": "אוגוסט",
+    "09": "ספטמבר","10": "אוקטובר","11": "נובמבר", "12": "דצמבר",
+}
+# Filenames carry an optional 4th field (…_27_07_2026_Evening.txt) — 109 of 111 files on
+# the server have it. The old len(parts)==3 check missed every one of them and fell back
+# to printing the raw filename as the accordion title.
+_REPORT_SESSIONS_HE  = {"evening": "ערב", "midday": "צהריים", "morning": "בוקר"}
+_REPORT_SESSION_RANK = {"morning": 1, "midday": 2, "evening": 3}
+
+# path → (mtime, content). The reviews tab hits the list endpoint on every search
+# keystroke; without this every one of those re-reads ~824KB from disk.
+_report_content_cache: dict = {}
+
+
+def _report_dir() -> str:
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def _read_report(path: str) -> str:
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return ""
+    cached = _report_content_cache.get(path)
+    if cached and cached[0] == mtime:
+        return cached[1]
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            content = fh.read()
+    except OSError:
+        return ""
+    _report_content_cache[path] = (mtime, content)
+    return content
+
+
+def _report_meta(path: str) -> dict:
+    """Filename → display fields + a sort key. Unparseable names fall back to mtime."""
+    basename = os.path.basename(path)
+    stem  = basename[len(_REPORT_PREFIX):-len(".txt")]
+    parts = stem.split("_")
+
+    friendly_date, session_he, sort_key = basename, "", None
+    if len(parts) >= 3 and all(p.isdigit() for p in parts[:3]):
+        d, m, y = parts[0], parts[1], parts[2]
+        friendly_date = f"{d} ב{_REPORT_MONTHS_HE.get(m, m)} {y}"
+        raw_session = parts[3].lower() if len(parts) > 3 else ""
+        session_he  = _REPORT_SESSIONS_HE.get(raw_session, parts[3] if len(parts) > 3 else "")
+        try:
+            day_key  = datetime(int(y), int(m), int(d)).timestamp()
+            sort_key = (day_key, _REPORT_SESSION_RANK.get(raw_session, 0))
+        except ValueError:
+            sort_key = None
+
+    if sort_key is None:
+        try:
+            sort_key = (os.path.getmtime(path), 0)
+        except OSError:
+            sort_key = (0.0, 0)
+
+    return {"id": basename, "date": friendly_date, "session": session_he, "_sort": sort_key}
+
+
+def _report_preview(content: str, limit: int = 160) -> str:
+    """First real sentence of the review — the accordion subtitle."""
+    for line in content.split("\n"):
+        s = line.strip().replace("**", "")
+        if not s or s.startswith("#"):
+            continue
+        return (s[:limit] + "…") if len(s) > limit else s
+    return ""
+
+
+def _report_section(content: str, query: str) -> str:
+    """Matching paragraphs plus the one above each (keeps the section heading visible)."""
+    paragraphs = re.split(r"\n\n+", content)
+    out: list = []
+    for i, para in enumerate(paragraphs):
+        if query in para.lower():
+            if i > 0 and (not out or out[-1] != paragraphs[i - 1]):
+                out.append(paragraphs[i - 1])
+            out.append(para)
+    return "\n\n".join(out)
+
+
+@app.get("/api/recommendations")
+def get_recommendations(q: str = ""):
+    """Review list — metadata + preview only. Full text: /api/recommendations/{report_id}.
+
+    Returning all ~111 reviews in full was ~824KB per tab open, of which one was read.
+    """
+    paths = glob.glob(os.path.join(_report_dir(), f"{_REPORT_PREFIX}*.txt"))
+    metas = sorted((_report_meta(p) for p in paths), key=lambda m: m["_sort"], reverse=True)
+    query = q.strip().lower()
 
     reports = []
-    for f in files:
-        basename = os.path.basename(f)
-        parts = basename.replace("stock_recommendations_", "").replace(".txt", "").split("_")
-        if len(parts) == 3:
-            d, m, y = parts
-            friendly_date = f"{d} ב{months.get(m, m)} {y}"
-        else:
-            friendly_date = basename
-
-        with open(f, "r", encoding="utf-8") as file:
-            content = file.read()
-
-        reports.append({"id": basename, "date": friendly_date, "content": content})
+    for meta in metas:
+        content = _read_report(os.path.join(_report_dir(), meta["id"]))
+        item = {k: v for k, v in meta.items() if k != "_sort"}
+        item["preview"] = _report_preview(content)
+        if query:
+            section = _report_section(content, query)
+            if not section:
+                continue
+            item["section"] = section
+        reports.append(item)
 
     return reports
+
+
+@app.get("/api/recommendations/{report_id}")
+def get_recommendation(report_id: str):
+    if not _REPORT_ID_RE.match(report_id):
+        raise HTTPException(status_code=400, detail="Invalid report id")
+
+    path = os.path.join(_report_dir(), report_id)
+    if os.path.basename(path) != report_id or not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="Report not found")
+
+    meta = _report_meta(path)
+    return {
+        "id":      meta["id"],
+        "date":    meta["date"],
+        "session": meta["session"],
+        "content": _read_report(path),
+    }
 
 
 # ── Macro / FRED endpoints ──────────────────────────────────────────────────
@@ -805,10 +908,36 @@ _NAME_OVERRIDES = {
     "AZRG.TA": "עזריאלי",
 }
 
+def _load_json_disk_cache(path, cache_dict):
+    """Seed an in-memory scanner cache from its last-good disk snapshot.
+
+    Without this, a restart (deploy/crash) during market-closed hours leaves
+    the in-memory cache empty until the next live weekday fetch succeeds —
+    the endpoint returns [] instead of the last trading day's close.
+    """
+    try:
+        with open(path) as f:
+            d = _json.load(f)
+        if d:
+            cache_dict["data"] = d
+    except Exception:
+        pass
+
+
+def _save_json_disk_cache(path, data):
+    try:
+        with open(path, "w") as f:
+            _json.dump(data, f)
+    except Exception:
+        pass
+
+
 # ── Volume Leaders ───────────────────────────────────────────────────────────
 
 _volume_leaders_cache: dict = {"ts": 0, "data": None}
 _VOLUME_LEADERS_TTL = 1800  # 30 min
+_VOLUME_LEADERS_DISK_CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "volume_leaders_cache.json")
+_load_json_disk_cache(_VOLUME_LEADERS_DISK_CACHE_PATH, _volume_leaders_cache)
 _BETA_HIGH_THRESHOLD = 1.5  # 6-month rolling beta above this → suppress ML BUY
 
 # ── Momentum gates (restored Jul 5 2026 — lost in the Jun 7 refactor) ─────────
@@ -1133,6 +1262,7 @@ def get_volume_leaders(min_market_cap: int = 200_000_000, force: bool = False):
     })
     _volume_leaders_cache["ts"] = now
     _volume_leaders_cache["data"] = payload
+    _save_json_disk_cache(_VOLUME_LEADERS_DISK_CACHE_PATH, payload)
     return payload
 
 
@@ -1246,6 +1376,8 @@ def get_earnings_calendar(req: EarningsRequest):
 
 _reversion_cache: dict = {"ts": 0, "data": None}
 _REVERSION_TTL = 900  # 15 min
+_REVERSION_DISK_CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reversion_cache.json")
+_load_json_disk_cache(_REVERSION_DISK_CACHE_PATH, _reversion_cache)
 
 
 @app.get("/api/reversion-leaders")
@@ -1429,6 +1561,7 @@ def get_reversion_leaders(min_market_cap: int = 500_000_000, force: bool = False
     })
     _reversion_cache["ts"]   = now
     _reversion_cache["data"] = payload
+    _save_json_disk_cache(_REVERSION_DISK_CACHE_PATH, payload)
     return payload
 
 
@@ -1453,6 +1586,8 @@ def get_setup_stats():
 
 _gainers_cache: dict = {"ts": 0, "data": None}
 _GAINERS_TTL         = 300          # 5 min
+_GAINERS_DISK_CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gainers_cache.json")
+_load_json_disk_cache(_GAINERS_DISK_CACHE_PATH, _gainers_cache)
 
 
 @app.get("/api/gainers")
@@ -1596,6 +1731,7 @@ def get_gainers(force: bool = False):
     })
     _gainers_cache["ts"]   = now
     _gainers_cache["data"] = payload
+    _save_json_disk_cache(_GAINERS_DISK_CACHE_PATH, payload)
     return payload
 
 # ── Static frontend ──────────────────────────────────────────────────────────

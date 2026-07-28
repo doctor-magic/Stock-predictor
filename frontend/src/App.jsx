@@ -638,78 +638,56 @@ function MacroMetric({ label, value, color }) {
   )
 }
 
-function renderMarkdown(text) {
-  const lines = text.split('\n')
-  const elements = []
-  let key = 0
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]
-    const trimmed = line.trim()
-    if (!trimmed) { elements.push(<div key={key++} className="h-3" />); continue }
-    if (trimmed.startsWith('## ')) {
-      elements.push(<h3 key={key++} className="text-lg font-bold text-neon-purple mt-6 mb-2 pb-1 border-b border-neon-purple/20 text-right" dir="rtl">{trimmed.slice(3)}</h3>)
-      continue
-    }
-    if (trimmed.startsWith('# ')) {
-      elements.push(<h2 key={key++} className="text-xl font-bold text-neon-blue mb-3 text-right" dir="rtl">{trimmed.slice(2)}</h2>)
-      continue
-    }
-    const parts = trimmed.split(/(\*\*[^*]+\*\*)/)
-    const inline = parts.map((part, idx) => {
-      if (part.startsWith('**') && part.endsWith('**'))
-        return <strong key={idx} className="text-white font-semibold">{part.slice(2, -2)}</strong>
-      return <span key={idx}>{part}</span>
-    })
-    const isStockLine = trimmed.startsWith('**')
-    if (isStockLine) {
-      elements.push(
-        <div key={key++} className="flex gap-3 py-3 border-b border-white/5 text-right" dir="rtl">
-          <span className="text-neon-blue/40 mt-0.5 shrink-0 text-xs">◆</span>
-          <p className="text-gray-200 leading-loose text-base flex-1">{inline}</p>
-        </div>
-      )
-    } else {
-      elements.push(<p key={key++} className="text-gray-400 text-base leading-loose text-right" dir="rtl">{inline}</p>)
-    }
-  }
-  return elements
-}
-
 function ReviewView() {
   const [docs, setDocs] = useState([])
   const [loading, setLoading] = useState(true)
-  const [openIdx, setOpenIdx] = useState(0)
+  const [openId, setOpenId] = useState(null)
+  const [contents, setContents] = useState({})   // id → full markdown, fetched on expand
+  const [pendingId, setPendingId] = useState(null)
   const [searchQuery, setSearchQuery] = useState('')
+  const [query, setQuery] = useState('')         // debounced — one request per pause, not per keystroke
 
   useEffect(() => {
-    fetch('/api/recommendations')
+    const t = setTimeout(() => setQuery(searchQuery.trim()), 300)
+    return () => clearTimeout(t)
+  }, [searchQuery])
+
+  // The list carries metadata + preview only; full text arrives per review on expand.
+  useEffect(() => {
+    let cancelled = false
+    const url = query ? `/api/recommendations?q=${encodeURIComponent(query)}` : '/api/recommendations'
+    fetch(url)
       .then(res => res.json())
-      .then(data => { setDocs(data); setLoading(false) })
+      .then(data => {
+        if (cancelled) return
+        setDocs(data)
+        setLoading(false)
+        if (!query) setOpenId(prev => prev ?? data[0]?.id ?? null)
+      })
+      .catch(err => { if (!cancelled) { console.error(err); setLoading(false) } })
+    return () => { cancelled = true }
+  }, [query])
+
+  const loadContent = (id) => {
+    if (contents[id] || pendingId === id) return
+    setPendingId(id)
+    fetch(`/api/recommendations/${encodeURIComponent(id)}`)
+      .then(res => res.json())
+      .then(data => setContents(prev => ({ ...prev, [id]: data.content })))
       .catch(console.error)
-  }, [])
-
-  if (loading) return <div className="animate-spin w-8 h-8 border-4 border-neon-blue border-t-transparent rounded-full mt-10"></div>
-
-  const q = searchQuery.trim().toLowerCase()
-
-  const extractSection = (content) => {
-    if (!q) return content
-    const paragraphs = content.split(/\n\n+/)
-    const out = []
-    for (let i = 0; i < paragraphs.length; i++) {
-      if (paragraphs[i].toLowerCase().includes(q)) {
-        if (i > 0 && out[out.length - 1] !== paragraphs[i - 1]) out.push(paragraphs[i - 1])
-        out.push(paragraphs[i])
-      }
-    }
-    return out.join('\n\n')
+      .finally(() => setPendingId(null))
   }
 
-  const filteredDocs = q
-    ? docs
-        .map(doc => ({ ...doc, _section: extractSection(doc.content) }))
-        .filter(doc => doc._section)
-    : docs
+  // Newest review opens by default — the tab should land on today, not on a list.
+  useEffect(() => { if (openId && !query) loadContent(openId) }, [openId, query])
+
+  const toggle = (id) => {
+    if (openId === id) { setOpenId(null); return }
+    setOpenId(id)
+    loadContent(id)
+  }
+
+  if (loading) return <div className="animate-spin w-8 h-8 border-4 border-neon-blue border-t-transparent rounded-full mt-10"></div>
 
   return (
     <div className="w-full max-w-4xl animate-signal flex flex-col gap-3">
@@ -717,31 +695,50 @@ function ReviewView() {
         <input
           type="text"
           value={searchQuery}
-          onChange={e => { setSearchQuery(e.target.value); setOpenIdx(0) }}
+          onChange={e => setSearchQuery(e.target.value)}
           placeholder="חיפוש מניה או נושא..."
           dir="rtl"
           className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 pr-10 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-neon-blue/50 transition-colors"
         />
         <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500 pointer-events-none" />
       </div>
-      {filteredDocs.length === 0 ? (
-        <div className="text-center text-gray-400 mt-10">{q ? `לא נמצאו תוצאות עבור "${searchQuery}"` : 'לא נמצאו קבצי סקירות (stock_recommendations_*.txt).'}</div>
-      ) : filteredDocs.map((doc, idx) => (
-        <div key={doc.id} className="glass-card rounded-xl overflow-hidden">
-          <button
-            className="w-full flex items-center justify-between px-6 py-4 text-right hover:bg-white/5 transition-colors"
-            onClick={() => setOpenIdx(openIdx === idx ? -1 : idx)}
-          >
-            <span className={`text-lg transition-transform duration-200 ${openIdx === idx ? 'rotate-90' : ''}`}>›</span>
-            <h2 className="text-base font-bold text-neon-blue" dir="rtl">סקירה יומית — {doc.date}</h2>
-          </button>
-          {(q || openIdx === idx) && (
-            <div className="px-6 pb-6 border-t border-white/5 mt-0">
-              <div className="review-md mt-4"><ReactMarkdown>{q ? doc._section : doc.content}</ReactMarkdown></div>
-            </div>
-          )}
-        </div>
-      ))}
+      {query && docs.length > 0 && (
+        <p className="text-xs text-gray-500 text-right" dir="rtl">{docs.length} סקירות מכילות "{query}"</p>
+      )}
+      {docs.length === 0 ? (
+        <div className="text-center text-gray-400 mt-10">{query ? `לא נמצאו תוצאות עבור "${searchQuery}"` : 'לא נמצאו קבצי סקירות (stock_recommendations_*.txt).'}</div>
+      ) : docs.map(doc => {
+        const isOpen = !!query || openId === doc.id
+        const body = query ? doc.section : contents[doc.id]
+        return (
+          <div key={doc.id} className="glass-card rounded-xl overflow-hidden">
+            <button
+              className="w-full flex items-center justify-between gap-4 px-6 py-4 text-right hover:bg-white/5 transition-colors"
+              onClick={() => toggle(doc.id)}
+            >
+              <span className={`text-lg shrink-0 transition-transform duration-200 ${isOpen ? 'rotate-90' : ''}`}>›</span>
+              <div className="flex-1 min-w-0" dir="rtl">
+                <div className="flex items-center gap-2 justify-start">
+                  <h2 className="text-base font-bold text-neon-blue">סקירה יומית — {doc.date}</h2>
+                  {doc.session && (
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-gray-400 shrink-0">{doc.session}</span>
+                  )}
+                </div>
+                {doc.preview && !isOpen && (
+                  <p className="text-xs text-gray-500 mt-1 truncate">{doc.preview}</p>
+                )}
+              </div>
+            </button>
+            {isOpen && (
+              <div className="px-6 pb-6 border-t border-white/5 mt-0">
+                {body
+                  ? <div className="review-md mt-4"><ReactMarkdown>{body}</ReactMarkdown></div>
+                  : <div className="animate-spin w-6 h-6 border-2 border-neon-blue border-t-transparent rounded-full mt-4 mx-auto"></div>}
+              </div>
+            )}
+          </div>
+        )
+      })}
     </div>
   )
 }
@@ -1021,6 +1018,19 @@ function MacroScoreCard({ ind }) {
 
 const REFRESH_SECS = 300 // 5 minutes
 
+// Shared "data freshness" label for scanner tabs — when the market is closed
+// (weekend/holiday) the backend now serves the last trading day's close from
+// a disk cache instead of an empty result, so this tells the user what
+// they're looking at instead of leaving the panel blank with no context.
+function fetchedAtLabel(fetchedAt) {
+  if (!fetchedAt) return null
+  const d = new Date(fetchedAt)
+  const isToday = d.toDateString() === new Date().toDateString()
+  const timeStr = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  const dateStr = isToday ? timeStr : `${d.toLocaleDateString()} ${timeStr}`
+  return { isToday, dateStr }
+}
+
 function computeScore(row) {
   let s = 0
   if (row.verdict === 'VOL BREAKOUT') s += 4
@@ -1249,11 +1259,12 @@ function VolumeLeadersView() {
           return (
             <div className="grid grid-cols-4 sm:grid-cols-6 lg:grid-cols-12 gap-1 mb-4 text-xs font-mono">
               {entries.map(([sym, pct]) => (
-                <div key={sym} className={`rounded px-1.5 py-1 text-center ${heatCls(pct)}`}
-                     title={`${SECTOR_NAMES[sym] || sym} — שינוי יומי, הקשר שוק בלבד`}>
+                <a key={sym} href={`https://finance.yahoo.com/quote/${sym}`} target="_blank" rel="noopener noreferrer"
+                   className={`rounded px-1.5 py-1 text-center block hover:ring-1 hover:ring-white/40 transition ${heatCls(pct)}`}
+                   title={`${SECTOR_NAMES[sym] || sym} — שינוי יומי, הקשר שוק בלבד`}>
                   <div className="font-bold">{sym}</div>
                   <div>{fmtChg(pct)}</div>
-                </div>
+                </a>
               ))}
             </div>
           )
@@ -1691,6 +1702,7 @@ function ReversionView() {
   const [loading, setLoading] = useState(true)
   const [error, setError]     = useState(null)
   const [lastUpdate, setLastUpdate] = useState(null)
+  const [fetchedAt, setFetchedAt] = useState(null)
 
   const fetchData = useCallback((force = false) => {
     setLoading(true)
@@ -1699,6 +1711,7 @@ function ReversionView() {
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json() })
       .then(d => {
         setRows(d.results ?? [])
+        setFetchedAt(d.fetched_at || null)
         setLastUpdate(new Date())
         setLoading(false)
       })
@@ -1725,6 +1738,14 @@ function ReversionView() {
           <p className="text-gray-400 text-sm mt-1">Yahoo day_losers · נפלו ≥5% · פתח TV על OVERSOLD בלבד</p>
         </div>
         <div className="flex items-center gap-3">
+          {fetchedAt && (() => {
+            const f = fetchedAtLabel(fetchedAt)
+            return f && !f.isToday && (
+              <span className="text-xs text-yellow-500 font-mono">
+                Data from {f.dateStr} ⚠ market closed
+              </span>
+            )
+          })()}
           {lastUpdate && (
             <span className="text-xs text-gray-600 font-mono">
               {lastUpdate.toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' })}
@@ -1876,13 +1897,14 @@ function GainersView() {
   const [loading, setLoading]     = useState(true)
   const [error, setError]         = useState(null)
   const [lastUpdate, setLastUpdate] = useState(null)
+  const [fetchedAt, setFetchedAt] = useState(null)
 
   const fetchData = useCallback((force = false) => {
     setLoading(true)
     setError(null)
     fetch(`/api/gainers${force ? '?force=true' : ''}`)
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json() })
-      .then(d => { setRows(d.results ?? []); setLastUpdate(new Date()); setLoading(false) })
+      .then(d => { setRows(d.results ?? []); setFetchedAt(d.fetched_at || null); setLastUpdate(new Date()); setLoading(false) })
       .catch(e => { setError(e.message); setLoading(false) })
   }, [])
 
@@ -1913,6 +1935,14 @@ function GainersView() {
           </p>
         </div>
         <div className="flex items-center gap-3">
+          {fetchedAt && (() => {
+            const f = fetchedAtLabel(fetchedAt)
+            return f && !f.isToday && (
+              <span className="text-xs text-yellow-500 font-mono">
+                Data from {f.dateStr} ⚠ market closed
+              </span>
+            )
+          })()}
           {lastUpdate && (
             <span className="text-xs text-gray-600 font-mono">
               {lastUpdate.toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' })}
