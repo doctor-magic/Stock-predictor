@@ -13,6 +13,9 @@ falling_knife_results.csv
 wedge_cache.json
 fred_cache.json
 macro_state.json
+volume_leaders_cache.json
+reversion_cache.json
+gainers_cache.json
 
 # Python / OS junk
 __pycache__/

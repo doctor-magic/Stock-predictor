@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException, Request, Depends, status
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 import secrets
 from pydantic import BaseModel
-from typing import List, Dict
+from typing import List, Dict, Optional
 import logging
 import os
 import glob
@@ -34,7 +34,12 @@ import db as _db
 import db
 
 # ── Basic Auth ────────────────────────────────────────────────────────────────
-_security = HTTPBasic()
+# auto_error=False: FastAPI's default HTTPBasic dependency raises its own 401 with a
+# "WWW-Authenticate: Basic" header the instant a request has no Authorization header
+# at all — before _require_auth ever runs. That header is what makes the browser pop
+# its native login dialog. With auto_error=False, missing credentials come through as
+# None and _require_auth below handles them the same header-less way as a wrong password.
+_security = HTTPBasic(auto_error=False)
 
 def _load_basic_auth_users() -> dict[str, str]:
     raw = os.getenv("BASIC_AUTH_USERS", "").strip()
@@ -55,7 +60,7 @@ if _ENABLE_AUTH and not _BASIC_AUTH_USERS:
           "all API requests will get 503 until api_data.env is fixed.",
           file=_sys.stderr, flush=True)
 
-def _require_auth(credentials: HTTPBasicCredentials = Depends(_security)) -> str:
+def _require_auth(credentials: Optional[HTTPBasicCredentials] = Depends(_security)) -> str:
     if not _ENABLE_AUTH:
         return "auth_disabled"
     if not _BASIC_AUTH_USERS:
@@ -66,12 +71,19 @@ def _require_auth(credentials: HTTPBasicCredentials = Depends(_security)) -> str
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Auth enabled but BASIC_AUTH_USERS is not configured.",
         )
+    if credentials is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing credentials",
+        )
     correct_password = _BASIC_AUTH_USERS.get(credentials.username)
     if correct_password is None or not secrets.compare_digest(credentials.password.encode('utf-8'), correct_password.encode('utf-8')):
+        # No "WWW-Authenticate: Basic" header on purpose — that header is what makes
+        # browsers pop the native credentials dialog on ANY 401 (including fetch/XHR
+        # calls from our own custom login screen), not just top-level navigation.
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid username or password",
-            headers={"WWW-Authenticate": "Basic"},
         )
     return credentials.username
 
