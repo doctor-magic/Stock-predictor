@@ -209,6 +209,7 @@ Single predict | Scanner (with ALMOST BUY) | Daily report | FRED dashboard | Mac
 - Cache: `_reversion_cache`, TTL = 900s (15 min), `?force=true` to bypass
 - Endpoint: `GET /api/reversion-leaders`
 - Backend: `api.py` (endpoint + globals `_reversion_cache`, `_REVERSION_TTL`); helpers in `scanners.py`; logging via `db.setup_log_event()`
+- **Funnel diagnostics (added Jul 29 2026):** every non-cached run prints one `[reversion-funnel]` JSON line (quotes → screener_pass → ml_na/ml_buy/rsi_none/oversold/vwap_none/below_vwap → deep_buy/potential_bounce/fk_downgrade/logged). Purpose: make "0 setup_log rows = genuinely rare vs broken pipeline" decidable per sub-condition. Log-only — NO DB writes, NO verdict changes. Read without sudo (user is in `adm`): `journalctl -u stock-app.service | grep reversion-funnel`
 
 ### Verdict Tiers
 - **DEEP BUY**: ML verdict == BUY AND RSI < 35 AND vwap_gap_pct < -2%

@@ -1422,7 +1422,16 @@ def get_reversion_leaders(min_market_cap: int = 500_000_000, force: bool = False
         and q.get("regularMarketChangePercent", 0) <= -5.0
     ][:25]
 
+    # Funnel diagnostics (added Jul 29 2026): reversion_hunter had 0 setup_log
+    # rows in 48 days — this one journal line makes "genuinely rare vs broken
+    # pipeline" decidable per sub-condition, without touching verdict logic.
+    _funnel = {"quotes": len(quotes), "screener_pass": len(filtered),
+               "ml_na": 0, "ml_buy": 0, "rsi_none": 0, "oversold": 0,
+               "vwap_none": 0, "below_vwap": 0, "deep_buy": 0,
+               "potential_bounce": 0, "fk_downgrade": 0, "logged": 0}
+
     if not filtered:
+        print(f"[reversion-funnel] {_json.dumps(_funnel)}")
         return _reversion_cache["data"] or {"results": [], "market_context": scanners.get_market_context(), "fetched_at": ""}
 
     sp500_map  = {r["symbol"]: r for r in db.get_latest_scan("sp500")}
@@ -1496,6 +1505,13 @@ def get_reversion_leaders(min_market_cap: int = 500_000_000, force: bool = False
         below_vwap  = vwap_gap_pct is not None and vwap_gap_pct < -2.0
         is_buy      = ml_signal == "BUY"
 
+        _funnel["ml_na"]      += ml_signal == "N/A"
+        _funnel["ml_buy"]     += is_buy
+        _funnel["rsi_none"]   += rsi is None
+        _funnel["oversold"]   += is_oversold
+        _funnel["vwap_none"]  += vwap_gap_pct is None
+        _funnel["below_vwap"] += below_vwap
+
         if is_buy and is_oversold and below_vwap:
             reversion_verdict = "DEEP BUY"
         elif is_buy and (is_oversold or below_vwap):
@@ -1505,8 +1521,12 @@ def get_reversion_leaders(min_market_cap: int = 500_000_000, force: bool = False
         else:
             reversion_verdict = "WATCH"
 
+        _funnel["deep_buy"]         += reversion_verdict == "DEEP BUY"
+        _funnel["potential_bounce"] += reversion_verdict == "POTENTIAL BOUNCE"
+
         # Downgrade to FALLING KNIFE if no base detected (explicit False only)
         if reversion_verdict != "WATCH" and intra.get("base_forming") is False:
+            _funnel["fk_downgrade"] += reversion_verdict in ("DEEP BUY", "POTENTIAL BOUNCE")
             reversion_verdict = "FALLING KNIFE"
             # FK outcome logging (restored Jul 5 2026 — call site lost in the Jun 7
             # refactor; fk_events was frozen since Jun 3). Detection window
@@ -1540,6 +1560,7 @@ def get_reversion_leaders(min_market_cap: int = 500_000_000, force: bool = False
         })
 
         if reversion_verdict in ("DEEP BUY", "POTENTIAL BOUNCE"):
+            _funnel["logged"] += 1
             _mkt = scanners.get_market_context() or {}
             _db.setup_log_event("reversion_hunter", {
                 **results[-1],
@@ -1549,6 +1570,8 @@ def get_reversion_leaders(min_market_cap: int = 500_000_000, force: bool = False
                 "lev_sent_semis": (_mkt.get("lev") or {}).get("semis"),
                 "lev_sent_qqq":   (_mkt.get("lev") or {}).get("qqq"),
             })
+
+    print(f"[reversion-funnel] {_json.dumps(_funnel)}")
 
     _vord = {"DEEP BUY": 0, "POTENTIAL BOUNCE": 1, "OVERSOLD": 2, "FALLING KNIFE": 3, "WATCH": 4}
     results.sort(key=lambda x: (
