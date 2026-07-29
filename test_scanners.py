@@ -473,3 +473,34 @@ class TestWedgeCompressionThresholds(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestScreenerPayloadSuspect(unittest.TestCase):
+    """screener_payload_suspect — the pure leg of the plausibility guard
+    (Jul 13 2026 incident: 6 day_losers rows returned 24s after 25 rows).
+    Session scoping lives in the api.py caller; here prev_n=None means
+    "no earlier payload this session"."""
+
+    def test_incident_replay_trips(self):
+        # The real Jul 13 numbers: 6 vs 25 within one session → suspect
+        self.assertTrue(scanners.screener_payload_suspect(25, 6))
+
+    def test_full_payload_after_full_payload_passes(self):
+        self.assertFalse(scanners.screener_payload_suspect(50, 50))
+
+    def test_boundary_is_strict(self):
+        # Exactly ratio×prev is NOT suspect (strict <) — 25*0.5 = 12.5, 13 passes
+        self.assertFalse(scanners.screener_payload_suspect(25, 13))
+        self.assertTrue(scanners.screener_payload_suspect(25, 12))
+
+    def test_no_prior_payload_never_trips(self):
+        # First fetch of a session (or after restart) sets the baseline
+        self.assertFalse(scanners.screener_payload_suspect(None, 6))
+        self.assertFalse(scanners.screener_payload_suspect(0, 6))
+
+    def test_growing_payload_never_trips(self):
+        self.assertFalse(scanners.screener_payload_suspect(6, 50))
+
+    def test_custom_ratio(self):
+        self.assertTrue(scanners.screener_payload_suspect(50, 10, ratio=0.25))
+        self.assertFalse(scanners.screener_payload_suspect(50, 13, ratio=0.25))

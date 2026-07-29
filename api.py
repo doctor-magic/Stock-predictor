@@ -952,6 +952,39 @@ _VOLUME_LEADERS_DISK_CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(_
 _load_json_disk_cache(_VOLUME_LEADERS_DISK_CACHE_PATH, _volume_leaders_cache)
 _BETA_HIGH_THRESHOLD = 1.5  # 6-month rolling beta above this → suppress ML BUY
 
+# ── Screener plausibility guard (Jul 13 2026 incident; shipped Jul 29 2026) ──
+# A partial Yahoo payload (6 rows vs 25 within 24s) must not overwrite a rich
+# cache. Raw-quote counts are compared within the SAME trading session
+# (market_calendar.us_trading_date); on a suspect payload the endpoint serves
+# its existing cache DISPLAY-ONLY — processing is skipped, so no setup_log
+# writes happen from stale data. 3 consecutive trips = not a glitch → Telegram
+# alert (possible Yahoo API change / rate limit).
+_GUARD_RATIO = 0.5
+_guard_state: dict = {}  # endpoint → {"session": date, "n": int, "streak": int}
+
+def _screener_guard(endpoint: str, new_n: int, cache: dict) -> bool:
+    """True → caller should serve its stale cache instead of this payload."""
+    from market_calendar import us_trading_date
+    session = us_trading_date()
+    st = _guard_state.get(endpoint)
+    same = bool(st) and st["session"] == session
+    if same and scanners.screener_payload_suspect(st["n"], new_n, _GUARD_RATIO):
+        st["streak"] += 1
+        print(f"[screener-guard] {endpoint}: {new_n} raw rows vs {st['n']} earlier "
+              f"this session — suspect partial payload (streak {st['streak']})")
+        if st["streak"] == 3:
+            _send_telegram_alert(
+                f"⚠️ screener-guard: {endpoint} returned thin payloads 3× in a row "
+                f"({new_n} rows vs {st['n']} this session) — possible Yahoo API "
+                f"change or rate limit, serving stale cache")
+        # Same-session state ⇒ the cache was refreshed this session, safe to
+        # serve. No cache at all ⇒ thin truth beats nothing, let it through.
+        return bool(cache.get("data"))
+    _guard_state[endpoint] = {"session": session,
+                              "n": max(new_n, st["n"]) if same else new_n,
+                              "streak": 0}
+    return False
+
 # ── Momentum gates (restored Jul 5 2026 — lost in the Jun 7 refactor) ─────────
 _HOD_GAP_MAX = 0.35           # HOD gap / ATR-14 gate — STARTING POINT, calibrate at N≥50
 _SLOT_SEC    = 270            # RVOL history slot guard (blocks F5 spam from faking a slope)
@@ -980,6 +1013,9 @@ def get_volume_leaders(min_market_cap: int = 200_000_000, force: bool = False):
         if _volume_leaders_cache["data"]:
             return _volume_leaders_cache["data"]  # serve stale cache rather than failing
         raise HTTPException(status_code=502, detail=f"Failed to fetch volume leaders: {e}")
+
+    if _screener_guard("volume_leaders", len(quotes), _volume_leaders_cache):
+        return _volume_leaders_cache["data"]
 
     _24h_ago = now - 86400
     filtered = [
@@ -1413,6 +1449,9 @@ def get_reversion_leaders(min_market_cap: int = 500_000_000, force: bool = False
             return _reversion_cache["data"]
         raise HTTPException(status_code=502, detail=f"Failed to fetch day losers: {e}")
 
+    if _screener_guard("reversion_hunter", len(quotes), _reversion_cache):
+        return _reversion_cache["data"]
+
     _24h_ago = now - 86400
     filtered = [
         q for q in quotes
@@ -1645,6 +1684,9 @@ def get_gainers(force: bool = False):
         if _gainers_cache["data"]:
             return _gainers_cache["data"]
         raise HTTPException(status_code=502, detail=f"Failed to fetch day gainers: {e}")
+
+    if _screener_guard("gainers", len(quotes), _gainers_cache):
+        return _gainers_cache["data"]
 
     _24h_ago = now - 86400
     filtered = [

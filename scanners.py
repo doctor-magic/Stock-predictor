@@ -622,3 +622,17 @@ def get_vaccel(sym: str) -> float | None:
         return vaccel
     except Exception:
         return None
+
+
+def screener_payload_suspect(prev_n: "int | None", new_n: int, ratio: float = 0.5) -> bool:
+    """Plausibility check for a raw Yahoo screener payload (added Jul 29 2026).
+
+    True when the payload is implausibly thin versus an earlier payload the
+    caller saw in the SAME trading session — the Jul 13 2026 incident returned
+    6 day_losers rows 24 seconds after returning 25. A genuinely thin market
+    opens thin and stays thin; a partial payload flaps within the session.
+    Session scoping is the CALLER's job (pass prev_n=None across sessions).
+    """
+    if not prev_n:
+        return False
+    return new_n < prev_n * ratio

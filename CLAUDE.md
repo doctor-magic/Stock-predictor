@@ -372,6 +372,13 @@ Leveraged-ETF flow as market sentiment: **dollar-volume** ratio short/long — `
 - **Gainers**: logs all verdicts EXCEPT WATCH — includes BREAKOUT CONFIRMED, DEVELOPING, FADE RISK, OVERHEAD WALL
 - Narrowing the logged set causes selection bias in `/api/setup-stats` — you'd only measure BUY outcomes and never see if gates blocked winners
 
+### Screener plausibility guard (Jul 29 2026 — protects all 3 screener endpoints)
+- `_screener_guard(endpoint, len(quotes), cache)` in api.py runs right after each Yahoo screener fetch (volume_leaders / reversion_hunter / gainers); pure decision leg = `scanners.screener_payload_suspect()` (unit-tested)
+- Trips when the raw quote count < 50% (`_GUARD_RATIO`) of an earlier payload from the SAME trading session (`market_calendar.us_trading_date`) — the Jul 13 2026 flap: 6 day_losers rows 24s after 25. A genuinely thin market opens thin and stays thin; a partial payload flaps intra-session
+- On trip: serve existing cache DISPLAY-ONLY via early return → zero processing, zero setup_log writes from stale data; rich baseline kept; journal line `[screener-guard]`. No same-session cache → the thin payload passes through (thin truth beats nothing)
+- 3 consecutive trips → Telegram alert (possible Yahoo API change / rate limit)
+- Baseline = max raw count seen this session; resets on new session or service restart — do NOT persist it to disk (a restart mid-glitch re-baselining thin is accepted best-effort)
+
 ### setup_log is FORWARD-ONLY (hard rule, Jul 10 2026 — do not violate)
 - **Never backfill feature values into rows older than the feature's deploy date** — no matter how plausible the historical reconstruction. A feature not captured live at signal time does not exist for that row.
 - New columns: idempotent `ALTER TABLE ADD COLUMN` with NULL default (the dist_from_sma50 pattern) is the ONLY sanctioned migration. Analyses filter `WHERE <col> IS NOT NULL`.
