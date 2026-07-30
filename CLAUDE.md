@@ -432,7 +432,7 @@ Leveraged-ETF flow as market sentiment: **dollar-volume** ratio short/long — `
 
 ## Crons (server)
 ⚠️ **Times are SERVER-LOCAL = Asia/Jerusalem, NOT UTC** (old labels here said "UTC" — wrong; crond uses the system TZ. Proof, Jul 12 2026: the `0 3 * * *` resolver line logs `start ...T00:00:01+00:00` = 03:00 IL). ET-sensitive behavior is guarded inside the scripts (`market_calendar`), not by cron times.
-- 03:00 daily → `resolve_setups.py` → setup_log outcome resolver, 50 rows/night (deliberately NOT holiday-guarded — resolves on real historical bars)
+- 03:00 daily → `resolve_setups.py` → setup_log outcome resolver, 50 rows/night (deliberately NOT holiday-guarded — resolves on real historical bars). Since Jul 30 2026 also captures **forward-SPY** at resolution: ONE batch SPY download per run, per-row returns aligned to the stock's own bar dates → `setup_log.spy_ret_1d/spy_ret_5d` (percent, same units as ret_1d/ret_5d). SPY download failure → whole batch defers one night (a resolved row is written once; no permanent NULLs from transient failures). Same pattern in `live_tracker.py` `resolve_outcomes()` → `outcomes.spy_fwd_ret` (fraction, same units as fwd_ret; missing SPY → row skipped and retried). These are OUTCOME columns written at resolution — the forward-only rule (signal-time features) is untouched. Rows resolved before Jul 30 keep NULL spy (retro-computable in analysis if ever needed — it's an outcome, not a feature).
 - 05:00 daily → `pre_scan.py` → wedge scan → Telegram
 - 09:30 daily → `watchdog.py` → read-only health digest → Telegram (`# WATCHDOG-DAILY`; alert-only, never fixes; added Jul 12 2026)
 - 14:45 Mon–Fri → `fetch_raw_messages.py`

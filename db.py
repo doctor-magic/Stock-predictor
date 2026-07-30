@@ -239,6 +239,12 @@ def setup_db_init():
         # the display layer. Pre-registered N>=50 question keys off lev_sent_semis > 2.
         "ALTER TABLE setup_log ADD COLUMN lev_sent_semis REAL",
         "ALTER TABLE setup_log ADD COLUMN lev_sent_qqq REAL",
+        # Forward-SPY outcome columns (Jul 30 2026): market-adjusted basis captured
+        # live at resolution, aligned to the STOCK's own bar dates over the same
+        # window as ret_1d/ret_5d. Outcome data written at resolution time — the
+        # forward-only rule (signal-time features) is untouched. Units: percent.
+        "ALTER TABLE setup_log ADD COLUMN spy_ret_1d REAL",
+        "ALTER TABLE setup_log ADD COLUMN spy_ret_5d REAL",
     ):
         try:
             con.execute(_mig)
@@ -380,6 +386,29 @@ def setup_resolve(max_rows: int = 50):
             "WHERE resolved=0 AND date <= ? ORDER BY date LIMIT ?",
             (cutoff, max_rows)
         ).fetchall()
+        # ONE SPY download spanning the whole batch (Jul 30 2026) — per-row SPY
+        # returns are then indexed by each stock's own bar dates, so the SPY
+        # window matches ret_1d/ret_5d exactly (holidays/halts align naturally).
+        spy_closes = None
+        if rows:
+            try:
+                d_min = date.fromisoformat(rows[0][2])   # ORDER BY date → earliest first
+                d_max = date.fromisoformat(rows[-1][2])
+                spy_hist = _yf.download("SPY", start=str(d_min),
+                                        end=str(d_max + timedelta(days=16)),
+                                        interval="1d", auto_adjust=True, progress=False)
+                if not spy_hist.empty:
+                    sc = spy_hist["Close"]
+                    if hasattr(sc, "columns"):  # yfinance 2.x MultiIndex frame
+                        sc = sc.iloc[:, 0]
+                    spy_closes = {i.date(): float(v) for i, v in sc.dropna().items()}
+            except Exception as e:
+                print(f"[setup_resolve] SPY batch download failed: {e}", flush=True)
+        if rows and not spy_closes:
+            # Defer the whole batch one night rather than resolving rows with a
+            # permanent NULL spy basis — resolved rows are written exactly once.
+            print("[setup_resolve] no SPY data — deferring batch to next run", flush=True)
+            rows = []
         attempted = resolved_n = failed = stale_n = 0
         for row_id, sym, date_str, entry_price in rows:
             try:
@@ -408,12 +437,22 @@ def setup_resolve(max_rows: int = 50):
                 c5 = float(closes[5]) if len(closes) > 5 else None
                 r1 = round((c1 / base - 1) * 100, 2) if c1 else None
                 r5 = round((c5 / base - 1) * 100, 2) if c5 else None
+                # SPY over the SAME bar dates as the stock's window (see batch
+                # download above). SPY trades every NYSE session, so a missing
+                # key here is a genuine data hole — resolve anyway, NULL spy.
+                bar_dates = [i.date() for i in hist.index]
+                spy0 = spy_closes.get(bar_dates[0])
+                spy1 = spy_closes.get(bar_dates[1]) if len(bar_dates) > 1 else None
+                spy5 = spy_closes.get(bar_dates[5]) if len(bar_dates) > 5 else None
+                spy_r1 = round((spy1 / spy0 - 1) * 100, 2) if spy0 and spy1 else None
+                spy_r5 = round((spy5 / spy0 - 1) * 100, 2) if spy0 and spy5 else None
                 # 30+ days old with data but still no 6th bar (halted mid-window
                 # etc.) — tombstone rather than retry forever; keep partial c1.
                 is_res = 1 if c5 is not None else (-1 if is_stale else 0)
                 con.execute(
-                    "UPDATE setup_log SET close_1d=?, close_5d=?, ret_1d=?, ret_5d=?, resolved=? WHERE id=?",
-                    (c1, c5, r1, r5, is_res, row_id)
+                    "UPDATE setup_log SET close_1d=?, close_5d=?, ret_1d=?, ret_5d=?, "
+                    "spy_ret_1d=?, spy_ret_5d=?, resolved=? WHERE id=?",
+                    (c1, c5, r1, r5, spy_r1, spy_r5, is_res, row_id)
                 )
                 con.commit()
                 if is_res == 1:

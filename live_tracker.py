@@ -88,6 +88,14 @@ def init_db(conn: sqlite3.Connection) -> None:
             conn.commit()
         except Exception:
             pass  # column already exists
+    # Forward-SPY over the SAME holding window (Jul 30 2026 — TODO from the
+    # Jul 24 sitting: entry_spy_ret5d is trailing-at-entry only, so the
+    # market-adjusted outcome basis never existed live for this track).
+    try:
+        conn.execute("ALTER TABLE outcomes ADD COLUMN spy_fwd_ret REAL")
+        conn.commit()
+    except Exception:
+        pass  # column already exists
     conn.commit()
 
 
@@ -382,6 +390,14 @@ def resolve_outcomes(conn: sqlite3.Connection) -> list[dict]:
     ).fetchall()
 
     resolved: list[dict] = []
+    # Forward-SPY closes memoized per run — the whole batch shares a handful of
+    # entry/exit dates, no reason to re-download SPY per row.
+    spy_memo: dict = {}
+    def _spy_close_on(d: date) -> float | None:
+        if d not in spy_memo:
+            spy_memo[d] = fetch_close_on("SPY", d)
+        return spy_memo[d]
+
     for sig_id, sym, date_str, entry_price in pending:
         logged_date = date.fromisoformat(date_str)
         if trading_days_elapsed(logged_date) < FORWARD_DAYS:
@@ -400,13 +416,23 @@ def resolve_outcomes(conn: sqlite3.Connection) -> list[dict]:
         if exit_price is None or entry_adj is None:
             continue
 
+        # Forward-SPY over the SAME window, same adjusted basis (Jul 30 2026).
+        # Missing SPY data → skip the row this run and retry next run: an
+        # outcomes row is written exactly once, so resolving without SPY would
+        # leave a permanent NULL on a merely-transient fetch failure.
+        spy_entry = _spy_close_on(logged_date)
+        spy_exit  = _spy_close_on(exit_date)
+        if spy_entry is None or spy_exit is None:
+            continue
+        spy_fwd_ret = (spy_exit - spy_entry) / spy_entry
+
         fwd_ret = (exit_price - entry_adj) / entry_adj
         hit     = 1 if fwd_ret >= HIT_THRESHOLD else 0
 
         conn.execute(
-            "INSERT OR REPLACE INTO outcomes (signal_id, date_resolved, exit_price, fwd_ret, hit)"
-            " VALUES (?,?,?,?,?)",
-            (sig_id, str(today), exit_price, fwd_ret, hit),
+            "INSERT OR REPLACE INTO outcomes (signal_id, date_resolved, exit_price, fwd_ret, hit, spy_fwd_ret)"
+            " VALUES (?,?,?,?,?,?)",
+            (sig_id, str(today), exit_price, fwd_ret, hit, spy_fwd_ret),
         )
         conn.execute("UPDATE signals SET resolved=1 WHERE id=?", (sig_id,))
         resolved.append({"sym": sym, "fwd_ret": fwd_ret * 100, "hit": hit})
