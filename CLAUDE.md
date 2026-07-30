@@ -45,7 +45,7 @@ GET /api/volume-leaders?force=true   # or reversion-leaders / gainers
 cd /home/elimaoz99/stock_predictor && nohup venv/bin/python3 -u pre_scan.py >> pre_scan.log 2>&1 &
 ```
 
-**Key endpoints:** `/api/volume-leaders` · `/api/reversion-leaders` · `/api/gainers` · `/api/setup-stats` · `/api/falling-knife-stats` · `/api/wedge-scan`
+**Key endpoints:** `/api/volume-leaders` · `/api/reversion-leaders` · `/api/gainers` · `/api/setup-stats` · `/api/falling-knife-stats` · `/api/wedge-scan` · `/api/recommendations` (metadata + preview line, `?q=` server-side search) · `/api/recommendations/{report_id}` (full text of one review — regex + basename guards against path traversal; the split landed Jul 28 2026, it replaced an 824KB all-reviews payload with 34KB)
 
 ---
 
@@ -81,6 +81,7 @@ cd /home/elimaoz99/stock_predictor && nohup venv/bin/python3 -u pre_scan.py >> p
 | `fred_cache.json` | server | FRED dashboard disk cache (survives restarts) | `api.py` | `api.py` (startup) |
 | `wedge_cache.json` | server | Wedge scan results from pre_scan.py | `pre_scan.py` | `/api/wedge-scan` |
 | `macro_state.json` | server | VIX state machine persistence | `api.py` | `api.py` |
+| `volume_leaders_cache.json`, `reversion_cache.json`, `gainers_cache.json` | server | Disk persistence for the 3 scanner payload caches (added Jul 28 2026) — `_load_json_disk_cache()` at module import / `_save_json_disk_cache()` on every successful payload, same pattern as the FRED disk cache. A restart no longer serves an empty cache, so the stale-cache fallback paths (incl. the screener plausibility guard) survive reboots. Both helpers try/except-silent by design; gitignored | `api.py` | `api.py` (startup) |
 
 ---
 
@@ -176,9 +177,9 @@ e2-standard-2 → e2-medium via Console Stop/Edit/Start. Service auto-started (f
 FastAPI (`api.py`) + React (`frontend/src/App.jsx`, built with Vite → `frontend/dist/`)
 
 ## Architecture (updated Jun 7 2026)
-- `api.py` — **1387 lines** — FastAPI endpoints + macro/VIX logic only. Thin routing layer. Imports from `scanners` and `db`.
-- `scanners.py` — **520 lines (new Jun 7)** — All scanner helpers: `compute_verdict`, `compute_momentum`, `gainers_verdict`, `detect_falling_wedge`, `classify_regime`, `get_tod_rvol_cached`, `get_intraday_signals`, `get_market_context`, `get_overhead_supply`, `get_vaccel` + their module-level caches. No imports from api.py.
-- `db.py` — **316 lines** — SQLite logic: scan cache (original) + FK log functions + setup log functions. `fk_db_init`/`setup_db_init` run at module load. WAL mode on the two high-write logs ONLY (`setup_log.db`, `falling_knife_log.db`); the read-mostly cache DBs (`scanner_cache.db`, `intraday_cache.db`) do NOT use WAL.
+- `api.py` — **1820 lines** (line counts refreshed Jul 30 2026) — FastAPI endpoints + macro/VIX logic only. Thin routing layer. Imports from `scanners` and `db`.
+- `scanners.py` — **638 lines (new Jun 7)** — All scanner helpers: `compute_verdict`, `compute_momentum`, `gainers_verdict`, `detect_falling_wedge`, `classify_regime`, `get_tod_rvol_cached`, `get_intraday_signals`, `get_market_context`, `get_overhead_supply`, `get_vaccel`, `screener_payload_suspect` + their module-level caches. No imports from api.py.
+- `db.py` — **504 lines** — SQLite logic: scan cache (original) + FK log functions + setup log functions. `fk_db_init`/`setup_db_init` run at module load. WAL mode on the two high-write logs ONLY (`setup_log.db`, `falling_knife_log.db`); the read-mostly cache DBs (`scanner_cache.db`, `intraday_cache.db`) do NOT use WAL.
 - `core_logic.py` — ML model (HistGradientBoostingClassifier, 20 features), CONFIDENCE_THRESHOLD=0.70
 - `models.py` — Pydantic models
 - `pre_scan.py` — overnight cron (05:00 server/IL time): wedge scan + Telegram alert (in git since Jul 3 2026 — 342 lines, pulled from server; repo == server)
@@ -414,6 +415,13 @@ Leveraged-ETF flow as market sentiment: **dollar-volume** ratio short/long — `
 - market_id whitelist (`_MARKET_ID_WHITELIST` in api.py → 400) + top_n/min_confidence clamps (pydantic `Field` in models.py → 422) — restored Jul 5 2026
 - Basic Auth fails CLOSED (Jul 3 2026, `4667b20`): ENABLE_AUTH=true with empty BASIC_AUTH_USERS → 503 on every request + startup stderr warning. An env-load failure must never silently open the API.
 
+### Custom login gate (Jul 29 2026, `8c64d41`) — replaces the browser's native Basic-Auth dialog
+- `frontend/src/lib/auth.js` — patches `window.fetch` ONCE at import so every existing `fetch('/api/...')` call picks up the stored Authorization header with no call-site changes. Credentials in **sessionStorage only** (cleared when the tab closes) — never localStorage, never in a URL or log line. A 401 on any `/api/` call while credentials are stored → clears them and kicks back to the login screen. `verifyCredentials()` deliberately bypasses the patched fetch so a wrong password at the login screen cannot trip the auth-lost path.
+- `frontend/src/LoginGate.jsx` — wraps `<App/>` in `main.jsx`; revalidates stored credentials against `/api/health` on mount. Includes a lead-capture form (formsubmit.co) for blocked visitors.
+- `api.py` — **`HTTPBasic(auto_error=False)` + `Optional[HTTPBasicCredentials]` + the `WWW-Authenticate: Basic` header REMOVED from the 401. All three are load-bearing:** FastAPI's default HTTPBasic raises its own 401 with that header before `_require_auth` ever runs, and that header is exactly what makes the browser pop its native dialog — including on fetch/XHR from our own login screen. Missing credentials now arrive as `None` and are handled identically to a wrong password.
+- **Do NOT "restore" the WWW-Authenticate header** — it would bring the native dialog back. Machine clients are unaffected (they send explicit headers: `live_tracker.py`, `warm_volume_cache.sh`), but any future client relying on the challenge header will not be prompted.
+- Auth still fails CLOSED — the ENABLE_AUTH/503 path above is untouched.
+
 ---
 
 ### FRED API
@@ -465,12 +473,19 @@ Everything is in sync: local `~/Desktop/Stock-predictor/` = server `/home/elimao
 **Previously committed (all in main):**
 - May–Jun 2026: Wedge Scan tab, SWING/Score columns, SPY/QQQ context, Earnings Calendar, Regime Classification, Premium Scan, Momentum Gates (HOD+RVOL), Beta Gate, Reversion Hunter (Tab 9), TradingView TV links, Power Hour Whale Alert, FRED disk cache, Reversion Hunter RVOL alert, Wedge Scan Touches column, Falling Knife Logger
 
+### Git state Jul 30 2026 — in sync, latest commit `e3cceff`
+local working tree == server == `origin/main` for api.py / scanners.py / db.py / live_tracker.py (md5-verified Jul 30). Jul 29–30 shipped, in order: `8c64d41` login gate (was deployed-not-committed from Jul 29 morning — gap closed), `26a9f50` reversion funnel diagnostics, `e373ae5` screener plausibility guard, `e3cceff` forward-SPY capture in both resolvers. Only `stock_predictor_handoff.txt` is intentionally left uncommitted as a working journal.
+
 ## Pending actions
-- **THE SITTING — Jul 24 2026 or later** (user on vacation Jul 19–23; moved from ~Jul 21). One sitting closes: locked beta-gate query decision (N≥50 REACHED Jul 12: 52 resolved-with-beta — **NO PEEKING before the sitting**), restoration H1/H2 (watch: only 22 resolved BREAKOUT CONFIRMED as of Jul 12 vs min n=15/bucket — thin buckets ⇒ defer, don't loosen), lev_sent bucket re-registration + label calibration (semis PRIMARY — retail agentic-bot confounder on the qqq pair), scanner-health threshold locking, payoff-ratio + CLUSTER-bootstrap addenda (resample trading DAYS, B=10k, seed=42, interpretive only). **CLOSED CONFIRMATORY FAMILY: only the shadow query, H1, H2, and lev buckets may drive code change** — everything else descriptive. Full spec in the handoff Jul 10/12 entries + memory.
-- **Code freeze until the sitting** — no new filters/gates/params; collection only.
+> **THE SITTING CLOSED Jul 24 2026** — outcomes: beta-gate status quo (no extension to `/api/scan`), H1/H2 deferred (thin buckets), lev boundary FROZEN at semis 0.37 (`lev_spec_frozen.json`) with the Stage-B outcome test deferred at N=4/50, scanner-health criterion deferred as mis-specified + watchdog check #6 shipped instead. **The code freeze is LIFTED**; the closed-confirmatory-family rule still stands (only the shadow query, H1, H2 and lev buckets may drive code change; everything else is descriptive and may only seed a NEW pre-registered question).
+- **Prediction-budget question (open, pre-register before acting — Jul 30 2026):** the `[reversion-funnel]` journal line shows `ml_na=17/25` — most day-losers sit outside the sp500/nasdaq100 caches and never get an ML opinion inside `ThreadPoolExecutor(max_workers=5, timeout=30)`, so `reversion_hunter` cannot produce rows. Collect ~1wk of funnel lines first, then decide between: raise the timeout, add a persistent per-symbol prediction cache with TTL (accumulates coverage across warm cycles — likely the strongest option), or accept "indexed losers only" as the tab's effective universe. **Changing the budget changes sample composition** — treat it as a new measurement regime like the Jul-26 warm fix, not an incidental tweak.
 - **Instrumented-gate calibration:** blocked_reasons/market_state/vix_state collection started Jul 6 2026 — calibrate HOD 0.35 etc. at the next N≥50 resolved instrumented rows (separate clock from the sitting)
 - **DEVELOPING breaker:** pre-registered rule armed (N≥20 AND mean<−5% → display demotion); n=11/mean −8.71% as of Jul 3
 - **After ~50 resolved signals per regime:** run per-regime precision analysis → Phase 2 regime filter
 - **Parked post-sitting candidates (pre-register before use):** overnight-gap covariate (log-only), MAE/MFE outcome columns at resolution
+- **H1/H2 re-run** once resolved BREAKOUT CONFIRMED passes n≥15 per bucket under the NEW post-Jul-26 sample composition (22 resolved as of Jul 29). Do NOT loosen bucket definitions.
+- **EXPLORATORY-ONLY, do not act:** BREAKOUT CONFIRMED shows negative median net ret_5d across all 21 resolved rows — needs its own pre-registered question first.
+- **Lev display labels** around semis 0.37 — unlocked at the sitting, display-only frontend change, not done.
 - **Step 3 of refactor (future):** move `get_volume_leaders`, `get_reversion_leaders`, `get_gainers` to `scanners.py` — completes the architecture split
 - **Phase 2 infra:** service still runs as User=root (all log DBs elimaoz99-owned since Jul 10); extend NYSE_HOLIDAYS for 2027; v_accel UX
+- **Housekeeping:** `frontend/dist/assets` on the server holds ~83 old JS bundles / 58MB — `deploy.sh` copies the full dist and never prunes. Harmless at 27% disk but unbounded. Also still open in GCP Console: disable VM Manager + Network Intelligence Center.
