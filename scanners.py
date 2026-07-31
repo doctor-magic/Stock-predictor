@@ -624,6 +624,24 @@ def get_vaccel(sym: str) -> float | None:
         return None
 
 
+def screener_quotes_malformed(quotes: list, min_valid_frac: float = 0.5) -> bool:
+    """True when a full-LENGTH screener payload is structurally hollow.
+
+    The row-count guard below cannot see this case: Yahoo returns its usual 50
+    objects, but the fields every downstream filter depends on arrive None/0, so
+    the filtered list collapses and a rich cache still gets overwritten. Checked
+    on RAW quotes, so it stays market-independent — a green day legitimately has
+    few stocks down 5%, but it never has 50 quotes missing their price.
+    """
+    if not quotes:
+        return False
+    valid = sum(
+        1 for q in quotes
+        if q.get("regularMarketPrice") and q.get("regularMarketVolume")
+    )
+    return valid < len(quotes) * min_valid_frac
+
+
 def screener_payload_suspect(prev_n: "int | None", new_n: int, ratio: float = 0.5) -> bool:
     """Plausibility check for a raw Yahoo screener payload (added Jul 29 2026).
 

@@ -962,12 +962,27 @@ _BETA_HIGH_THRESHOLD = 1.5  # 6-month rolling beta above this → suppress ML BU
 _GUARD_RATIO = 0.5
 _guard_state: dict = {}  # endpoint → {"session": date, "n": int, "streak": int}
 
-def _screener_guard(endpoint: str, new_n: int, cache: dict) -> bool:
+def _screener_guard(endpoint: str, quotes: list, cache: dict) -> bool:
     """True → caller should serve its stale cache instead of this payload."""
     from market_calendar import us_trading_date
+    new_n = len(quotes)
     session = us_trading_date()
     st = _guard_state.get(endpoint)
     same = bool(st) and st["session"] == session
+    # Leg 2 (Jul 31 2026): full-length but hollow payload — invisible to the
+    # row-count comparison below, same damage. Never re-baselines on a hollow
+    # payload, so one bad response cannot lower the bar for the next.
+    if scanners.screener_quotes_malformed(quotes):
+        print(f"[screener-guard] {endpoint}: {new_n} raw rows but critical fields "
+              f"missing on most — hollow payload")
+        if st:
+            st["streak"] += 1
+            if st["streak"] == 3:
+                _send_telegram_alert(
+                    f"⚠️ screener-guard: {endpoint} returned hollow payloads 3× in a row "
+                    f"(rows present, price/volume fields missing) — possible Yahoo API "
+                    f"change, serving stale cache")
+        return bool(cache.get("data"))
     if same and scanners.screener_payload_suspect(st["n"], new_n, _GUARD_RATIO):
         st["streak"] += 1
         print(f"[screener-guard] {endpoint}: {new_n} raw rows vs {st['n']} earlier "
@@ -1014,7 +1029,7 @@ def get_volume_leaders(min_market_cap: int = 200_000_000, force: bool = False):
             return _volume_leaders_cache["data"]  # serve stale cache rather than failing
         raise HTTPException(status_code=502, detail=f"Failed to fetch volume leaders: {e}")
 
-    if _screener_guard("volume_leaders", len(quotes), _volume_leaders_cache):
+    if _screener_guard("volume_leaders", quotes, _volume_leaders_cache):
         return _volume_leaders_cache["data"]
 
     _24h_ago = now - 86400
@@ -1449,7 +1464,7 @@ def get_reversion_leaders(min_market_cap: int = 500_000_000, force: bool = False
             return _reversion_cache["data"]
         raise HTTPException(status_code=502, detail=f"Failed to fetch day losers: {e}")
 
-    if _screener_guard("reversion_hunter", len(quotes), _reversion_cache):
+    if _screener_guard("reversion_hunter", quotes, _reversion_cache):
         return _reversion_cache["data"]
 
     _24h_ago = now - 86400
@@ -1468,6 +1483,10 @@ def get_reversion_leaders(min_market_cap: int = 500_000_000, force: bool = False
                "ml_na": 0, "ml_buy": 0, "rsi_none": 0, "oversold": 0,
                "vwap_none": 0, "below_vwap": 0, "deep_buy": 0,
                "potential_bounce": 0, "fk_downgrade": 0, "logged": 0}
+    # p(BUY) across the candidate set (Jul 31 2026) — settles "ceiling vs rejection":
+    # max_p_buy near 0.70 means setups are grazing the threshold; max_p_buy near 0.15
+    # means the model rejects beaten-down names outright and no threshold tweak helps.
+    _p_buys: list = []
 
     if not filtered:
         print(f"[reversion-funnel] {_json.dumps(_funnel)}")
@@ -1484,7 +1503,8 @@ def get_reversion_leaders(min_market_cap: int = 500_000_000, force: bool = False
             try:
                 result = core_logic.get_prediction(sym, light_mode=True)
                 if result and result.get("signal") not in ("EXCLUDED", None):
-                    return sym, {"signal": result["signal"], "confidence": result["confidence"]}
+                    return sym, {"signal": result["signal"], "confidence": result["confidence"],
+                                 "proba_buy": result.get("proba_buy")}
             except Exception:
                 pass
             return sym, None
@@ -1544,6 +1564,8 @@ def get_reversion_leaders(min_market_cap: int = 500_000_000, force: bool = False
         below_vwap  = vwap_gap_pct is not None and vwap_gap_pct < -2.0
         is_buy      = ml_signal == "BUY"
 
+        if ml and ml.get("proba_buy") is not None:
+            _p_buys.append(float(ml["proba_buy"]))
         _funnel["ml_na"]      += ml_signal == "N/A"
         _funnel["ml_buy"]     += is_buy
         _funnel["rsi_none"]   += rsi is None
@@ -1610,6 +1632,9 @@ def get_reversion_leaders(min_market_cap: int = 500_000_000, force: bool = False
                 "lev_sent_qqq":   (_mkt.get("lev") or {}).get("qqq"),
             })
 
+    _funnel["p_buy_n"]   = len(_p_buys)
+    _funnel["max_p_buy"] = round(max(_p_buys), 3) if _p_buys else None
+    _funnel["avg_p_buy"] = round(sum(_p_buys) / len(_p_buys), 3) if _p_buys else None
     print(f"[reversion-funnel] {_json.dumps(_funnel)}")
 
     _vord = {"DEEP BUY": 0, "POTENTIAL BOUNCE": 1, "OVERSOLD": 2, "FALLING KNIFE": 3, "WATCH": 4}
@@ -1685,7 +1710,7 @@ def get_gainers(force: bool = False):
             return _gainers_cache["data"]
         raise HTTPException(status_code=502, detail=f"Failed to fetch day gainers: {e}")
 
-    if _screener_guard("gainers", len(quotes), _gainers_cache):
+    if _screener_guard("gainers", quotes, _gainers_cache):
         return _gainers_cache["data"]
 
     _24h_ago = now - 86400

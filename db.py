@@ -37,6 +37,13 @@ def init_db():
             PRIMARY KEY (market_id, symbol, scan_date)
         )
     """)
+    # RAW P(BUY) alongside the winning-class confidence (Jul 31 2026) — diagnostics
+    # only. Without it the reversion funnel can only measure p(BUY) for the minority
+    # of symbols that need a live prediction, i.e. exactly the biased subset.
+    try:
+        cursor.execute("ALTER TABLE scan_results ADD COLUMN proba_buy REAL")
+    except Exception:
+        pass  # column already exists
     conn.commit()
     conn.close()
 
@@ -55,11 +62,12 @@ def save_scan_results(market_id: str, results: list):
     
     for row in results:
         cursor.execute("""
-            INSERT INTO scan_results (market_id, symbol, symbol_name, signal, confidence, precision_score, last_price, scan_date)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO scan_results (market_id, symbol, symbol_name, signal, confidence, precision_score, last_price, scan_date, proba_buy)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
-            market_id, row['symbol'], row['symbol_name'], row['signal'], 
-            row['confidence'], row['precision'], row['last_price'], today
+            market_id, row['symbol'], row['symbol_name'], row['signal'],
+            row['confidence'], row['precision'], row['last_price'], today,
+            row.get('proba_buy')
         ))
     conn.commit()
     conn.close()
@@ -85,6 +93,7 @@ def get_latest_scan(market_id: str):
         "symbol_name": r["symbol_name"],
         "signal": r["signal"],
         "confidence": r["confidence"],
+        "proba_buy": (r["proba_buy"] if "proba_buy" in r.keys() else None),
         "precision": r["precision_score"],
         "last_price": r["last_price"]
     } for r in rows]

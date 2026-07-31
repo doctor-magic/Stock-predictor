@@ -1,0 +1,9 @@
+{
+  "amendment": 1,
+  "amends": "lev_spec_frozen.json",
+  "sample_start": "2026-07-27",
+  "reason": "Sample composition break: the Jul-26 warm-cron fix (709bc52) gave gainers/reversion cron coverage for the first time, so BREAKOUT CONFIRMED accrual jumped from ~1/wk (W28-W29) to 14 in W30. Pre- and post-fix rows are different sampling regimes; counting them in one N=50 pool would mix them. Reset chosen over an is_post_fix control factor: cleaner at small N, and the new rate reaches N=50 in weeks. Written BLIND \u2014 no outcome column read. Boundary (semis 0.37) and min_n (50) unchanged: the boundary is a market-level covariate distribution, unaffected by which stocks get logged.",
+  "written_at": "2026-07-31T10:06:36.562852+00:00",
+  "boundary_unchanged": true,
+  "min_n_unchanged": true
+}

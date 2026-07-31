@@ -504,3 +504,41 @@ class TestScreenerPayloadSuspect(unittest.TestCase):
     def test_custom_ratio(self):
         self.assertTrue(scanners.screener_payload_suspect(50, 10, ratio=0.25))
         self.assertFalse(scanners.screener_payload_suspect(50, 13, ratio=0.25))
+
+
+class TestScreenerQuotesMalformed(unittest.TestCase):
+    """screener_quotes_malformed — leg 2 of the plausibility guard: a payload
+    that keeps its usual LENGTH but arrives with the critical fields hollow.
+    Deliberately checked on RAW quotes so market conditions cannot trip it."""
+
+    @staticmethod
+    def _q(n, price=10.0, volume=1_000_000):
+        return [{"symbol": f"S{i}", "regularMarketPrice": price,
+                 "regularMarketVolume": volume} for i in range(n)]
+
+    def test_healthy_payload_passes(self):
+        self.assertFalse(scanners.screener_quotes_malformed(self._q(50)))
+
+    def test_all_hollow_trips(self):
+        self.assertTrue(scanners.screener_quotes_malformed(self._q(50, price=None, volume=None)))
+
+    def test_missing_volume_alone_trips(self):
+        self.assertTrue(scanners.screener_quotes_malformed(self._q(50, volume=0)))
+
+    def test_minority_hollow_passes(self):
+        # 10 of 50 hollow — real screeners carry occasional junk rows; the existing
+        # filters drop those. Only a MAJORITY collapse means a structural failure.
+        quotes = self._q(40) + self._q(10, price=None)
+        self.assertFalse(scanners.screener_quotes_malformed(quotes))
+
+    def test_majority_hollow_trips(self):
+        quotes = self._q(20) + self._q(30, price=None)
+        self.assertTrue(scanners.screener_quotes_malformed(quotes))
+
+    def test_empty_payload_defers_to_the_zero_case(self):
+        # The endpoints already have their own `if not filtered` cache fallback.
+        self.assertFalse(scanners.screener_quotes_malformed([]))
+
+    def test_thin_but_healthy_green_day_passes(self):
+        # A green day legitimately yields few day_losers — must NOT look malformed.
+        self.assertFalse(scanners.screener_quotes_malformed(self._q(6)))

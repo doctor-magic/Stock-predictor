@@ -100,6 +100,21 @@ PRESET_STOCKS = {
     }
 }
 
+def _p_buy(proba, classes) -> "float | None":
+    """RAW model probability of the BUY class — DIAGNOSTICS ONLY, never a gate.
+
+    Distinct from `confidence`, which is the probability of the *winning* class
+    (>= 1/n_classes by construction). Answers the one question `confidence`
+    cannot: when nothing fires, is the model near the 0.70 ceiling or does it
+    reject the population outright? Returns None if the model has no BUY class.
+    """
+    try:
+        labels = list(classes)
+        return float(proba[labels.index("BUY")]) if "BUY" in labels else None
+    except Exception:
+        return None
+
+
 @cached(_sp500_cache)
 def load_sp500():
     try:
@@ -513,6 +528,11 @@ def get_prediction(ticker: str, light_mode=False):
     pred_idx = np.argmax(proba)
     raw_signal = classes[pred_idx]
     confidence = proba[pred_idx]
+    # RAW P(BUY) — diagnostics only, never a gate (added Jul 31 2026). `confidence`
+    # above is the probability of the WINNING class, so a HOLD at 0.85 says nothing
+    # about how close the row came to BUY; only this answers "ceiling or rejection?".
+    # Captured pre-options-adjustment so it stays a pure model output.
+    proba_buy = _p_buy(proba, classes)
 
     final_signal = raw_signal if confidence >= CONFIDENCE_THRESHOLD else "HOLD"
     
@@ -575,6 +595,7 @@ def get_prediction(ticker: str, light_mode=False):
         "symbol": ticker,
         "signal": final_signal,
         "confidence": float(confidence),
+        "proba_buy": proba_buy,
         "options_filtered": options_filtered,
         "precision_score": float(precision),
         "last_price": spot,
@@ -656,6 +677,7 @@ def _train_single(name, sym, raw_data, multi):
         proba = clf.predict_proba(latest)[0]
         confident_signal = clf.classes_[np.argmax(proba)]
         confidence = np.max(proba)
+        proba_buy = _p_buy(proba, clf.classes_)  # diagnostics only — see get_prediction
         final_signal = confident_signal if confidence >= SCAN_CONFIDENCE_THRESHOLD else "HOLD"
 
         # Hard filter: prevent 'Falling Knife' buys if institutional money is flowing out
@@ -682,6 +704,7 @@ def _train_single(name, sym, raw_data, multi):
             "symbol_name": name,
             "signal": final_signal,
             "confidence": float(confidence),
+            "proba_buy": proba_buy,
             "precision": float(precision),
             "last_price": float(raw["Close"].iloc[-1])
         }

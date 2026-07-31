@@ -37,6 +37,10 @@ from datetime import datetime, timezone
 # ── Pre-registered constants (locked Jul 14 2026) ──────────────────────────
 DB_PATH_DEFAULT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "setup_log.db")
 SPEC_PATH       = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lev_spec_frozen.json")
+# Amendments are ADDITIVE FILES, never edits to the frozen spec — the "frozen once"
+# property of lev_spec_frozen.json is what makes the boundary trustworthy, so an
+# amendment gets its own write-once file and an audit trail of its own.
+AMEND_PATH      = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lev_spec_amendment_1.json")
 MIN_N           = 50          # resolved BREAKOUT CONFIRMED rows with lev + outcomes
 COMMISSION_PCT  = 0.16        # round trip, 0.08% per side
 BOOT_B          = 10_000
@@ -112,6 +116,42 @@ ELIGIBLE_WHERE = (
 )
 
 
+def eligible_where(sample_start=None):
+    """ELIGIBLE_WHERE, optionally floored at a pre-registered sample start date."""
+    if not sample_start:
+        return ELIGIBLE_WHERE
+    return f"{ELIGIBLE_WHERE} AND date >= '{sample_start}'"
+
+
+def write_amendment(sample_start, reason):
+    """Write the write-once sample-start amendment. Covariate/metadata only —
+    reads NO database column at all, so it cannot be outcome-informed."""
+    if os.path.exists(AMEND_PATH):
+        sys.exit(f"REFUSING: {AMEND_PATH} already exists — an amendment is written once. "
+                 "Delete it manually only if it was written in error.")
+    datetime.strptime(sample_start, "%Y-%m-%d")  # fail fast on a malformed date
+    payload = {
+        "amendment": 1,
+        "amends": os.path.basename(SPEC_PATH),
+        "sample_start": sample_start,
+        "reason": reason,
+        "written_at": datetime.now(timezone.utc).isoformat(),
+        "boundary_unchanged": True,
+        "min_n_unchanged": True,
+    }
+    with open(AMEND_PATH, "w") as f:
+        json.dump(payload, f, indent=2)
+    print(json.dumps(payload, indent=2))
+    print(f"[amend] written to {AMEND_PATH} — Stage B now counts only rows dated >= {sample_start}")
+
+
+def load_amendment():
+    if not os.path.exists(AMEND_PATH):
+        return None
+    with open(AMEND_PATH) as f:
+        return json.load(f)
+
+
 def median_diff(rows, boundary):
     """rows: (day, lev, ret_close, ret_signal). Returns per-basis {low,high,diff} medians
     net of commission, or None if either bucket is empty."""
@@ -138,10 +178,16 @@ def stage_b(db_path):
     if not spec.get("frozen"):
         sys.exit("REFUSING --unblind: spec file exists but was not written by --freeze.")
     boundary = spec["boundary"][PRIMARY]
+    amend = load_amendment()
+    sample_start = amend.get("sample_start") if amend else None
+    if sample_start:
+        print(f"[stage B] amendment {amend['amendment']} in force: counting only rows "
+              f"dated >= {sample_start} ({amend['reason']})")
+    where = eligible_where(sample_start)
 
     con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     # The guard: COUNT first. No outcome column is selected before this passes.
-    n = con.execute(f"SELECT COUNT(*) FROM setup_log WHERE {ELIGIBLE_WHERE}").fetchone()[0]
+    n = con.execute(f"SELECT COUNT(*) FROM setup_log WHERE {where}").fetchone()[0]
     if n < spec.get("min_n", MIN_N):
         con.close()
         sys.exit(f"NotEnoughData: N = {n}, requires minimum {spec.get('min_n', MIN_N)}. "
@@ -153,7 +199,7 @@ def stage_b(db_path):
         (d, lev, ret5, round((c5 / price - 1) * 100, 2))
         for d, lev, ret5, c5, price in con.execute(
             f"SELECT date, lev_sent_semis, ret_5d, close_5d, price "
-            f"FROM setup_log WHERE {ELIGIBLE_WHERE}"
+            f"FROM setup_log WHERE {where}"
         )
     ]
     con.close()
@@ -252,8 +298,15 @@ if __name__ == "__main__":
     ap.add_argument("--freeze", action="store_true", help="stage A: write lev_spec_frozen.json (THE SITTING)")
     ap.add_argument("--unblind", action="store_true", help="stage B: guarded confirmatory run")
     ap.add_argument("--selftest", action="store_true", help="run pipeline on synthetic data")
+    ap.add_argument("--amend-sample-start", metavar="YYYY-MM-DD",
+                    help="write-once amendment: floor Stage B eligibility at this date")
+    ap.add_argument("--amend-reason", default="", help="why the sample start moved (required)")
     args = ap.parse_args()
-    if args.selftest:
+    if args.amend_sample_start:
+        if not args.amend_reason:
+            sys.exit("--amend-sample-start requires --amend-reason (the amendment must justify itself).")
+        write_amendment(args.amend_sample_start, args.amend_reason)
+    elif args.selftest:
         selftest()
     elif args.unblind:
         stage_b(args.db)
