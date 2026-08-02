@@ -21,3 +21,6 @@ gainers_cache.json
 __pycache__/
 *.pyc
 .DS_Store
+
+# local DB snapshots (off-VM backups, never in git)
+_db_snapshots/

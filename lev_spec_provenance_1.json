@@ -1,0 +1,47 @@
+{
+  "record": "provenance_1",
+  "written_at": "2026-08-02T18:45:00+00:00",
+  "amends_nothing": true,
+  "note_on_type": "This is NOT an amendment. Amendments change spec parameters (sample_start, boundary, min_n) and lev_spec_amendment_1.json is write-once by design — editing it to bolt on hashes would destroy the exact property that makes it worth anything. This is a separate, additive, write-once provenance record. It changes no parameter.",
+
+  "scope_and_honest_limits": "These hashes were computed on 2026-08-02. They are a FORWARD tamper-detection anchor: from this date on, any change to the rule file, the frozen spec, or the amendment is detectable by re-hashing. They are NOT retroactive proof that the rule existed in this form on 2026-07-14 — a hash written today cannot certify a past date. The evidence for the past is different in kind and is stated under 'why_the_boundary_is_checkable_without_trusting_dates'.",
+
+  "anchors": {
+    "lev_sitting.py": {
+      "sha256": "84124b88850a6c09cd871fb85a16a1950b7d5480149597b7622d105e5457dd8a",
+      "role": "f_rule — the implementation that produces the boundary",
+      "git_commit": "65e32a1",
+      "git_authored": "2026-07-14T07:50:56+03:00",
+      "identical_on_mac_and_vm": true
+    },
+    "lev_spec_frozen.json": {
+      "sha256": "b977ac0d2835a45ecce7a62021fd8d8c56ceba75252509f22f6ea157b9c9afe7",
+      "role": "cached result of f_rule — NOT the source of truth",
+      "frozen_at": "2026-07-24T12:12:06.181576+00:00",
+      "note": "Lived only on the VM until 2026-08-02, when it was copied to the repo as backup hygiene. Its loss was never an evidentiary risk: the boundary regenerates from setup_log.db under f_rule."
+    },
+    "lev_spec_amendment_1.json": {
+      "sha256": "5b053d49d036dbb0d31d4232f7f4292fe5fd371c8b8ccedc9848ad32abd3e048",
+      "role": "sample-start amendment (Stage B eligibility floored at 2026-07-27)",
+      "written_at": "2026-07-31T10:06:36.562852+00:00",
+      "git_commit": "1b2868b"
+    },
+    "cohort_snapshot": {
+      "file": "_db_snapshots/setup_log.VACUUM.20260802T183710Z.db",
+      "sha256": "85714536c652ab2e768a41845bf60d26d875dded85f4379205c20c6fc7e11cc7",
+      "method": "VACUUM INTO on the live WAL database, never stopped, never modified",
+      "rows": 1185,
+      "cohort_rows": 362,
+      "cohort_days": 13,
+      "note": "Not in git (*.db is gitignored). See _db_snapshots/SHA256SUMS.txt."
+    }
+  },
+
+  "why_the_boundary_is_checkable_without_trusting_dates": "semis 0.37 / qqq 0.47 is a deterministic function of (date, lev_sent_semis, lev_sent_qqq) over rows dated <= 2026-07-23 — signal-time covariates, written once, never backfilled (forward-only rule). Recomputed 2026-08-02 from the live DB AND independently from the off-VM snapshot: 13/13 day-medians match lev_spec_frozen.json to the last digit, n_rows 362 matches, boundary reproduces exactly. So the number does not rest on anyone's timestamp; it rests on the cohort plus the stated rule. What reproduction does NOT establish is that the rule FAMILY (median of day-medians, semis primary, tie <= -> LOW) was chosen blind — that rests on lev_sitting.py being committed 2026-07-14, ten days before frozen_at, and on Stage B never having run (--unblind has never passed its N>=50 gate; N was 3-4 at freeze and is 0 after amendment 1). Both of those live in code and history under the author's control. Called what it is: discipline with a code trail, not third-party certification.",
+
+  "what_this_record_does_not_cover": [
+    "No external/third-party timestamp exists. The GitHub push receipt for 65e32a1 is server-side and not author-settable, but its retrievability decays with the events API retention window — do not build on it.",
+    "The two setup_log.db.bak files (2026-06-21, 2026-07-07) are pre-cohort fossils, not a snapshot chain. Both predate the lev columns (deployed the evening of 2026-07-07, commit d2d318a). They can falsify a rewrite of rows before Jul 7 and say nothing about the 362-row cohort.",
+    "As of this record the cohort exists in two domains (GCP VM, this Mac). There is no off-site third copy."
+  ]
+}
