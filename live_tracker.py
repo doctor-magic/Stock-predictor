@@ -455,19 +455,24 @@ def print_report(conn: sqlite3.Connection) -> dict:
     pending  = [r for r in rows if r[4] == 0]
 
     print(f"\n{'='*62}")
-    print(f"  LIVE TRACKER  —  Long-only Expert (>={CONF_MIN:.0%})")
+    # Header states what is actually tracked: every signal=='BUY' row (the full
+    # BUY tier, >=0.57 scanner-side) — there is NO conf filter in log_signals.
+    # CONF_MIN is only the /api/scan request param, not a logging gate.
+    print(f"  LIVE TRACKER  —  Long-only, full BUY tier (hit = ret >= {HIT_THRESHOLD:.0%} in {FORWARD_DAYS}td)")
     print(f"{'='*62}")
 
     if resolved:
         hits      = sum(r[6] for r in resolved)
         precision = hits / len(resolved) * 100
-        avg_ret   = sum(r[5] for r in resolved) / len(resolved)
+        # DB stores fwd_ret as a fraction — ×100 for display (the resolve path
+        # already multiplies before appending; this path reads raw DB rows).
+        avg_ret   = sum(r[5] for r in resolved) / len(resolved) * 100
         print(f"\n  Resolved: {len(resolved)}  |  Precision: {precision:.1f}%  |  Avg ret: {avg_ret:+.2f}%")
         print(f"\n  {'Sym':<7} {'Date':<12} {'Conf':>5} {'Entry':>8} {'Ret':>8}  Hit")
         print(f"  {'-'*48}")
         for sym, dl, conf, entry, _, fwd_ret, hit in sorted(resolved, key=lambda x: x[1], reverse=True):
             marker = "Y" if hit else "N"
-            print(f"  {sym:<7} {dl:<12} {conf:>4.0%} {entry:>8.2f} {fwd_ret:>+7.2f}%   {marker}")
+            print(f"  {sym:<7} {dl:<12} {conf:>4.0%} {entry:>8.2f} {fwd_ret * 100:>+7.2f}%   {marker}")
     else:
         print("\n  No resolved signals yet.")
 
@@ -484,7 +489,7 @@ def print_report(conn: sqlite3.Connection) -> dict:
         "n_resolved": total_res,
         "n_pending":  len(pending),
         "precision":  sum(r[6] for r in resolved) / total_res * 100 if total_res else None,
-        "avg_ret":    sum(r[5] for r in resolved) / total_res       if total_res else None,
+        "avg_ret":    sum(r[5] for r in resolved) / total_res * 100 if total_res else None,
     }
 
 
