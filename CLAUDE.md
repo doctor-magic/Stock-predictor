@@ -386,6 +386,14 @@ Leveraged-ETF flow as market sentiment: **dollar-volume** ratio short/long — `
 - New columns: idempotent `ALTER TABLE ADD COLUMN` with NULL default (the dist_from_sma50 pattern) is the ONLY sanctioned migration. Analyses filter `WHERE <col> IS NOT NULL`.
 - Why: the whole pre-registration program (shadow query, lev_sent, sitting addenda) rests on live-captured features; retro-filling silently reintroduces look-ahead risk and mixes measurement regimes.
 
+### Research discipline (pre-registration — do not violate)
+Rules only. The live counts, open questions and their triggers live in `PENDING.md` (load it with @ when working on the research).
+- **Closed confirmatory family.** Only the shadow query, H1, H2 and the lev buckets may drive a code change — the closed-confirmatory-family rule still stands. Everything else is descriptive and may only seed a NEW pre-registered question.
+- **Amendments are additive write-once files — never edit `lev_spec_frozen.json`.** Write one with `lev_sitting.py --amend-sample-start DATE --amend-reason "..."` — it reads no DB column, so it cannot be outcome-informed.
+- **Changing the budget changes sample composition.** Any change to prediction coverage (timeout, worker count, a prediction cache) is a new measurement regime and must be pre-registered like the Jul-26 warm-cron fix — never an incidental tweak.
+- **Do NOT loosen bucket definitions.** A bucket that is too thin defers the test; it does not get widened to make the test runnable.
+- **EXPLORATORY-ONLY, do not act** on a descriptive breakdown, however strong it looks. It may only seed its own pre-registered question first.
+
 ---
 
 ### Volume Leaders

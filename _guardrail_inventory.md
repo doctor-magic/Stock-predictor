@@ -31,21 +31,21 @@ Quotes are exact contiguous substrings. No pipe characters inside quotes.
 
 GR-001 | IRON | Restored features → instrumentation | VL logging coverage EXPANDED (never narrow)
 GR-002 | IRON | Restored features → instrumentation | at N≥20 resolved gainers/DEVELOPING with mean ret_5d < −5% → display demotes to WATCH
-GR-003 | IRON | Restored features → instrumentation | Gate thresholds (HOD 0.35 etc.) are STARTING POINTS — calibrate only at the next N≥50 instrumented rows
+GR-003 | IRON | Restored features → instrumentation | are STARTING POINTS — calibrate only at the next N≥50 instrumented rows
 GR-004 | IRON | Reversion Hunter → funnel diagnostics | Log-only — NO DB writes, NO verdict changes
 GR-005 | IRON | Reversion Hunter → p(BUY) | Diagnostics only — never a gate.
 GR-006 | IRON | Momentum Gates → Gate 1 | Threshold: **0.35** — starting point, calibrate after ~50 resolved trades
 GR-007 | IRON | Beta Gate → frontend | Threshold 1.5 is empirical — calibrate via tracker.db after ~50 resolved trades
 GR-008 | IRON | Lev Sentiment Strip | Do NOT add display thresholds before that.
 GR-009 | IRON | Lev Sentiment Strip | Promotion to any gate/filter requires that test to pass — until then display+collect only.
-GR-010 | IRON | Sector Heatmap | If sector data is ever wanted as a logged covariate, that is a new-covariate decision belonging in a milestone bundle — never mid-collection.
+GR-010 | IRON | Sector Heatmap | a new-covariate decision belonging in a milestone bundle — never mid-collection
 GR-011 | IRON | Setup Logging Coverage | Narrowing the logged set causes selection bias
 GR-012 | IRON | setup_log FORWARD-ONLY | Never backfill feature values into rows older than the feature's deploy date
 GR-013 | IRON | setup_log FORWARD-ONLY | A feature not captured live at signal time does not exist for that row.
-GR-014 | IRON | setup_log FORWARD-ONLY | idempotent `ALTER TABLE ADD COLUMN` with NULL default (the dist_from_sma50 pattern) is the ONLY sanctioned migration
+GR-014 | IRON | setup_log FORWARD-ONLY | is the ONLY sanctioned migration
 GR-015 | IRON | setup_log FORWARD-ONLY | retro-filling silently reintroduces look-ahead risk and mixes measurement regimes
 GR-016 | IRON | Volume Leaders rules | Regime is observational only — no BUY filter until ≥50 resolved signals per regime in tracker.db
-GR-017 | IRON | Crons → resolver | These are OUTCOME columns written at resolution — the forward-only rule (signal-time features) is untouched.
+GR-017 | IRON | Crons → resolver | the forward-only rule (signal-time features) is untouched
 GR-018 | IRON | VM downgrade | The */25 warm cron was gated to 09:00–16:59 ET trading days BEFORE the downgrade (keep gated).
 
 ## IRON — rules currently trapped inside "Pending actions" (see WARNING below)
@@ -59,7 +59,7 @@ GR-023 | IRON | Pending actions | EXPLORATORY-ONLY, do not act
 ## IRON — deploy / ops that cannot be guessed
 
 GR-024 | IRON | Quick Reference | always deploy all 3 together — api.py imports from scanners + db
-GR-025 | IRON | Health check | deploying `api.py` alone (without `scanners.py` + `db.py`) → `ImportError` on service start → site down. Always deploy all 3.
+GR-025 | IRON | Health check | Always deploy all 3.
 GR-026 | IRON | Architecture rules | Deploy api.py + scanners.py + db.py together
 GR-027 | IRON | Architecture rules | Any change to api.py auth or endpoints must also update live_tracker.py
 GR-028 | IRON | Architecture rules | No imports from api.py in scanners.py or db.py
