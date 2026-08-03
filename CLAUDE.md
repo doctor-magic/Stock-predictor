@@ -460,26 +460,12 @@ Leveraged-ETF flow as market sentiment: **dollar-volume** ratio short/long — `
 - `orb_backtest.py` — ORB intraday backtest
 - `.env` — API keys (also at ~/Desktop/daily_reports/.env)
 
-## Git State (Jun 7 2026) — all committed, latest commit: `9fe3557`
-Everything is in sync: local `~/Desktop/Stock-predictor/` = server `/home/elimaoz99/stock_predictor/` = GitHub main.
+## No live state in this file (hard rule, Aug 3 2026)
+**This file must not contain any value that goes stale without someone editing it here.** No git HEAD, commit hash, branch or sync status. No current N, funnel counts, accrual rates or cutoff dates. No "as of <date>" counters.
 
-**Committed Jun 7 2026 (this session):**
-- `scanners.py` — new file, 520 lines, all scanner helpers extracted from api.py
-- `db.py` — expanded to 316 lines: FK log + setup log functions + WAL mode
-- `api.py` — reduced to 1387 lines; imports from scanners + db
-- Setup outcome logger: `setup_log.db`, `/api/setup-stats`, broader logging coverage
-- SQLite WAL mode + timeout=30 on all connections
-- CLAUDE.md: Quick Reference, Config, Databases, Env Vars sections
+Why it is a rule and not a preference: such values rot silently, and two stale copies are worse than none — a reader reconciles them against each other instead of against the source. This section replaced exactly that: two contradicting git-state blocks, one claiming `9fe3557` and one claiming `a5ccc07`, while HEAD was neither.
 
-**Previously committed (all in main):**
-- May–Jun 2026: Wedge Scan tab, SWING/Score columns, SPY/QQQ context, Earnings Calendar, Regime Classification, Premium Scan, Momentum Gates (HOD+RVOL), Beta Gate, Reversion Hunter (Tab 9), TradingView TV links, Power Hour Whale Alert, FRED disk cache, Reversion Hunter RVOL alert, Wedge Scan Touches column, Falling Knife Logger
-
-### Git state Aug 2 2026 — in sync, latest commit `a5ccc07`
-local working tree == server == `origin/main` for api.py / scanners.py / db.py / live_tracker.py (md5-verified Aug 2, all four). Only `stock_predictor_handoff.txt` is intentionally left uncommitted as a working journal.
-
-Shipped since the Jul 30 sync point (`e3cceff` forward-SPY capture in both resolvers), in order: `fefd425` docs backlog cleared, `1b2868b` p(BUY) diagnostics + guard leg 2 (hollow payloads) + Stage B sample-start amendment, `14131ad` docs for that batch, `a5ccc07` live_tracker `--report` display fix.
-
-**`a5ccc07` (Aug 2) — read before quoting any tracker number:** `--report` printed `fwd_ret` (stored as a FRACTION) with a `%` suffix and never scaled it, so every Ret in the table and the "Avg ret" summary were understated 100× — and the daily Telegram summary consumed the same stats dict. The resolve path was always correct (it multiplies before appending); only the reader was wrong, and `tracker.db` itself was never affected. Same commit fixed the header: it claimed `Long-only Expert (>=70%)`, but `log_signals()` has **no confidence filter** — it logs every `signal=='BUY'` row, i.e. the full BUY tier from ≥0.57 scanner-side (`CONF_MIN` is only the `/api/scan` request param, never a logging gate). Header now names the real sample and the hit definition (`ret >= 3%` in 10 trading days). Any pre-Aug-2 reading of tracker "avg ret" quoted from the report — or from Telegram — was 100× too small; historical precision figures are unaffected (hits were always counted correctly).
+Sources of truth: `git log` / `git status` for repo state · the DBs (or a query against them) for research counts · commit messages for what a change did and why.
 
 ## Pending actions
 > **THE SITTING CLOSED Jul 24 2026** — outcomes: beta-gate status quo (no extension to `/api/scan`), H1/H2 deferred (thin buckets), lev boundary FROZEN at semis 0.37 (`lev_spec_frozen.json`) with the Stage-B outcome test deferred at N=4/50, scanner-health criterion deferred as mis-specified + watchdog check #6 shipped instead. **The code freeze is LIFTED**; the closed-confirmatory-family rule still stands (only the shadow query, H1, H2 and lev buckets may drive code change; everything else is descriptive and may only seed a NEW pre-registered question).
