@@ -475,6 +475,8 @@ Why it is a rule and not a preference: such values rot silently, and two stale c
 
 Sources of truth: `git log` / `git status` for repo state · the DBs (or a query against them) for research counts · commit messages for what a change did and why.
 
+**`stock_predictor_handoff.txt` is committed at the end of every meaningful work sequence** — it is a chronological journal, not a scratch file. It used to be "intentionally left uncommitted", which meant 651 lines covering seven work days sat on one disk. A dated `GIT STATE (date)` line inside a journal entry is a historical record and is fine; the same value presented as current guidance in this file is not.
+
 ## Pending actions
 Moved out of always-loaded context — this section was live state (open counts, triggers, dates).
 It lives in `PENDING.md`; load it with `@PENDING.md` when working on the research.
