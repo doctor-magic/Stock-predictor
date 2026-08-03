@@ -1676,3 +1676,654 @@ NEXT MILESTONES:
 
 GIT STATE (Jul 12 2026): origin/main = d518ed8 before this update; working tree clean apart
   from this handoff update + watchdog.py (imported from server, committed together).
+
+
+JUL 14-16 2026 — SITTING TOOLING + SECTOR HEATMAP (the last two pre-freeze deploys)
+===================================================================================
+  65e32a1  lev_sitting.py — the BLINDED two-stage tool that makes the lev bucket decision
+  anti-HARKing-proof rather than trust-based. Stage A reads covariates ONLY (per-day median
+  of lev_sent -> median of day-medians -> bucket boundary), preview by default, `--freeze`
+  writes lev_spec_frozen.json exactly once and REFUSES to overwrite. Stage B (`--unblind`)
+  refuses to run without a frozen spec and counts eligible rows (resolved BREAKOUT CONFIRMED
+  with lev + outcomes) BEFORE selecting any ret_* column, exiting below N=50 — so the N-guard
+  cannot be dodged by peeking. `--selftest` plants a known effect in a synthetic DB and verifies
+  boundary recovery + effect recovery + the N-guard. Pure stdlib, read-only DB access.
+  Server preview Jul-14: 5 days / 172 rows, tentative semis 0.29 / qqq 0.47 — NOT frozen.
+  TWO CLOCKS, do not conflate: the BOUNDARY freezes at the sitting; the OUTCOME test runs only
+  when its own N>=50 matures.
+  c752e4b  feat(context): 11-SPDR sector heatmap in the VL market-context bar. Deployed Jul 15 —
+  deliberately the last day before the Jul 16-23 freeze. Same proven pattern as the lev strip:
+  one batched yf.download of 11 fixed tickers, `_SECTOR_HEATMAP_TTL`=300s, whole fetch in
+  try/except -> stale-or-None (a sector failure must never break a scan), pure math in
+  `_compute_sector_changes()` unit-tested, rides inside get_market_context() as
+  `sectors: {XLK: pct, ...}` — no new endpoint, no cron. v1 constraints honored: DISPLAY ONLY,
+  NO setup_log columns, NO gate. Frontend = sorted CSS-grid strip, buckets at +-0.5%/+-1.5%.
+  4 new tests (61 total).
+  8e6c566  feat(context): SOXX industry overlay — COMMITTED Jul 16, deployed Jul 24 (freeze
+  respected; staged in repo with the deploy deferral written into the commit message itself).
+  Rationale proven live on commit day: XLK -2.64% while SOXX -5.23% — the sector tile dilutes
+  semi moves ~2x on exactly the days that matter. SOXX is an INDUSTRY ETF inside XLK, not a GICS
+  sector (tooltip says so); it pairs with the lev strip: SOXS:SOXL = leveraged flow, SOXX = price.
+  Grid 11 -> 12 cols.
+
+JUL 19-23 2026 — VACATION (user unavailable) + THE JUL 16-20 SELLOFF
+====================================================================
+Absolute code freeze held. Watchdog ran solo and stayed green every day — the Jul-12 investment
+  paid for itself as designed: no human eyes needed, and a green heartbeat daily BY DESIGN so
+  silence itself is the alarm.
+The Jul 16-20 selloff produced a 3-trading-day run of ZERO actionable signals (no VOL BREAKOUT,
+  no BREAKOUT CONFIRMED) — correct behavior, the reversion model staying out of a falling market.
+  This became the live counterexample that killed the pre-registered drought criterion at the
+  sitting (see Track 4 below). Drought broke Jul-23: ICE @ conf 0.76, the first real BUY in
+  weeks, ~3 sessions after the selloff — the SAME dip-buying pattern as Jun-23 -> Jun-26.
+  Resolves ~10 sessions out on its own clock, unrelated to the sitting.
+
+JUL 24 2026 (Fri) — THE SITTING: ALL 4 TRACKS CLOSED, 3 OF THEM WITH ZERO CODE CHANGE
+=====================================================================================
+Gate check at open (user present, GO given): tracker resolved-with-beta = 78 (>=50 OK),
+  BREAKOUT CONFIRMED resolved = 21 (>=15 nominally OK but thin), lev_sent resolved = 252,
+  watchdog green through the whole vacation, mem peak ~340MB.
+
+TRACK 1 — beta-gate shadow query: DECISION = DO NOT extend the gate into /api/scan. Status quo
+  (keep the existing get_volume_leaders gate) + keep collecting. The locked rule was "if
+  high-beta (>1.5) BUYs actually LOST -> green light to port the gate"; they did NOT clearly lose.
+  Raw basis N=78 (high=40, normal=38): hit%(>=+3%) high 42.5 vs normal 28.9; mean% high -0.23 vs
+  normal +1.35; median% high +1.25 vs normal -1.17; payoff high 0.70 vs normal 2.55. Reading:
+  high-beta hits MORE often with a higher median but carries a FAT LEFT TAIL (the SMCI -42% class
+  of event); normal misses more but wins bigger when right.
+  Cluster bootstrap (days: high=18, normal=17; B=10k, seed=42): median 95% CI high=[-3.69,+4.51],
+  normal=[-2.98,+0.04] — both straddle 0. Effective N is the ~18 DAYS, not the 78 rows.
+  Inconclusive BY DESIGN, which is why the decision rule and not the eyeball decided.
+  BASIS GAP FOUND (important, carries forward): tracker `outcomes` stores only RAW fwd_ret, and
+  `hit = fwd_ret >= 0.03` (HIT_THRESHOLD, live_tracker.py:31) is thresholded-raw, NOT
+  market-adjusted — so the dual-basis net-of-SPY leg NEVER RAN for this track (forward SPY over
+  the holding window isn't stored; entry_spy_ret5d is trailing-at-entry only). Market-adjusted
+  return is an OUTCOME, so computing it retroactively via yfinance is NOT a forward-only
+  violation — deferred only because the raw basis is already noise-dominated and won't flip the
+  verdict. TODO for a future checkpoint: have the resolver capture forward-SPY so the
+  market-adjusted basis exists LIVE. Re-run trigger = more TRADING DAYS, not more rows.
+  Payoff + bootstrap are EXPLORATORY-ONLY per the closed-family rule: the fat-tail observation
+  may NOT drive action now, it may only seed a new pre-registered question.
+
+TRACK 2 — restoration H1/H2: DECISION = DEFER BOTH. No code change. The pre-registered floor of
+  n>=15 per bucket is not met: H1 (vol_ratio <1.5 vs >=1.5) buckets = 16/5; H2 (vwap_gap >3% vs
+  <=3%) = 12/9. With only 21 resolved BREAKOUT CONFIRMED, ANY 2-way split forces a sub-15 bucket.
+  Spec rule = thin buckets DEFER, definitions do NOT loosen.
+  EXPLORATORY RED FLAG (may not drive action; seeds a NEW pre-registered question): all buckets
+  show NEGATIVE median net-of-commission ret_5d (-3% to -5.4%) across all 21 rows — i.e. the
+  BREAKOUT CONFIRMED verdict ITSELF looks unprofitable net, not merely a sub-condition of it.
+  Candidate future question: does BREAKOUT CONFIRMED need a display breaker like DEVELOPING's?
+  DO NOT act on this yet.
+  REGIME-MIX CAVEAT reinforcing the defer: only 10 of the 21 rows carry market_state — 11 predate
+  the Jul-5 restoration instrumentation, so the pool is a pre/post measurement-regime blend.
+  Argues for a clean forward re-run over deciding on today's mixture.
+
+TRACK 3 — lev_sent bucket re-registration: DONE, boundary FROZEN; outcome test DEFERS. No code or
+  logic change (the freeze writes a pre-registration spec file, nothing else).
+  `lev_sitting.py --freeze` (selftest green first), covariate-only and blind to outcomes:
+  13 trading days / 362 rows -> median-of-day-medians boundary semis = 0.37 (PRIMARY),
+  qqq = 0.47 -> lev_spec_frozen.json (2026-07-24T12:12Z, refuses overwrite; tie value<=boundary
+  -> LOW, min_n=50, commission 0.16%, bootstrap B=10k seed=42, resample=trading_days). semis
+  ranged 0.24-0.415 over the 13 days, so the boundary sits mid-distribution — a sensible split.
+  THIS is the anti-HARKing lock: every future outcome test buckets against a boundary chosen
+  without ever seeing a return.
+  Stage B outcome test: eligible N = 3 / 50, and "no outcome columns were read". HONEST SCOPE
+  CAVEAT: because the pre-registered test is restricted to BREAKOUT CONFIRMED (a rare verdict)
+  and lev only collects since Jul-8, N=50 is likely MONTHS away, not weeks. That makes it a
+  candidate for a future RE-REGISTRATION discussion (broader signal set?) — NOT changed now,
+  which would be goal-moving.
+  Follow-up now UNLOCKED but NOT done: calibrate the display strip's LOW/HIGH labels around
+  semis 0.37 (frontend display-only; ~2.5wk of distribution now exists).
+
+TRACK 4 — scanner-health threshold: DECISION = DEFER the pre-registered drought-vs-broken
+  criterion because it is MIS-SPECIFIED, and ship a sound liveness check instead.
+  Why it fails: "significant drop + zero BUY/actionable within 3-5 days => flag broken" would
+  FALSE-POSITIVE. (a) zero-actionable days = 12/30 (40%) — normal, not anomalous; (b) a HEALTHY
+  3-day zero-actionable run already happened Jul 16-20 in the real selloff, where staying out was
+  correct — a window calibrated on the shallow Jun-23 -2.13% dip would have mis-flagged it;
+  (c) only 1 of 31 days ever hit <= -2% spy_ret5d and ZERO hit <= -3%, so locking a drop threshold
+  = calibrating on N=1. In a real selloff, "rows in, zero actionable out" is INDISTINGUISHABLE
+  from over-gating without forward knowledge of the bottom. Re-approach after 2-3 real
+  selloff+recovery episodes.
+  7ff25c2  feat(watchdog): check #6 "cron output freshness" — the robust invariant instead:
+  the three daily crons nothing else watches must have FRESH OUTPUT.
+    tracker.db      MAX(date_logged) >= last US session   (live_tracker 20:05 Mon-Fri)
+    intraday_cache  MAX(date)        >= last US session   (fetch_intraday 20:30 Mon-Fri)
+    wedge_cache     scan_ts age      <= 26h               (pre_scan 05:00 daily)
+  market_calendar handles weekends/holidays -> 0% market/calendar false positives.
+  scanner_cache.db DELIBERATELY EXCLUDED (multiple writers, variable cadence = the naive-freshness
+  trap). This recreates the detector that would have caught the Jun 6-14 live_tracker 9-day silent
+  auth outage. Dry-run green + negative test fires red on a simulated stale output. scp'd live.
+
+SITTING CLOSED. Discipline win: 3 of 4 tracks changed NO code — exactly what sound
+  pre-registration is supposed to produce. Also deployed at the sitting: SOXX (8e6c566) via
+  deploy.sh, 61 tests green, 12 tiles verified live in market_context.
+
+JUL 26 2026 (Sun) — COLLECTION GAP: GAINERS + REVERSION HAD ZERO CRON COVERAGE
+==============================================================================
+  709bc52  fix(collection): warm gainers + reversion-leaders too, not just volume-leaders.
+  User noticed a collection problem and first proposed a browser-automation skill to "open the
+  site and collect data." Investigation found the cause was OPERATIONAL: warm_volume_cache.sh
+  (the */25 cron) only ever force-refreshed /api/volume-leaders. gainers and reversion_hunter had
+  ZERO cron coverage — they were scanned only when a real browser happened to open that tab.
+  IMPACT: setup_log showed reversion_hunter = 0 rows EVER across the full 48 days since the Jun-8
+  inception, and gainers collection had stopped dead after Jul-21. The reversion call site itself
+  was verified correctly wired in code (NOT a repeat of the Jun-7 FK-logging-dropped incident) —
+  the DEEP BUY / POTENTIAL BOUNCE condition is structurally strict, but with zero warmed samples
+  it was impossible to distinguish "genuinely rare" from "never sampled."
+  CONSEQUENCE for the Jul-24 Track 2 defer: the thin BREAKOUT CONFIRMED bucket may be partly an
+  artifact of this same starvation rather than pure verdict rarity — re-run H1/H2 with fresh eyes
+  after the new coverage has run a few weeks.
+  FIX SHAPE (deliberate): extend the existing script, build nothing new — same Basic Auth +
+  market_calendar gate + HTTP-code logging already proven for volume-leaders. ALTERNATES gainers
+  and reversion-leaders one per run (state file warm_alt_state, flips 0/1 each tick) rather than
+  warming both every cycle, to avoid doubling Yahoo call volume and e2-medium load on top of the
+  unchanged volume-leaders warm. User chose the staggered option explicitly over "warm all 3
+  every run" and "new separate cron." Verified: both endpoints 200 on force=true; the gate
+  correctly skipped on the non-trading Sunday it was installed.
+  WHY NOT the browser skill: every verdict is already computed server-side on each API call, so
+  scraping rendered HTML would be a slower, more fragile duplicate with none of the existing
+  safeguards. The fix was operational parity, not new architecture.
+  ANALYSIS RULE THAT FOLLOWS: pre-Jul-26 gainers/reversion rows came from incidental browser
+  traffic ONLY. Sample composition and density shift starting ~Jul 27. Never mix the pre/post
+  eras without noting the regime shift — same discipline as the Jun-7 measurement-regime caveats.
+
+JUL 28 2026 (Tue) — DAILY REVIEWS TAB REBUILT + DISK-CACHE PERSISTENCE FOR ALL 3 SCANNERS
+=========================================================================================
+  a070db2  Daily reviews tab: real dates, lazy loading, server-side search.
+  THE DATE BUG: accordion titles showed raw filenames on 109 of 111 reviews. The parser expected
+  exactly 3 underscore fields, but the files carry a 4th
+  (stock_recommendations_27_07_2026_Evening.txt), so nearly every one fell through to the basename
+  fallback. Now parses the optional session field, labels it in Hebrew, and sorts by PARSED DATE
+  instead of mtime.
+  THE PAYLOAD BUG: opening the tab shipped all ~111 reviews in full — 824KB — of which exactly one
+  was ever read. /api/recommendations now returns metadata + a preview line (34KB), with full text
+  served per review by /api/recommendations/{id} (regex + basename guards against path traversal).
+  Search moved SERVER-side behind ?q= so it still spans every review, with an mtime-keyed content
+  cache and a 300ms debounce in front of it.
+  FRONTEND: expand-on-demand with an in-memory cache, newest review open on load, preview line
+  under each closed row, and accordion state keyed by ID rather than index (it used to point at
+  the wrong review after a search). Restored numbering on ordered lists, which the diamond bullet
+  had erased, and dropped the dead renderMarkdown helper.
+  SHIPPED IN THE SAME COMMIT (not in its message — note it here): `_load_json_disk_cache()` /
+  `_save_json_disk_cache()` + disk persistence for ALL THREE scanner caches —
+  volume_leaders_cache.json / reversion_cache.json / gainers_cache.json, loaded at module import
+  and saved on every successful payload. Same pattern as the FRED disk cache: a service restart no
+  longer serves an empty cache, and the stale-cache fallback paths now survive reboots. Both
+  helpers are try/except-silent by design.
+
+JUL 29 2026 (Wed) — CUSTOM LOGIN GATE + REVERSION FUNNEL DIAGNOSTICS  ** NOT COMMITTED **
+=========================================================================================
+>> SUPERSEDED — see the JUL 29-30 (night) entry below. Everything in this entry was committed and
+   pushed on the night of Jul 29-30 (login gate = 8c64d41, funnel = 26a9f50). The git-state
+   warnings and the "NOT YET OBSERVED" funnel note are HISTORICAL; kept for the reasoning trail.
+
+!! READ THE GIT STATE BLOCK AT THE BOTTOM FIRST. Today's work is LIVE ON PROD but NOT in git.
+   Server api.py md5 == the LOCAL WORKING TREE (5f38ac09...), not HEAD (535f0824...). This is the
+   exact deployed-not-committed pattern that caused the Jun-7 refactor regression (6 features
+   silently wiped). COMMIT BEFORE ANY FURTHER EDIT, or the next refactor built off HEAD deletes it.
+
+CUSTOM LOGIN GATE (replaces the browser's native Basic Auth dialog) — DEPLOYED, frontend LIVE
+  (server dist/index.html -> index-Wo6oMRja.js, the local build, contains the sp_auth key):
+  frontend/src/lib/auth.js (new, untracked) — patches window.fetch ONCE at import so every
+    existing fetch('/api/...') call in App.jsx picks up the stored Authorization header with no
+    call-site changes. Credentials live in sessionStorage ONLY (cleared when the tab closes),
+    never localStorage, never in a URL or a log line. A 401 on any /api/ call while credentials
+    are stored fires notifyAuthLost() -> clears + kicks back to the login screen.
+    verifyCredentials() deliberately bypasses the patched fetch so a wrong password at the login
+    screen cannot trip the auth-lost path.
+  frontend/src/LoginGate.jsx (new, untracked, 193 lines) — wraps <App/> in main.jsx; revalidates
+    stored credentials against /api/health on mount.
+  api.py — HTTPBasic(auto_error=False) + credentials typed Optional, and the
+    "WWW-Authenticate: Basic" header REMOVED from the 401. BOTH changes are load-bearing and
+    intentional: FastAPI's default HTTPBasic raises its own 401 with that header before
+    _require_auth ever runs, and that header is precisely what makes the browser pop its native
+    dialog — including on fetch/XHR calls from our own login screen. Missing credentials now
+    arrive as None and are handled identically to a wrong password.
+    Auth still FAILS CLOSED: the ENABLE_AUTH-with-empty-BASIC_AUTH_USERS 503 path is untouched.
+    Machine clients are unaffected because they send explicit headers already (live_tracker.py,
+    warm_volume_cache.sh) — but any FUTURE client that relied on the challenge header will not
+    be prompted. Keep that in mind before "restoring" the header.
+
+REVERSION FUNNEL DIAGNOSTICS (the direct follow-on to Jul-26): the warm cron is now firing
+  reversion-leaders and returning HTTP 200 — and setup_log.reversion_hunter is STILL 0 rows.
+  So a per-sub-condition journal line was added to get_reversion_leaders: one
+  `[reversion-funnel] {...}` JSON line per call counting quotes / screener_pass / ml_na / ml_buy /
+  rsi_none / oversold / vwap_none / below_vwap / deep_buy / potential_bounce / fk_downgrade /
+  logged, emitted on BOTH the empty-screener early return and the normal path. Verdict logic is
+  NOT touched — this only makes "genuinely rare" vs "one sub-condition never fires" decidable.
+  NOT YET OBSERVED: deployed at 23:00 IL with the market closed, so zero funnel lines exist in
+  the journal so far. First real data is tomorrow's in-window warm runs (from 16:00 IL / 09:00 ET).
+  READ THEM FIRST before touching anything reversion-related.
+  .gitignore (uncommitted): adds the three new scanner cache json files from a070db2.
+
+LIVE STATE VERIFIED Jul 29 2026 (read-only checks):
+  service active; mem peak 209MB (e2-medium still hugely over-provisioned); disk 27%.
+  Watchdog 09:30 digest ALL GREEN including the new check #6 (tracker + intraday + wedge fresh).
+  Resolver 03:00: candidates=50 attempted=50 resolved=44 stale=0 failed=0 (the 6 misses are
+    yfinance "possibly delisted" noise, e.g. SEM — not a resolver defect).
+  setup_log: gainers 705 rows (151 of them since Jul-27 — the warm fix is clearly working),
+    volume_leaders 367 (41 since Jul-27), reversion_hunter STILL 0 EVER, resolved total 840,
+    lev_sent populated on 565 rows.
+  tracker.db: 140 signals, resolved-with-beta 92 (was 78 at the sitting — Track 1's re-run
+    trigger is more TRADING DAYS, not row count).
+  Local test suite: 61 tests green ON THE UNCOMMITTED TREE.
+  warm log: exactly ONE HTTP 000 in its whole history, at 20:00Z today = the same minute as the
+    api.py deploy restart. Almost certainly the restart, but confirm it does not recur.
+
+STILL OPEN:
+  !! COMMIT + PUSH. a070db2 is committed but NOT pushed (origin/main = 709bc52), and the entire
+     Jul-29 login-gate + funnel change set is deployed-not-committed. Two separate gaps.
+  Read tomorrow's [reversion-funnel] lines -> decide whether reversion_hunter is rare or broken.
+  CLAUDE.md line counts are stale: api.py is 1778 lines (doc says 1387), scanners.py 624 (520),
+     db.py 465 (316). CLAUDE.md also does not yet document the login gate, the WWW-Authenticate
+     removal, the scanner disk caches, or the /api/recommendations/{id} split.
+  Lev display labels around semis 0.37 — unlocked at the sitting, display-only, not done.
+  Resolver does not capture forward-SPY -> Track 1's market-adjusted basis cannot run live
+     (retroactive yfinance computation is legitimate: outcomes are not forward-only data).
+  H1/H2 re-run once BREAKOUT CONFIRMED resolves past n>=15 per bucket under the NEW post-Jul-26
+     sample composition. Do not loosen bucket definitions.
+  EXPLORATORY-ONLY, do not act: BREAKOUT CONFIRMED shows negative median net ret_5d across all
+     21 resolved rows. Needs its own pre-registered question first.
+  frontend/dist/assets on the server holds 83 old JS bundles / 58MB — deploy.sh copies the full
+     dist and never prunes. Harmless at 27% disk, but it is unbounded growth.
+  VM Manager + Network Intelligence Center — disable in Console if still not done.
+  Service still runs as User=root (Phase 2); extend NYSE_HOLIDAYS for 2027; v_accel UX.
+
+NEXT MILESTONES:
+  Jul 30    — first [reversion-funnel] output from the in-window warm runs.
+  ~Aug      — ICE (Jul-23 BUY @ 0.76) resolves; tracker trading-day count grows toward a Track 1
+              re-run (days, not rows).
+  Months    — lev Stage B outcome test N=50 (BREAKOUT CONFIRMED-restricted); candidate for
+              re-registration on a broader signal set rather than an indefinite wait.
+  Nov 2026  — restore MIN_PRECISION_BUY 0.30 -> 0.48 (regime-mix criterion, not calendar).
+  Nov 27 / Dec 24 — first half-day sessions exercising session_close_hour().
+
+GIT STATE (Jul 29 2026) — THE MESSIEST STATE THIS PROJECT HAS BEEN IN SINCE JUN 7. Three layers:
+  origin/main = 709bc52 (Jul 26)
+  local main  = a070db2 (Jul 28, daily reviews tab) -- COMMITTED, NOT PUSHED
+  prod server = local WORKING TREE (api.py md5 5f38ac09) -- DEPLOYED, NOT COMMITTED:
+                  M .gitignore        (3 scanner cache json files)
+                  M api.py           (auth auto_error/Optional/no-WWW-Authenticate + funnel log)
+                  M frontend/src/main.jsx (LoginGate wrapper + auth.js import)
+                  ?? frontend/src/LoginGate.jsx
+                  ?? frontend/src/lib/auth.js
+  scanners.py and db.py are unchanged and in sync across all three. 61 tests green on the working
+  tree. Commit and push all of the above before starting anything else.
+
+JUL 29-30 2026 (Wed night) — DATA-COLLECTION IMPROVEMENT SEQUENCE: 3 SHIPS + GIT GAP CLOSED
+===========================================================================================
+Session question was "how do we improve data collection?" — answered in three ships, deliberately
+ordered CHEAPEST-DIAGNOSTIC-FIRST so instrumentation started accumulating while the bigger code
+was written. All four commits pushed; local == server == origin/main (md5-verified on api.py,
+scanners.py, db.py, live_tracker.py).
+
+  8c64d41  login gate + auth.js + LoginGate.jsx + .gitignore  (the Jul-29 deployed-not-committed
+           gap CLOSED — committed separately from today's work so the auth change keeps its own
+           reasoning trail; see the superseded Jul-29 entry above for the full design notes)
+  26a9f50  [reversion-funnel] diagnostics
+  e373ae5  screener plausibility guard (3 endpoints, 6 new unit tests -> 67 green)
+  e3cceff  forward-SPY capture in BOTH resolvers
+
+STEP 1 — REVERSION FUNNEL (26a9f50) — AND THE ANSWER IT ALREADY GAVE
+  One [reversion-funnel] JSON line per non-cached run, per sub-condition. Reviewer asked for the
+  Oversold leg to be split to sub-conditions in THIS round rather than a second deploy — done, so
+  the first line was already conclusive. Log-only: no DB writes, no verdict changes, no schema.
+  FIRST LIVE READING (Jul 29 23:01 IL, repeated identically at 23:17):
+    quotes=50 screener_pass=25 below_vwap=25 oversold=17 rsi_none=0 vwap_none=0
+    ml_buy=0 ml_na=17 deep_buy=0 potential_bounce=0 fk_downgrade=0 logged=0
+  READ IT AS: the technical legs are HEALTHY (every candidate below VWAP, 17 oversold, no missing
+  RSI/VWAP data). The pipeline is NOT broken. TWO stacked causes of the 0-row history:
+    (a) ml_buy=0 — the known 0.70 confidence drought, and
+    (b) ml_na=17/25 — most day-losers are NOT in the sp500/nasdaq100 scan caches and do not get an
+        ML opinion at all inside ThreadPoolExecutor(max_workers=5)/timeout=30 on a 2-shared-vCPU
+        box. The very population this tab exists to catch (non-index mid-caps) is the population
+        that falls outside the prediction budget.
+  => "reversion_hunter = 0 rows in 48 days" is EXPLAINED. Not a call-site bug (already verified
+     wired at api.py) and not the Jun-7 dropped-call-site pattern.
+  OPS BONUS FOUND: the journal is readable WITHOUT sudo — elimaoz99 is in the `adm` group. Use
+     journalctl -u stock-app.service | grep reversion-funnel     (no sudo, no password prompt)
+
+STEP 2 — SCREENER PLAUSIBILITY GUARD (e373ae5) — closes the Jul-13 TODO
+  Reviewer pushed back on the original FRED-analogy sketch on two points; BOTH were adopted, and
+  they are the reason the design is better than the queued TODO:
+   1. TRIGGER IS AN INTRA-SESSION FLAP, NOT AN ABSOLUTE THRESHOLD. Compare the RAW quote count to
+      the max seen earlier in the SAME trading session (market_calendar.us_trading_date key);
+      suspect when new < 50% of that baseline (_GUARD_RATIO). Rationale that killed the obvious
+      false-positive ("what if the market really only had 6?"): a genuinely thin market opens thin
+      and STAYS thin — only a partial payload flaps mid-session, exactly as on Jul 13 (25 rows then
+      6 rows, 24 seconds apart).
+   2. ON TRIP: SERVE THE CACHE DISPLAY-ONLY, WRITE NOTHING. Early return before any processing, so
+      zero setup_log rows are ever born from stale features. This REPLACED the reviewer's proposed
+      is_fallback=True column: a flag pushes the burden onto every future backtest/analysis author,
+      while skipping the write keeps the dataset clean by construction. USER CHOSE THIS EXPLICITLY.
+  Pure leg scanners.screener_payload_suspect() is unit-tested (incident replay 25->6, strict
+  boundary at exactly ratio*prev, no-prior-payload, growing payload, custom ratio). State wrapper
+  api.py _screener_guard() covers volume_leaders + reversion_hunter + gainers.
+  No same-session cache -> the thin payload passes through (thin truth beats nothing).
+  3 CONSECUTIVE trips -> Telegram alert (Yahoo API change / rate limit), plus a [screener-guard]
+  journal line on every trip. Baseline resets per session and per restart, deliberately NOT
+  persisted to disk (a restart mid-glitch re-baselining thin is accepted best-effort).
+
+STEP 3 — FORWARD-SPY AT RESOLUTION (e3cceff) — closes the sitting's Track-1 basis gap
+  The Jul-24 sitting found tracker outcomes hold only RAW fwd_ret and entry_spy_ret5d is
+  trailing-at-entry, so the dual-basis net-of-SPY leg had NEVER RUN. Now captured live:
+    live_tracker.py  outcomes.spy_fwd_ret (idempotent ALTER; FRACTION, same units as fwd_ret) —
+      SPY closes memoized per run over the exact entry/exit dates.
+    db.py setup_resolve  setup_log.spy_ret_1d / spy_ret_5d (PERCENT, same units as ret_1d/ret_5d) —
+      ONE batch SPY download spanning the whole night's rows, then per-row returns indexed by the
+      STOCK'S OWN BAR DATES so the SPY window matches ret_1d/ret_5d exactly (holidays/halts align
+      naturally, no NaN, no busday arithmetic).
+  MISSING-DATA POLICY (deliberate, differs from the reviewer's "write NULL and retry"): an
+    outcomes/resolved row is written EXACTLY ONCE, so resolving without SPY would leave a PERMANENT
+    null from a merely transient fetch failure. Therefore: tracker skips that row this run (retried
+    next run); setup_resolve defers the WHOLE batch one night if the SPY download fails.
+  ALSO REJECTED (reviewer's live_forward_spy/closed_forward_spy pair): there is no open-window
+    problem to manage. Both resolvers only write once the holding window has CLOSED (setup_log rows
+    stay resolved=0 until closes[5] exists, up to the 30-day tombstone), so forward-SPY is static
+    at birth. A daily-updating column would have introduced the first MUTABLE field into an
+    append-only research log — a step backwards.
+  THESE ARE OUTCOME COLUMNS WRITTEN AT RESOLUTION. The forward-only rule governs SIGNAL-TIME
+    features and is untouched. Rows resolved BEFORE Jul 30 keep NULL spy — legitimately
+    retro-computable in analysis if ever wanted, because outcomes are not forward-only data.
+  VERIFIED LIVE, three ways:
+    tracker: resolved NVDA + ABBV with spy_fwd_ret = -2.83% (NVDA -8.38% => alpha -5.6%;
+             ABBV +3.50% => alpha +6.3%) — first dual-basis rows the project has ever had.
+    setup_log: synthetic AAPL row dated Jul-13 resolved to ret_5d +2.92 vs spy_ret_5d -0.95 (it
+             spans the Jul-16 selloff, so the sign split is the expected shape), THEN DELETED —
+             verified 0 synthetic_test rows remain. Same synthetic-write technique that exposed the
+             root-owned falling_knife_log.db on Jul 10.
+    defer path: a 5-row and a 20-row batch both ran clean; the SEM "possibly delisted" yfinance
+             noise is pre-existing and unrelated.
+
+DOCS SWEEP (CLAUDE.md, Jul 30) — the handoff had flagged all of these as stale/missing:
+  line counts refreshed (api.py 1820 / scanners.py 638 / db.py 504 — doc said 1387/520/316);
+  login gate + the load-bearing WWW-Authenticate REMOVAL documented with a do-not-restore warning;
+  3 scanner disk caches added to the Databases table; /api/recommendations/{id} split added to Key
+  endpoints; funnel + guard + forward-SPY each documented in their own section; "THE SITTING"
+  pending-action block rewritten to CLOSED + code-freeze LIFTED (it still read as if upcoming);
+  H1/H2 re-run, the exploratory BREAKOUT CONFIRMED red flag, lev display labels, and the 58MB
+  dist-bundle growth moved into Pending actions.
+
+STILL OPEN (carried forward)
+  PREDICTION-BUDGET QUESTION — the one real decision this session opened, deliberately NOT taken.
+    Collect ~1 week of [reversion-funnel] lines first, then choose: (a) raise the 30s timeout —
+    simple but slows cold-cache responses and loads a 2-shared-vCPU box we downgraded on purpose;
+    (b) persistent per-symbol prediction cache with TTL, so each 25-min warm cycle judges a few
+    more names and coverage ACCUMULATES across the day instead of being crammed into 30s — likely
+    the strongest option; (c) accept "indexed losers only" as the tab's effective universe.
+    WHY WAIT: if ml_buy stays 0 anyway (the 0.70 drought), more coverage buys nothing — and
+    widening coverage CHANGES SAMPLE COMPOSITION, which is a new measurement regime that must be
+    pre-registered, exactly like the Jul-26 warm fix. Not an incidental tweak.
+  Lev display labels around semis 0.37 (display-only frontend, unlocked at the sitting).
+  H1/H2 re-run at n>=15 per bucket under the post-Jul-26 composition; do not loosen buckets.
+  BREAKOUT CONFIRMED negative-median-net observation: EXPLORATORY ONLY, needs its own
+    pre-registered question before any action.
+  Server dist/assets ~83 bundles / 58MB, unbounded (deploy.sh never prunes). Harmless at 27% disk.
+  VM Manager + Network Intelligence Center still billable in Console; service still User=root
+    (Phase 2); extend NYSE_HOLIDAYS for 2027; v_accel UX.
+
+NEXT MILESTONES
+  Jul 30 03:00 IL — first resolver run writing spy_ret_1d/spy_ret_5d on REAL rows (the synthetic
+                    proof already passed). 20:05 tracker run does the same for spy_fwd_ret.
+  ~1 week        — enough funnel lines to settle the prediction-budget question.
+  ~Aug           — ICE (Jul-23 BUY @ 0.76) resolves; tracker trading-day count grows toward a
+                   Track-1 re-run (trigger is DAYS, not rows: 23 days / 92 rows as of Jul 29).
+  Months         — lev Stage B outcome test N=50, BREAKOUT CONFIRMED-restricted (N=4 as of Jul 29);
+                   candidate for re-registration on a broader signal set rather than waiting.
+  Nov 2026       — restore MIN_PRECISION_BUY 0.30 -> 0.48 (regime-mix criterion, not calendar).
+  Nov 27 / Dec 24 — first half-day sessions exercising session_close_hour().
+
+GIT STATE (Jul 30 2026) — CLEAN, all three layers identical again:
+  origin/main = local main = prod server = e3cceff
+  md5-verified across api.py / scanners.py / db.py / live_tracker.py.
+  67 tests green. Only this handoff file is intentionally left uncommitted as a working journal.
+
+JUL 31 2026 (Fri) — REVIEW ROUND 2: p(BUY) DIAGNOSTICS, GUARD LEG 2, STAGE B SAMPLE RESET
+==========================================================================================
+  1b2868b  all three items (74 tests green; core_logic.py scp'd separately — deploy.sh
+           only ships api/scanners/db, so ANY core_logic change needs its own scp+restart)
+
+ITEM 1 — STAGE B SAMPLE RESET (zero-code decision, done FIRST and BLIND)
+  Found while pricing the reviewer's regime-shift concern: the Jul-26 warm-cron fix is a
+  SAMPLE COMPOSITION BREAK. BREAKOUT CONFIRMED accrual by week: W28=1, W29=1, W30=14.
+  Pooling pre- and post-fix rows into one N=50 Stage B sample would mix sampling regimes
+  inside the confirmatory test itself.
+  DECIDED: floor Stage B eligibility at 2026-07-27; N restarts at 0 (verified live:
+  "NotEnoughData: N = 0 ... No outcome columns were read"). Chosen over carrying the 4
+  pre-fix rows with an is_post_fix control factor — cleaner at small N, and the new rate
+  reaches 50 in weeks.
+  UNCHANGED: boundary semis 0.37 and min_n 50. The boundary is a MARKET-level covariate
+  distribution (identical for every row of a given scan), so it is independent of which
+  stocks get logged — the reset touches the outcome-test pool only.
+  MECHANISM (reusable): amendments are ADDITIVE WRITE-ONCE FILES, never edits to
+  lev_spec_frozen.json — its refuse-overwrite property is what makes the boundary
+  trustworthy. lev_spec_amendment_1.json carries its own timestamp/reason/refuse-overwrite;
+  stage_b() loads it and prints it loudly before the count gate.
+    lev_sitting.py --amend-sample-start YYYY-MM-DD --amend-reason "..."   (reads no DB column)
+  BUG CAUGHT WHILE IMPLEMENTING: stage_b()'s data SELECT still used the UNFLOORED
+  ELIGIBLE_WHERE while the count gate used the floored one — the analysis would have
+  silently pulled the pre-reset rows the gate excluded. A pre-registration guard applied in
+  only one of two places is worse than none. Both now use the same `where`.
+  RATE CAVEAT: W30's 14/wk projects to N=50 in late August + ~7d resolution lag, but W27 hit
+  9 with no fix in place, so the burst is partly market-driven. The trigger is the COUNT,
+  never the calendar; a checkpoint may evaluate N and accrual rate ONLY, never outcomes.
+
+ITEM 2 — p(BUY) IN THE FUNNEL (the reviewer's best question, with a corrected instrument)
+  Question: is ml_buy=0 a THRESHOLD problem or does the model reject beaten-down names
+  outright? The proposed instrument (avg/max `confidence`) would have answered WRONGLY:
+  confidence = proba[pred_idx] = probability of the WINNING class, so HOLD@0.85 says nothing
+  about BUY-ness, and a 3-class max is >= 1/3 BY CONSTRUCTION (the "max score 0.22" scenario
+  is structurally impossible).
+  SHIPPED: core_logic._p_buy(proba, classes) -> raw BUY-class probability, captured
+  PRE-options-adjustment so it stays a pure model output. Wired through both prediction
+  paths (get_prediction + scan_symbol).
+  PERSISTED: scan_results.proba_buy (idempotent ALTER + save/read). Necessary, not optional:
+  in-session most day-losers come from the sp500/nasdaq100 scan cache, so without this the
+  funnel would only see p(BUY) for the uncached minority — exactly the biased subset.
+  Old cached rows carry NULL until the next scan; get_latest_scan uses a "proba_buy" in
+  r.keys() guard.
+  FUNNEL now also logs p_buy_n / max_p_buy / avg_p_buy.
+  FIRST LIVE READING (13:10 IDT, pre-market): p_buy_n=17 max_p_buy=0.661 avg_p_buy=0.44
+  => CEILING, not categorical rejection. The model gets within 0.04 of the 0.70 gate on the
+  best loser and averages 0.44 across the field. Do NOT act on one pre-market line.
+  DIAGNOSTICS ONLY — no gate, no verdict change, nothing written to setup_log.
+
+ITEM 3 — GUARD LEG 2: HOLLOW PAYLOADS (scanners.screener_quotes_malformed, 7 new tests)
+  Real gap the reviewer found: the guard compared len(quotes) only, so a payload that keeps
+  its usual 50 objects but arrives with price/volume fields None/0 sails through — the
+  filtered list collapses and the rich cache is overwritten anyway, i.e. the Jul-13 damage
+  in a different disguise.
+  Checked on RAW quotes (majority missing regularMarketPrice/regularMarketVolume), which
+  keeps it MARKET-INDEPENDENT. Note why monitoring the FILTERED count instead would be
+  wrong: filtered size legitimately swings with the market (7 day_losers at Thursday's open
+  vs 25 by the close) and would false-positive constantly.
+  Never re-baselines on a hollow payload, so one bad response cannot lower the bar for the
+  next; 3 consecutive -> Telegram. _screener_guard now takes `quotes` instead of len(quotes).
+  (The reviewer's field names 'volume'/'close' are not the payload's — the Yahoo screener
+  keys are regularMarketVolume / regularMarketPrice.)
+
+ITEM 4 — ml_na ALERT: DROPPED, agreed. journald is PERSISTENT (/var/log/journal, 1.5GB,
+  entries back to Apr 17) so a week of funnel lines is safe with zero new code; grep at the
+  end of the week answers it.
+
+CORRECTION LOGGED (my own, from Jul 30): the "cold start" explanation for ml_na=17 was
+  WRONG. The Jul-30 lines split by clock (off-hours ml_na=17 on an IDENTICAL frozen 25-name
+  list; in-session 0-4), not by process age — two of the 17-lines were hours after any
+  restart. AND a Jul-31 pre-market line showed ml_na=3, which breaks the simple clock story
+  too. Treat the driver as unsettled: likely which symbols land on the list plus whether the
+  live predictions complete. The week of lines will settle it.
+
+STILL OPEN: unchanged from Jul 30 (prediction budget pending ~1wk of funnel lines, lev
+  display labels, H1/H2 at n>=15/bucket, BREAKOUT CONFIRMED negative-median EXPLORATORY
+  ONLY, dist/assets 58MB, VM Manager + Network Intelligence Center, User=root, NYSE_HOLIDAYS
+  2027, v_accel UX).
+
+GIT STATE (Jul 31 2026): origin/main = local = prod = 1b2868b (+ docs commit on CLAUDE.md).
+  74 tests green. Only this handoff file is intentionally uncommitted.
+
+
+AUG 2 2026 (Sun) — TRACKER REPORT BUG, MEMORY INDEX REWRITE, COHORT BACKED UP OFF-VM
+=====================================================================================
+  a5ccc07  live_tracker --report display fix
+  007f471  CLAUDE.md git-state refresh (superseded next day — see Aug 3)
+  ffdeead  lev_spec_frozen.json into the repo + lev_spec_provenance_1.json
+
+Market closed (Sunday). Session started as "where are we with the research" and turned into
+  two bug finds and one real single-point-of-failure closure.
+
+ITEM 1 — RESOLVER IS HEALTHY; THE 5-SESSION OFFSET LOOKS LIKE A STALL AND IS NOT
+  setup_log rows dated Jul 27-31 all showed resolved=0 with ret_1d NULL. That reads like the
+  Jul-9 starvation bug returning. It is not. A row is written ONCE, only when ret_5d exists,
+  i.e. 5 sessions later: Jul 24's 11 rows resolved in the Aug 1 run, and the Aug 2 run
+  correctly had candidates=0. Jul 27 tranche lands in the Aug 4 run.
+  RULE OF THUMB: before calling the resolver stalled, check the 5-session offset first.
+  Stage B pool: 16 BREAKOUT CONFIRMED banked Jul 27-31, lev_sent filled 16/16, N still 0
+  because none has matured. ~16/week -> N=50 mid-to-late August plus the lag.
+
+ITEM 2 — live_tracker --report HAS BEEN PRINTING RETURNS 100x TOO SMALL (fixed, a5ccc07)
+  fwd_ret is stored as a FRACTION. resolve_outcomes() multiplies by 100 before appending, so
+  the Telegram per-row lines were right — but print_report reads raw DB rows and printed them
+  with a % suffix and no scaling. Every Ret in the table AND the "Avg ret" summary (which the
+  Telegram summary line consumes from the same stats dict) were understated 100x.
+  Displayed -0.03% was really -2.59%. Header "Avg ret: -0.00%" was really -0.35%.
+  tracker.db itself was never affected — data correct throughout, only the reader was wrong.
+  SECOND BUG, same commit: the header claimed "Long-only Expert (>=70%)" but log_signals()
+  has NO confidence filter at all — it logs every signal=='BUY' row, i.e. the full BUY tier
+  from >=0.57 scanner-side. CONF_MIN is only the /api/scan request param. Header now states
+  the real sample plus the hit definition (ret >= 3% in 10 trading days), which the old label
+  never disclosed.
+  CONSEQUENCE FOR ANY PAST READING: pre-Aug-2 "avg ret" quoted from the report or Telegram was
+  100x too small. PRECISION figures are unaffected — hits were always counted correctly.
+  Current: 116 resolved, precision 33.6%, avg ret -0.35%, 35 pending. Question B (walk-forward
+  retraining) needs N>=200 with consistent model_version; 112 of the 116 qualify. ~15-20
+  signals/week -> N=200 around mid-September including the 10-day resolution lag.
+  EXPLORATORY, NOT A RESULT: bucketing the 116 by confidence gives a monotonic gradient
+  (>=70%: 24 rows, 45.8% hit, +2.4% avg | 63-70%: 48 rows, 39.6%, -0.34% | <63%: 44 rows,
+  20.5%, -1.85%). Bucket edges were chosen by me AFTER seeing the data — textbook HARKing.
+  Do NOT raise any threshold on this. It is a hypothesis to pre-register before N=200.
+
+ITEM 3 — MEMORY INDEX REWRITTEN (agent auto-memory, not repo)
+  MEMORY.md had grown into paragraphs duplicating the memory files themselves, and was showing
+  Jul-31 state while the files already held Aug-2 state. Cut 8,622 -> 4,308 chars: one pointer
+  line per memory, content stays in the files, guardrails kept visible in the pointers.
+
+ITEM 4 — THE COHORT HAD ZERO COPIES OUTSIDE THE VM (closed)
+  Discussion of "where should research live" surfaced the actual risk, which was not file
+  format. Findings, in order of how much they changed the picture:
+  (a) lev_spec_amendment_1.json does NOT cite a hash of the frozen spec. The provenance
+      question the review asked - "is there a hash + time trace for 0.37 from before the
+      outcomes" - answers NO on hashes.
+  (b) BUT lev_spec_frozen.json stores its full derivation (13 day-medians, n_days, n_rows),
+      and it REPRODUCES: recomputing from setup_log.db gives 13/13 day-medians matching to the
+      last digit, n_rows 362, boundary 0.37 / 0.47 exactly. For a deterministic function of
+      recorded data the strong evidence is REPRODUCIBILITY, not provenance — you need not
+      trust when 0.37 was written if anyone can recompute it.
+  (c) What reproduction does NOT establish: that the rule FAMILY was chosen blind. That rests
+      on lev_sitting.py being committed 65e32a1 on Jul 14, ten days before frozen_at, plus
+      Stage B never having run. Both under our control. Call it discipline with a code trail,
+      not third-party certification.
+  (d) THEREFORE the asset is setup_log.db, not the JSON. The JSON regenerates; the 362 rows of
+      signal-time covariates cannot (forward-only forbids backfilling them). And it had NO
+      copy off the VM. That was the real single point of failure the whole time.
+  TWO CORRECTIONS I OWE MYSELF: "a commit timestamp cannot be forged" is FALSE (GIT_AUTHOR_DATE
+  is an env var). "If the VM dies the proof dies" is FALSE for the number — it regenerates.
+  BACKUP DONE (read from server, write to Mac, live DB never stopped or modified):
+    VACUUM INTO snapshot, sqlite 3.45.1 via venv/bin/python3 (no sqlite3 CLI on the VM)
+    sha256 85714536c652ab2e768a41845bf60d26d875dded85f4379205c20c6fc7e11cc7
+    1185 rows, cohort 362 rows over 13 days; hashed on the VM and re-hashed after transfer
+    live file re-hashed after the VACUUM — unchanged, so no write landed mid-operation
+    RESTORE VERIFIED, not just bytes: recomputed 0.3700 / 0.4700 FROM the Mac copy
+    dropped in ~/Desktop/Stock-predictor/_db_snapshots/ with SHA256SUMS.txt; *.db gitignored
+  Also pulled the two setup_log.db.bak files (Jun 21, Jul 7) off the VM. IMPORTANT NOT TO
+  MISREMEMBER: they are pre-cohort fossils, not a snapshot chain — both predate the lev columns
+  (deployed the evening of Jul 7), so they can falsify a rewrite of rows BEFORE Jul 7 and say
+  nothing about the 362-row cohort. For the cohort itself there was no snapshot before this one.
+  DECOY REMOVED: the Mac had setup_log.db with 0 rows (schema stub from a Jul-10 local run) —
+  right name, right place, would quiet any search. Renamed to
+  setup_log.EMPTY-SCHEMA-DO-NOT-USE.2026-07-10.db, not deleted.
+  WAL NOTE: sha256 of a WAL database is only the full logical content when no -wal sidecar
+  exists at that instant. Use VACUUM INTO for a consistent snapshot without stopping anything.
+  STILL OPEN: no third copy outside the two machines. GCS with versioning is the right target
+  (survives VM deletion); it is a cost + setup decision, not a copy. iCloud rejected as a quiet
+  default — nearly unused here, and it would ship trading research to a provider not chosen.
+
+ITEM 5 — REPO CONFIRMED PUBLIC (api.github.com, unauthenticated 200)
+  Flagged only AFTER pushing lev_spec_frozen.json + the provenance record. Should have been
+  connected before the push, not after. Data is not exposed (*.db gitignored, _db_snapshots/
+  added to .gitignore) but methodology and thresholds are. Decision deferred deliberately.
+
+
+AUG 3 2026 (Mon) — CLAUDE.md TRIM: GUARDRAIL INVENTORY, STALE GIT-STATE OUT, PENDING MOVED
+===========================================================================================
+  09539d3  stage 0 — _guardrail_inventory.md + check_guardrails.py (no CLAUDE.md change)
+  b8923f1  stage 1 — delete both git-state sections, add the no-live-state rule
+  d260cb0  stage 2a — lift 5 research rules out of Pending actions
+  0f43ad8  stage 2b — Pending actions -> PENDING.md, pointer left behind
+
+CONTEXT: an Anthropic piece on context engineering for Claude 5 (Claude Code deleted 80% of its
+  own system prompt with no eval loss). Measured our file: 497 lines, 45,924 chars, ~11.5k
+  tokens loaded EVERY session, over the ~40k large-memory warning threshold.
+  The /doctor run of Aug 2 could not see any of this — it ran from ~ and the project CLAUDE.md
+  is in ~/Desktop/Stock-predictor. Right tool, empty room. Run it FROM THE PROJECT DIRECTORY.
+
+THE SELF-INFLICTED BUG (the reason stage 1 is a bug fix, not a cleanup)
+  Aug 2 I added a git-state block to CLAUDE.md — content the a5ccc07 commit message already
+  carried verbatim. By that evening HEAD was ffdeead and the block said a5ccc07, while an older
+  Jun-7 section said 9fe3557. Two sections, both wrong, contradicting each other, in
+  always-loaded context. That is not wasted tokens, it is context poison: the model reconciles
+  two stale values instead of reading git log.
+  SAME FAILURE CLASS as the N=16/50 problem. The rule is about the KIND of information, not
+  the filename. Anything that changes without an edit here does not belong in a constant context.
+
+STAGE 0 — THE SAFETY NET (this is what makes the rest safe)
+  _guardrail_inventory.md: 77 IRON guardrails quoted verbatim, stable GR-nnn ids, source
+  section, extracted by a FULL READ of all 497 lines. Not by grep: grepping never/do-not/must
+  returned 50 hits, and several were file descriptions that merely contained the word
+  (get_lev_sentiment, get_sector_heatmap, watchdog.py). grep counts words, not rules. The full
+  read found 77 actual rules, including ones with no imperative in them at all (SELL->HOLD,
+  period="6mo" NOT 3mo, Wilder's smoothing).
+  check_guardrails.py: every IRON quote must appear verbatim in CLAUDE.md (or in a skill once
+  stage 4 moves WORKFLOW content). Non-zero exit = roll back the step. Refuses to pass
+  vacuously on an empty inventory. Green on baseline 77/77, and after every step since.
+  THE CATCH THAT JUSTIFIED THE WHOLE EXERCISE: Pending actions was NOT pure state. GR-019..023
+  are IRON rules physically inside it (write-once amendments, closed-confirmatory family, do
+  not loosen buckets, exploratory-only, budget change = sample composition change). Moving the
+  section in one step would have carried five guardrails out of always-loaded context.
+  Hence stage 2 split into 2a (extract rules) then 2b (move state), never one commit.
+  REJECTED — HTML id anchors instead of verbatim quotes: 77 anchors cost ~288 tokens
+  permanently in the file we are shrinking, and an id-only check passes even if the rule text
+  under the marker is deleted. That fails OPEN, which is the Jun-7 shape. Kept exact match and
+  shortened the 5 longest keys (141 -> ~70 chars) to their operative core instead. A checker
+  failure after an intentional reword means "update the inventory in the same commit" — the
+  friction is the mechanism, a net that updates itself is not a net.
+
+PENDING.md AND ITS RULE (why not "30 days -> archive")
+  Every item declares TRIGGER (a condition plus THE COMMAND that answers it — never expires) or
+  REVIEW (a date). An item with neither is the trash, and that is what gets swept.
+  A calendar sweep would have deleted the Stage B trigger, the N>=50 instrumented-gate
+  calibration and the per-regime analysis — count-triggered pre-registrations that are SUPPOSED
+  to sit for months. Same category error as the drought criterion deferred in July as
+  mis-specified. Triggers name commands rather than restating counts, so this file cannot rot
+  the way the git-state blocks did. Closing = move to Archive with an outcome line, append-only.
+  All 15 old items verified present in the new file by probe, not by eye.
+
+RESULT SO FAR: 45,238 -> 41,420 chars, ~950 tokens/session. Only 8% — deliberately. What came
+  out is what was HARMFUL (contradictory git state, a research queue pulling every session
+  toward itself), not what is BIG. The bulk (architecture line counts, ENV table, feature specs,
+  the downgrade and restoration sagas) is derivable or narrative and belongs to stage 3.
+  STAGES 3-4 NOT STARTED: classify every section KEEP_GOTCHA / SKILL / DERIVED_DELETE /
+  NARRATIVE_DELETE / STATE_DELETE as a report first, execute only after approval. Skills to
+  extract: post-deploy checklist, DB debug queries. IRON never moves to a skill — a skill loads
+  only when called, and these must be present even for an innocent question.
+  Stopping mid-way is a legitimate outcome; 8k with full IRON is a win.
+
+HONEST GAP IN THE INVENTORY: the deleted a5ccc07 paragraph contained one real gotcha, not just
+  narrative — that tracker.db pools the full BUY tier (>=0.57), not >=0.70. I classified the
+  whole block as narrative, so the checker would not have caught its loss. It survives because
+  it is now in live_tracker.py's own header and an inline comment, which is a stronger location
+  than prose. But the inventory is not perfect and should not be trusted as if it were.
+
+STILL OPEN (moved to PENDING.md — this handoff no longer duplicates the list):
+  biggest remaining risk is unchanged and is not in this file's subject matter — no third copy
+  of setup_log.db outside the VM and this Mac.
