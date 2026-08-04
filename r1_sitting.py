@@ -68,7 +68,14 @@ MODEL_VERSION  = "2026-05_ema_dist_regime"   # consistent-version rows only
 FORWARD_DAYS   = 10        # trading days — MUST match live_tracker.FORWARD_DAYS
 HIT_THRESHOLD  = 0.03      # MUST match live_tracker.HIT_THRESHOLD
 COMMISSION_PCT = 0.16      # round trip, 0.08% per side
-MIN_N_ROWS     = 80
+# The two gates are sized to bind at roughly the SAME time, on purpose. The
+# inference is day-clustered, so 25 days is the statistically meaningful bar;
+# at the cohort's observed ~2.5 rows per signal day, 25 days yields ~62 rows.
+# A row gate of 80 would push the unblind 3-4 months past the day gate while
+# adding little, and would make the day gate decorative. Neither gate should be
+# decoration. Set BEFORE the sitting, with no outcome ever read — moving it
+# after the freeze would be indistinguishable from moving the goalposts.
+MIN_N_ROWS     = 60
 MIN_N_DAYS     = 25        # cluster-bootstrap effective N — see docstring
 BOOT_B         = 10_000
 BOOT_SEED      = 42
