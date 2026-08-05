@@ -19,7 +19,12 @@ SSH_KEY="$HOME/.ssh/gcp_stock_rsa"
 SERVER="elimaoz99@35.239.74.178"
 REMOTE_DIR="/home/elimaoz99/stock_predictor"
 PROJECT_DIR="$HOME/Desktop/Stock-predictor"
-BACKEND_FILES=("api.py" "scanners.py" "db.py")
+# market_calendar.py belongs HERE, not in SUPPORT_FILES: db.py imports
+# has_session_opened() from it, so it is inside the service's import graph and
+# is bound by the same must-travel-together rule as the original trio. Shipping
+# db.py without it is the ImportError-on-startup failure, one file further out.
+BACKEND_FILES=("api.py" "scanners.py" "db.py" "market_calendar.py"
+               "core_logic.py" "models.py")
 # Support scripts: shipped on every deploy, but NOT part of the trio's
 # must-travel-together rule — nothing imports them, so they cannot ImportError
 # the service. They live here to end the "deployed by hand, drifted from git"
@@ -27,7 +32,8 @@ BACKEND_FILES=("api.py" "scanners.py" "db.py")
 # NOTE: the wider runtime set (core_logic.py, models.py, market_calendar.py and
 # the remaining cron scripts) is still deployed manually — expanding to those
 # changes model/behaviour surface and is its own decision, not this one.
-SUPPORT_FILES=("backup_dbs.py" "r1_sitting.py" "watchdog.py")
+SUPPORT_FILES=("backup_dbs.py" "r1_sitting.py" "watchdog.py" "live_tracker.py"
+               "resolve_setups.py" "fetch_intraday.py" "pre_scan.py")
 SERVICE="stock-app.service"
 
 BACKEND_ONLY=false
