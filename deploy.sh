@@ -20,6 +20,14 @@ SERVER="elimaoz99@35.239.74.178"
 REMOTE_DIR="/home/elimaoz99/stock_predictor"
 PROJECT_DIR="$HOME/Desktop/Stock-predictor"
 BACKEND_FILES=("api.py" "scanners.py" "db.py")
+# Support scripts: shipped on every deploy, but NOT part of the trio's
+# must-travel-together rule — nothing imports them, so they cannot ImportError
+# the service. They live here to end the "deployed by hand, drifted from git"
+# pattern that cost the Jun 7 refactor its May features.
+# NOTE: the wider runtime set (core_logic.py, models.py, market_calendar.py and
+# the remaining cron scripts) is still deployed manually — expanding to those
+# changes model/behaviour surface and is its own decision, not this one.
+SUPPORT_FILES=("backup_dbs.py" "r1_sitting.py" "watchdog.py")
 SERVICE="stock-app.service"
 
 BACKEND_ONLY=false
@@ -46,7 +54,13 @@ cd "$PROJECT_DIR"
 # ── Stage 0 — Blocking unittest gate ─────────────────────────────────────────
 stage "unittest gate"
 python3 -m unittest test_scanners
-echo "  ✓ Local tests passed. Gate opened."
+# Each support script carries its own selftest; the gate runs them so nothing
+# reaches the server unproven. backup_dbs verifies the base64/hex hash logic
+# that silently degraded to "unverified" before, r1_sitting verifies the
+# research gates and the bootstrap on synthetic data.
+python3 backup_dbs.py --selftest
+python3 r1_sitting.py --selftest
+echo "  ✓ Local tests + support selftests passed. Gate opened."
 
 # ── Stage 1 — Frontend build + local hash extraction (source of truth) ───────
 LOCAL_ASSET=""
@@ -65,8 +79,8 @@ fi
 # ── Stage 2 — Unified, atomic SCP upload ─────────────────────────────────────
 stage "scp backend"
 # The three core files travel together — api.py imports scanners + db at module load.
-scp -i "$SSH_KEY" "${BACKEND_FILES[@]}" "$SERVER:$REMOTE_DIR/"
-echo "  ✓ Backend files copied."
+scp -i "$SSH_KEY" "${BACKEND_FILES[@]}" "${SUPPORT_FILES[@]}" "$SERVER:$REMOTE_DIR/"
+echo "  ✓ Backend files copied (${#BACKEND_FILES[@]} core + ${#SUPPORT_FILES[@]} support)."
 
 if [[ "$BACKEND_ONLY" == false ]]; then
   stage "scp frontend"

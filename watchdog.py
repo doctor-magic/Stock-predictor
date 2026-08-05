@@ -10,6 +10,9 @@ Checks (each isolated; a check crash reports red, never kills the run):
   6. Cron output freshness — the three daily crons nothing else watches
      (tracker.db / intraday_cache.db / wedge_cache.json). Silent-cron-death
      guard; recreates the detector for the Jun 6-14 live_tracker outage.
+  7. Backup receipt freshness — backup_dbs.py writes backup_state.json only
+     after every database is uploaded AND hash-verified. Reads the local
+     receipt, never GCS, so this stays credential-free and read-only.
 
 Sends ONE message every day (green heartbeat or red alert) on the existing
 pre_scan Telegram channel. Alert-only by design: this script never fixes,
@@ -164,6 +167,30 @@ try:
         add(False, "wedge", f"check error: {e}")
 except Exception as e:
     add(False, "cron-freshness", f"check error: {e}")
+
+# --- 7. backup receipt freshness ---------------------------------------------
+# backup_dbs.py writes backup_state.json ONLY after every database uploaded and
+# hash-verified, so a fresh receipt with ok=true is proof of a proven backup.
+# A MISSING receipt reports green-but-labelled rather than red: the backup cron
+# is wired after this check ships, and days of false alarms train people to
+# ignore the digest. Once the receipt exists, staleness and ok=false are red —
+# which is the failure that actually happens (a cron that stops running still
+# leaves its last receipt behind, and that receipt goes stale).
+try:
+    import time as _time
+    if not os.path.exists(os.path.join(BASE, "backup_state.json")):
+        add(True, "backup", "no receipt yet — backup cron not configured")
+    else:
+        with open(os.path.join(BASE, "backup_state.json")) as f:
+            bs = json.load(f)
+        age_h = (_time.time() - datetime.fromisoformat(bs["ts"]).timestamp()) / 3600
+        dbs = bs.get("databases", [])
+        verified = sum(1 for d in dbs if d.get("verified"))
+        add(bs.get("ok") is True and age_h <= 26 and verified == len(dbs) and dbs,
+            "backup", f"age={age_h:.0f}h verified={verified}/{len(dbs)} "
+                      f"bucket={bs.get('bucket') or 'NONE'}")
+except Exception as e:
+    add(False, "backup", f"check error: {e}")
 
 # --- report ------------------------------------------------------------------
 all_ok = all(ok for ok, _, _ in checks)
