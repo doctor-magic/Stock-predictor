@@ -100,8 +100,16 @@ PRIMARY_RULE = ("PASS iff lower bound of 95% day-cluster CI on median alpha_net 
 
 # ── Trading-day arithmetic — identical to live_tracker.resolve_outcomes ────
 def _holidays():
-    from market_calendar import NYSE_HOLIDAYS_2026
-    return sorted(NYSE_HOLIDAYS_2026)
+    # ALL covered years. Changed Aug 5 2026, AFTER the freeze, deliberately:
+    # this function's contract is "identical to live_tracker.resolve_outcomes",
+    # and that now uses the full table, so staying on 2026 would have made R1's
+    # exit dates disagree with the very resolver that produced the outcomes it
+    # reads. R1 unblinds around Dec 2026 and its 10-day windows run into 2027,
+    # where an unlisted holiday is silently counted as a trading day.
+    # This touches no frozen value — not the cohort, gates, rule, seed or
+    # universe — and reads no outcome column. r1_spec_frozen.json is unchanged.
+    from market_calendar import NYSE_HOLIDAYS
+    return sorted(NYSE_HOLIDAYS)
 
 
 def exit_date_for(entry_day: str) -> str:

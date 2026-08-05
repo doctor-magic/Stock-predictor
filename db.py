@@ -254,6 +254,22 @@ def setup_db_init():
         # forward-only rule (signal-time features) is untouched. Units: percent.
         "ALTER TABLE setup_log ADD COLUMN spy_ret_1d REAL",
         "ALTER TABLE setup_log ADD COLUMN spy_ret_5d REAL",
+        # Gate DENOMINATORS (Aug 5 2026) — blocked_reasons alone cannot answer the
+        # pre-registered per-gate questions, because an empty list is stored as
+        # NULL and NULL therefore means three different things at once: the row
+        # predates Jul 5, or the gate was evaluated and did not fire, or the gate
+        # could not be evaluated at all (off-hours for HOD, fewer than three
+        # readings for the RVOL slope). Without separating "did not fire" from
+        # "never ran", the control group is a mix of market conditions and any
+        # gate comparison is confounded.
+        # Both values are already computed per row and were simply not persisted:
+        #   rvol_trend    "up"/"flat"/"down"; NULL = still warming up
+        #   hod_gap_ratio non-NULL = the gate ran; NULL = outside its window
+        # Signal-time features, additive, NULL for existing rows — analyses filter
+        # WHERE <col> IS NOT NULL. No gate behaviour and no logging coverage
+        # changes, so sample composition is untouched and this needs no amendment.
+        "ALTER TABLE setup_log ADD COLUMN rvol_trend TEXT",
+        "ALTER TABLE setup_log ADD COLUMN hod_gap_ratio REAL",
     ):
         try:
             con.execute(_mig)
@@ -290,8 +306,8 @@ def setup_log_event(source: str, row: dict):
                     vol_ratio, rsi, beta, beta_blocked, above_sma50,
                     regime, reversion_verdict, vwap_gap_pct, rvol_val, rvol_alert,
                     dist_from_sma50, blocked_reasons, market_state, vix_state,
-                    lev_sent_semis, lev_sent_qqq
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    lev_sent_semis, lev_sent_qqq, rvol_trend, hod_gap_ratio
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
                 source, row.get("symbol"), today,
                 datetime.utcnow().isoformat(),
@@ -315,6 +331,8 @@ def setup_log_event(source: str, row: dict):
                 row.get("vix_state"),
                 row.get("lev_sent_semis"),
                 row.get("lev_sent_qqq"),
+                row.get("rvol_trend"),
+                row.get("hod_gap_ratio"),
             ))
             con.commit()
         con.close()

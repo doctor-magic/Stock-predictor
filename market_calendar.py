@@ -30,7 +30,32 @@ NYSE_HOLIDAYS_2026 = frozenset({
     "2026-12-25",  # Christmas
 })
 
-_COVERED_YEARS = frozenset({2026})
+# NYSE FULL-DAY closures for 2027 (added Aug 5 2026 — the guard fails OPEN on an
+# uncovered year, applying only the weekend filter, so this had to land before
+# 2027-01-01 rather than in December). Dates derived from the federal observance
+# rules: a Saturday holiday moves to the preceding Friday, a Sunday to the
+# following Monday. Good Friday is the one date that is not a fixed rule — it
+# follows Easter, which is 2027-03-28. Worth a sanity check against the official
+# NYSE calendar when it is published.
+NYSE_HOLIDAYS_2027 = frozenset({
+    "2027-01-01",  # New Year's Day
+    "2027-01-18",  # MLK Jr. Day
+    "2027-02-15",  # Washington's Birthday
+    "2027-03-26",  # Good Friday
+    "2027-05-31",  # Memorial Day
+    "2027-06-18",  # Juneteenth (observed — Jun 19 is a Saturday)
+    "2027-07-05",  # Independence Day (observed — Jul 4 is a Sunday)
+    "2027-09-06",  # Labor Day
+    "2027-11-25",  # Thanksgiving
+    "2027-12-24",  # Christmas (observed — Dec 25 is a Saturday)
+})
+
+# The set the guard actually consults. Per-year sets stay exported because other
+# modules import them by name; adding a year means adding it HERE too, which is
+# exactly the step that would otherwise be forgotten.
+NYSE_HOLIDAYS = NYSE_HOLIDAYS_2026 | NYSE_HOLIDAYS_2027
+
+_COVERED_YEARS = frozenset({2026, 2027})
 
 # NYSE HALF-DAYS (13:00 ET close). The market IS open — is_us_market_session()
 # returns True — but time-windowed logic (Power Hour, HOD gate) must derive its
@@ -39,6 +64,15 @@ EARLY_CLOSES_2026 = frozenset({
     "2026-11-27",  # day after Thanksgiving
     "2026-12-24",  # Christmas Eve
 })
+
+# 2027 has only ONE half-day: Christmas Eve is the OBSERVED full closure that
+# year (Dec 25 is a Saturday), and Jul 3 falls on a Saturday, so neither of the
+# usual two applies.
+EARLY_CLOSES_2027 = frozenset({
+    "2027-11-26",  # day after Thanksgiving
+})
+
+EARLY_CLOSES = EARLY_CLOSES_2026 | EARLY_CLOSES_2027
 
 
 def us_trading_date() -> date:
@@ -49,7 +83,7 @@ def us_trading_date() -> date:
 def is_us_market_session(d: "date | None" = None) -> bool:
     """True iff `d` (default: today in ET) is a NYSE full trading day.
 
-    Weekends and 2026 NYSE holidays -> False. If `d` falls in a year whose
+    Weekends and known NYSE holidays -> False. If `d` falls in a year whose
     holiday table is not loaded, we still apply the weekend filter and warn
     loudly (so the table gets extended) rather than silently mislabel a holiday.
     """
@@ -60,7 +94,7 @@ def is_us_market_session(d: "date | None" = None) -> bool:
     if d.year not in _COVERED_YEARS:
         print(f"[market_calendar] WARNING: {d.year} NYSE holidays not in table — "
               f"extend NYSE_HOLIDAYS (weekend filter still applied)", file=sys.stderr, flush=True)
-    return d.isoformat() not in NYSE_HOLIDAYS_2026
+    return d.isoformat() not in NYSE_HOLIDAYS
 
 
 def session_close_hour(d: "date | None" = None) -> int:
@@ -71,7 +105,7 @@ def session_close_hour(d: "date | None" = None) -> int:
     """
     if d is None:
         d = us_trading_date()
-    return 13 if d.isoformat() in EARLY_CLOSES_2026 else 16
+    return 13 if d.isoformat() in EARLY_CLOSES else 16
 
 
 def has_session_opened(now: "datetime | None" = None) -> bool:

@@ -18,7 +18,7 @@ import urllib.request
 from datetime import date, timedelta
 from pathlib import Path
 
-from market_calendar import is_us_market_session, NYSE_HOLIDAYS_2026
+from market_calendar import is_us_market_session, NYSE_HOLIDAYS
 
 import numpy as np
 import pandas as pd
@@ -224,7 +224,10 @@ def _get_market_context() -> tuple[float | None, str | None, float | None]:
 # ── Helpers ─────────────────────────────────────────────────────────────────────
 # np.busday_* only excludes weekends by default; without the NYSE holiday list a
 # holiday week resolves signals one trading day early (9 real sessions counted as 10).
-_NYSE_HOLIDAYS = sorted(NYSE_HOLIDAYS_2026)
+# All covered years, not just 2026 — np.busday_count/offset silently treats an
+# unlisted holiday as a trading day, which would shift every resolution window
+# that straddles one.
+_NYSE_HOLIDAYS = sorted(NYSE_HOLIDAYS)
 
 
 def trading_days_elapsed(from_date: date) -> int:
