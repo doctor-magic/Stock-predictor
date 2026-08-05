@@ -13,6 +13,10 @@ Checks (each isolated; a check crash reports red, never kills the run):
   7. Backup receipt freshness — backup_dbs.py writes backup_state.json only
      after every database is uploaded AND hash-verified. Reads the local
      receipt, never GCS, so this stays credential-free and read-only.
+  8. Mac pull-backup heartbeat — pull_backup.py posts mac_backup_heartbeat.json
+     here after every verified pull. This is the check that makes a laptop-based
+     backup trustworthy: an always-on VM runs its cron nightly, a laptop runs it
+     when awake, and without this the backup could stop for weeks unnoticed.
 
 Sends ONE message every day (green heartbeat or red alert) on the existing
 pre_scan Telegram channel. Alert-only by design: this script never fixes,
@@ -191,6 +195,28 @@ try:
                       f"bucket={bs.get('bucket') or 'NONE'}")
 except Exception as e:
     add(False, "backup", f"check error: {e}")
+
+# --- 8. Mac pull-backup heartbeat --------------------------------------------
+# The backup itself is a PULL from the Mac, so the server holds no credential
+# and cannot touch its own backups. The cost of that design is that the job runs
+# on a laptop; this check is what buys the reliability back.
+# 72h, not 26h: a closed laptop over a weekend is normal and must not cry wolf,
+# while "stopped weeks ago" — the failure this exists for — still trips it.
+try:
+    import time as _time
+    hb_path = os.path.join(BASE, "mac_backup_heartbeat.json")
+    if not os.path.exists(hb_path):
+        add(True, "mac-backup", "no heartbeat yet — pull backup not configured")
+    else:
+        with open(hb_path) as f:
+            hb = json.load(f)
+        age_h = (_time.time() - datetime.fromisoformat(hb["ts"]).timestamp()) / 3600
+        files = hb.get("files", [])
+        add(hb.get("ok") is True and age_h <= 72 and bool(files),
+            "mac-backup", f"age={age_h:.0f}h files={len(files)} "
+                          f"host={hb.get('host', '?')}")
+except Exception as e:
+    add(False, "mac-backup", f"check error: {e}")
 
 # --- report ------------------------------------------------------------------
 all_ok = all(ok for ok, _, _ in checks)

@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.elim.stockpredictor.pullbackup</string>
+
+    <!-- Runs the installed copy, NOT the repo copy: ~/Desktop is TCC-protected
+         and a launchd agent is denied there. deploy.sh reinstalls this file on
+         every deploy, so git remains the source of truth. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>/Users/elim/Library/Application Support/StockPredictor/pull_backup.py</string>
+    </array>
+
+    <!-- 08:00 local. If the Mac is asleep at 08:00, launchd fires the job on the
+         next wake rather than skipping the day — which is the whole reason a
+         laptop-based backup is viable at all. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key><integer>8</integer>
+        <key>Minute</key><integer>0</integer>
+    </dict>
+
+    <!-- Deliberately false: loading or reloading the agent should not fire an
+         unscheduled backup run. -->
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/elim/Library/Application Support/StockPredictor</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/elim/Library/Application Support/StockPredictor/pull_backup.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/elim/Library/Application Support/StockPredictor/pull_backup.log</string>
+</dict>
+</plist>

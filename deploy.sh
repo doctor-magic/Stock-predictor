@@ -60,7 +60,20 @@ python3 -m unittest test_scanners
 # research gates and the bootstrap on synthetic data.
 python3 backup_dbs.py --selftest
 python3 r1_sitting.py --selftest
+# pull_backup.py is Mac-side only and is deliberately NOT in SUPPORT_FILES —
+# the server must never hold the pull logic or the key that drives it. Its
+# selftest runs here anyway, because it is half of the backup system.
+python3 pull_backup.py --selftest
 echo "  ✓ Local tests + support selftests passed. Gate opened."
+
+# ── Stage 0b — install the Mac backup agent's copy ───────────────────────────
+# The launchd agent cannot read from ~/Desktop (TCC), so it runs a copy from an
+# unprotected path. git stays the source of truth and this reinstalls on every
+# deploy, so the copy cannot drift the way hand-placed files did before.
+AGENT_DIR="$HOME/Library/Application Support/StockPredictor"
+mkdir -p "$AGENT_DIR"
+install -m 755 pull_backup.py "$AGENT_DIR/pull_backup.py"
+echo "  ✓ Mac backup agent refreshed at $AGENT_DIR"
 
 # ── Stage 1 — Frontend build + local hash extraction (source of truth) ───────
 LOCAL_ASSET=""
