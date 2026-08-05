@@ -192,7 +192,12 @@ def run(bucket=None, keep=False):
             shutil.rmtree(workdir, ignore_errors=True)
 
     ok = not failures
-    if bucket or ok:
+    # The receipt means one thing: "a verified backup reached the bucket". A
+    # snapshot-only run is a local diagnostic and must not write one, or the
+    # watchdog reads verified=0/N and reports a failure that did not happen.
+    # A failed run WITH a bucket does write ok=false — that failure is real and
+    # the watchdog should see it.
+    if bucket:
         write_receipt(entries, bucket, ok)
     if failures:
         for f in failures:
@@ -251,7 +256,24 @@ def selftest():
             pass
     print("[selftest] verification raises on missing, empty and mismatched remote hash")
 
-    # 4. a missing source must raise rather than produce an empty backup
+    # 4. a snapshot-only run must NOT leave a receipt — the watchdog reads the
+    #    receipt as proof of a VERIFIED upload, and a local diagnostic that
+    #    writes one makes the digest report a failure that never happened.
+    #    Fully hermetic: the run is pointed at the synthetic DB in tmp, never at
+    #    the caller's real databases.
+    g = globals()
+    saved = (g["RECEIPT_PATH"], g["_HERE"], g["DATABASES"])
+    g["RECEIPT_PATH"] = os.path.join(tmp, "receipt.json")
+    g["_HERE"], g["DATABASES"] = tmp, ["t.db"]
+    try:
+        run(bucket=None)
+        assert not os.path.exists(g["RECEIPT_PATH"]), \
+            "snapshot-only run wrote a receipt — watchdog would read verified=0/N"
+        print("[selftest] snapshot-only run leaves no receipt")
+    finally:
+        g["RECEIPT_PATH"], g["_HERE"], g["DATABASES"] = saved
+
+    # 5. a missing source must raise rather than produce an empty backup
     try:
         snapshot(os.path.join(tmp, "nope.db"), os.path.join(tmp, "x.db"))
         raise AssertionError("missing source should have raised")
