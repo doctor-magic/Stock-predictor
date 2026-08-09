@@ -2327,3 +2327,69 @@ HONEST GAP IN THE INVENTORY: the deleted a5ccc07 paragraph contained one real go
 STILL OPEN (moved to PENDING.md — this handoff no longer duplicates the list):
   biggest remaining risk is unchanged and is not in this file's subject matter — no third copy
   of setup_log.db outside the VM and this Mac.
+
+
+AUG 9 2026 (Sun) — ROUTINE HEALTH CHECK FOUND A 3-NIGHT SILENT BACKUP OUTAGE
+===========================================================================================
+  928162c  the backup died three nights on a wake race — retry, never fake a dated dir
+
+HOW IT WAS FOUND: not by an alert. A "let's check the system" request on a Sunday morning.
+  The server side was entirely green — service up 34 days, disk 28%, collection 100% lev_fill
+  every session, resolver 50/50 nightly, all 12 crontab lines present, watchdog Telegram sent
+  daily. The failure was on the ONE leg the server cannot see: the Mac-side pull.
+  ~/stock-predictor-backups held 20260806, 20260807 and 20260808 as EMPTY directories.
+
+THE MISDIAGNOSIS, AND WHY IT MATTERED. The log reads "Network is unreachable" (Aug 6) then
+  "Connection reset" twice (Aug 7, 8), and the obvious story is "launchd fires on wake before
+  Wi-Fi is up". I wrote that story down and would have shipped a preflight wait-for-network.
+  Then /tmp on the VM turned out to hold two COMPLETE snapshots, dated Aug 7 08:15 and Aug 8
+  08:12 — those runs cleared the first ssh, ran backup_dbs through three VACUUM INTOs, and died
+  AFTER. A preflight probe would have passed on both nights and fixed nothing. What actually
+  fixes it is retrying the whole pull(), which is what got built — by luck of ordering, not by
+  the reasoning. LESSON: confirm a failure's STAGE from the far end's leftovers, not from the
+  local error text. The two orphaned snapshots were also a third bug: the per-run temp cleanup
+  sits in a finally that runs over the connection that just died.
+
+THE EMPTY DIRECTORIES ARE THE REAL DEFECT. makedirs ran before the copy, so every failed run
+  left a dated dir that reads to any future reader as a backup that happened. The whole pull
+  design exists to prevent silent backup failure, and it had reintroduced the silent-failure
+  shape inside itself. Files now stage in .incoming-* and promote() creates the dated dir only
+  after SHA-256 verification. Rotation already ignored non-dated names, so staging is free.
+
+DETECTION LAG WAS 4 DAYS AND THAT IS THE DESIGN WORKING, NOT FAILING. watchdog check 8 read
+  age=59h on Aug 8 against a 72h threshold and stayed green; it would have gone red Aug 9 09:30,
+  ~83h in. The 72h was chosen deliberately so a closed laptop over a weekend does not cry wolf
+  while "stopped weeks ago" still trips. Do NOT lower it — the retry removes the need. Worth
+  noting the failure would have self-announced eventually; it just cost four days of one-copy
+  exposure first.
+
+WHAT THE OUTAGE ACTUALLY COST: nothing lost, but Aug 6 and Aug 7 were sessions adding ~110
+  forward-only setup_log rows that existed in ONE copy for four days. The Aug 8 (Sat) miss cost
+  zero. Trading days do not gate the backup — it is a daily job — but they price its failure.
+
+PROVEN ON THE PRODUCTION PATH, NOT JUST BY SELFTEST. The 08:00 automatic run went green the
+  same morning and proves ONLY that nothing broke: an awake, online Mac succeeds on attempt 1
+  and touches none of the new code (the log shows zero "attempt" lines). Real evidence came from
+  pointing SERVER at 192.0.2.1 (TEST-NET-1, unroutable) against the INSTALLED agent copy —
+  retry engaged 3x, surfaced as a plain RuntimeError not NetworkError, and left no dated dir and
+  no staging dir. A scheduled green run is not a test of a failure path.
+
+ALSO VERIFIED WHILE IN THERE (no action taken, recorded so the next session need not re-derive):
+  R1 blind preview 22 rows / 10 days against gates 60 AND 25 — row gate binding, as designed.
+  Stage B N=16 of 50. setup_log 1474 rows, Stage B pool 594 across 10 sessions since Jul 27.
+  rvol_trend / hod_gap_ratio began filling Aug 6, partial by design (only in-gate-window rows).
+  Aug 9 resolver returned resolved=49/50 with failed=0 — first non-50 in the visible window;
+  watch, do not act.
+
+SEPARATELY, A QUESTION ANSWERED WITHOUT A CODE CHANGE: scanner BUY count went 2-3/day mid-July
+  to 10-13/day this week and the user asked whether we had moved a threshold. We had not — zero
+  commits touched CONFIDENCE_THRESHOLD / SCAN_CONFIDENCE_THRESHOLD / PREMIUM_SCAN_THRESHOLD
+  since mid-June, server == repo. The rise tracks regime: VIX 19-20 -> 15-16 and SPY 5d
+  -1.5% -> +3.4..5.7%, with the inflection sitting exactly on the Jul 30 BULL_WEAK -> BULL_STRONG
+  flip. The Jul drought self-resolved as predicted. conf>=0.70 signals went 0-1/day to 3/day on
+  some days, which feeds R1 accrual directly. EXPLORATORY — cannot justify any code change, and
+  more signals is not more precision (displayed precision 31-48%, unchanged). Note the tension
+  it creates for R1: a regime-dependent accrual rate biases the cohort toward rising markets,
+  which is precisely why the endpoint is alpha vs SPY on the same days and not absolute return.
+
+STILL OPEN: unchanged from Aug 3 — nothing new opened today.
