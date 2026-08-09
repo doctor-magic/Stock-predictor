@@ -24,3 +24,7 @@ __pycache__/
 
 # local DB snapshots (off-VM backups, never in git)
 _db_snapshots/
+
+# Runtime logs — never in git (this rule exists because a launchd TCC-denial
+# log fossil from Aug 5 2026 sat untracked in the repo root for four days)
+*.log
