@@ -1,5 +1,5 @@
 ﻿import { useState, useEffect, useCallback } from 'react'
-import { Search, Activity, AlertCircle, BarChart3, TrendingUp, TrendingDown, Minus, BookOpen, ListFilter, RefreshCw, ExternalLink, Info, Zap } from 'lucide-react'
+import { Search, Activity, AlertCircle, BarChart3, TrendingUp, TrendingDown, Minus, BookOpen, ListFilter, RefreshCw, ExternalLink, Info, Zap, Briefcase } from 'lucide-react'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, LineChart, Line, ReferenceLine } from 'recharts'
 import ReactMarkdown from 'react-markdown'
 export default function App() {
@@ -30,6 +30,7 @@ export default function App() {
           <TabButton active={activeTab === 'wedge-scan'} onClick={() => setActiveTab('wedge-scan')} icon={TrendingDown}>Wedge Scan</TabButton>
           <TabButton active={activeTab === 'reversion'} onClick={() => setActiveTab('reversion')} icon={TrendingDown}>Reversion Hunter</TabButton>
           <TabButton active={activeTab === 'gainers'} onClick={() => setActiveTab('gainers')} icon={TrendingUp}>Momentum Hunter</TabButton>
+          <TabButton active={activeTab === 'positions'} onClick={() => setActiveTab('positions')} icon={Briefcase}>הפוזיציות שלי</TabButton>
         </div>
       </header>
 
@@ -42,6 +43,7 @@ export default function App() {
         {activeTab === 'wedge-scan'     && <WedgeScanView />}
         {activeTab === 'reversion'      && <ReversionView />}
         {activeTab === 'gainers'        && <GainersView />}
+        {activeTab === 'positions'      && <PositionsView />}
       </main>
     </div>
   )
@@ -2073,6 +2075,174 @@ function GainersView() {
           </table>
         </div>
       )}
+    </div>
+  )
+}
+
+// ── Positions layer (Aug 13 2026) ─────────────────────────────────────────────
+// User-held trades: entry → live net P&L (commission both sides), stop/horizon
+// alerts, and the tracker's own history on the symbol. Reads signals only.
+function PositionsView() {
+  const [data, setData] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
+  const [showClosed, setShowClosed] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [form, setForm] = useState({ symbol: '', entry_price: '', entry_date: '', stop_pct: '', notes: '' })
+
+  const fetchData = useCallback(() => {
+    setLoading(true); setError(null)
+    fetch(`/api/positions?status=${showClosed ? 'all' : 'open'}`)
+      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json() })
+      .then(d => { setData(d); setLoading(false) })
+      .catch(e => { setError(e.message); setLoading(false) })
+  }, [showClosed])
+
+  useEffect(() => {
+    fetchData()
+    const iv = setInterval(() => fetchData(), 5 * 60 * 1000)
+    return () => clearInterval(iv)
+  }, [fetchData])
+
+  const openPosition = (e) => {
+    e.preventDefault()
+    if (!form.symbol || !form.entry_price) return
+    setSaving(true)
+    const body = { symbol: form.symbol.trim().toUpperCase(), entry_price: parseFloat(form.entry_price) }
+    if (form.entry_date) body.entry_date = form.entry_date
+    if (form.stop_pct)   body.stop_pct   = parseFloat(form.stop_pct)
+    if (form.notes)      body.notes      = form.notes
+    fetch('/api/positions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json() })
+      .then(() => { setForm({ symbol: '', entry_price: '', entry_date: '', stop_pct: '', notes: '' }); setSaving(false); fetchData() })
+      .catch(e => { setError(e.message); setSaving(false) })
+  }
+
+  const closePosition = (row) => {
+    const v = window.prompt(`מחיר יציאה עבור ${row.symbol}?`, row.current_price ?? '')
+    if (v === null || v === '') return
+    fetch(`/api/positions/${row.id}/close`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ exit_price: parseFloat(v) }) })
+      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json() })
+      .then(() => fetchData())
+      .catch(e => setError(e.message))
+  }
+
+  const rows = data?.positions ?? []
+  const pnlClass = (v) => v == null ? 'text-gray-500' : v >= 0 ? 'text-green-400' : 'text-red-400'
+  const fmt = (v, d = 2) => (v == null ? '—' : Number(v).toFixed(d))
+
+  return (
+    <div className="w-full max-w-4xl animate-signal">
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-2">
+        <div>
+          <h2 className="text-xl font-bold font-mono text-neon-blue flex items-center gap-2">
+            <Briefcase className="w-5 h-5 text-yellow-400" />
+            הפוזיציות שלי
+          </h2>
+          <p className="text-gray-400 text-sm mt-1">P&L נטו כולל עמלה ({data ? (data.commission_pct_per_side * 2).toFixed(2) : '0.16'}% הלוך־חזור) · אופק המערכת {data?.horizon_tdays ?? 10} ימי מסחר</p>
+        </div>
+        <div className="flex items-center gap-3">
+          <label className="text-xs text-gray-400 flex items-center gap-1 cursor-pointer">
+            <input type="checkbox" checked={showClosed} onChange={e => setShowClosed(e.target.checked)} />
+            הצג גם סגורות
+          </label>
+          <button onClick={() => fetchData()} className="text-gray-400 hover:text-white" title="רענון">
+            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+          </button>
+        </div>
+      </div>
+
+      <form onSubmit={openPosition} className="grid grid-cols-2 sm:grid-cols-6 gap-2 mb-6">
+        <input type="text" placeholder="סימבול" className="glass-input uppercase" value={form.symbol}
+               onChange={e => setForm({ ...form, symbol: e.target.value.toUpperCase() })} />
+        <input type="number" step="0.01" min="0.01" placeholder="מחיר כניסה" className="glass-input" value={form.entry_price}
+               onChange={e => setForm({ ...form, entry_price: e.target.value })} />
+        <input type="date" className="glass-input" title="תאריך כניסה (ברירת מחדל: היום)" value={form.entry_date}
+               onChange={e => setForm({ ...form, entry_date: e.target.value })} />
+        <input type="number" step="0.1" min="0.1" max="50" placeholder="% סטופ (רשות)" className="glass-input" value={form.stop_pct}
+               onChange={e => setForm({ ...form, stop_pct: e.target.value })} />
+        <input type="text" placeholder="הערה (רשות)" className="glass-input" value={form.notes}
+               onChange={e => setForm({ ...form, notes: e.target.value })} />
+        <button type="submit" disabled={saving || !form.symbol || !form.entry_price}
+                className="glass-input bg-neon-blue/20 hover:bg-neon-blue/40 disabled:opacity-40 font-bold">
+          {saving ? '...' : '+ פתח'}
+        </button>
+      </form>
+
+      {error && <div className="text-red-400 text-sm mb-4 font-mono">שגיאה: {error}</div>}
+      {!loading && rows.length === 0 && !error && (
+        <div className="text-gray-500 text-center py-10">אין פוזיציות פתוחות — הזן קנייה בטופס למעלה</div>
+      )}
+
+      {rows.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm font-mono">
+            <thead>
+              <tr className="text-gray-400 border-b border-gray-700 text-right">
+                <th className="p-2">סימבול</th>
+                <th className="p-2">כניסה</th>
+                <th className="p-2">נוכחי</th>
+                <th className="p-2">P&L נטו</th>
+                <th className="p-2">ימי מסחר</th>
+                <th className="p-2">התראות</th>
+                <th className="p-2">אותות המערכת</th>
+                <th className="p-2"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(row => (
+                <tr key={row.id} className={`border-b border-gray-800 ${row.status === 'closed' ? 'opacity-50' : ''}`}>
+                  <td className="p-2">
+                    <div className="flex items-center gap-1.5 whitespace-nowrap">
+                      <a href={`https://www.tradingview.com/chart/?symbol=${row.symbol}`} target="_blank" rel="noreferrer"
+                         className="text-neon-blue hover:underline">{row.symbol}</a>
+                      {row.notes && <span className="text-gray-500" title={row.notes}><Info className="w-3 h-3" /></span>}
+                    </div>
+                    <div className="text-[10px] text-gray-500">{row.entry_date}</div>
+                  </td>
+                  <td className="p-2">{fmt(row.entry_price)}</td>
+                  <td className="p-2">{row.status === 'closed' ? fmt(row.exit_price) : fmt(row.current_price)}</td>
+                  <td className={`p-2 font-bold ${pnlClass(row.net_pnl_pct)}`}>
+                    {row.net_pnl_pct == null ? '—' : `${row.net_pnl_pct > 0 ? '+' : ''}${fmt(row.net_pnl_pct)}%`}
+                  </td>
+                  <td className="p-2">{row.status === 'closed' ? 'סגורה' : (row.days_held ?? '—')}</td>
+                  <td className="p-2">
+                    {(row.alerts ?? []).length === 0 && row.status === 'open' && <span className="text-green-600">✓</span>}
+                    {(row.alerts ?? []).map((a, i) => (
+                      <span key={i} title={a.detail}
+                            className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-bold ml-1 ${a.kind === 'STOP' ? 'bg-red-900 text-red-300' : 'bg-yellow-900 text-yellow-300'}`}>
+                        {a.kind === 'STOP' ? '⛔ סטופ' : '⏳ מעבר לאופק'}
+                      </span>
+                    ))}
+                  </td>
+                  <td className="p-2 text-xs">
+                    {row.signals ? (
+                      <span title={(row.signals.resolved ?? []).map(h => `${h.date}: conf ${h.confidence ?? '—'} → ${h.fwd_ret_pct == null ? 'פתוח' : h.fwd_ret_pct + '%'}`).join('\n')}>
+                        {row.signals.recent_signals} אותות/{row.signals.lookback_days}י
+                        {row.signals.resolved_mean_pct != null && (
+                          <span className={pnlClass(row.signals.resolved_mean_pct)}> · ממוצע {row.signals.resolved_mean_pct > 0 ? '+' : ''}{row.signals.resolved_mean_pct}%</span>
+                        )}
+                      </span>
+                    ) : <span className="text-gray-600">—</span>}
+                  </td>
+                  <td className="p-2">
+                    {row.status === 'open' && (
+                      <button onClick={() => closePosition(row)}
+                              className="text-xs text-gray-400 hover:text-red-400 border border-gray-700 rounded px-2 py-0.5">
+                        סגור
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <p className="text-[11px] text-gray-600 mt-4">
+        השכבה קוראת אותות בלבד ואינה יוצרת אותם · "מעבר לאופק" = הפוזיציה חצתה את אופק המדידה של המערכת ({data?.horizon_tdays ?? 10} ימי מסחר) — מעבר לו אין למערכת שום טענה מדודה
+      </p>
     </div>
   )
 }

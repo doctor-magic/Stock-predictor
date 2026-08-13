@@ -88,7 +88,7 @@ def _require_auth(credentials: Optional[HTTPBasicCredentials] = Depends(_securit
     return credentials.username
 
 logger = logging.getLogger(__name__)
-from models import PredictionResult, ScanRequest
+from models import PredictionResult, ScanRequest, PositionOpenRequest, PositionCloseRequest
 
 IMPORTANCE_DESCRIPTIONS: dict[str, str] = {
     "sma200_dist":  "Distance from 200-day SMA — measures long-term trend positioning.",
@@ -1835,6 +1835,89 @@ def get_gainers(force: bool = False):
     _gainers_cache["data"] = payload
     _save_json_disk_cache(_GAINERS_DISK_CACHE_PATH, payload)
     return payload
+
+# ── Positions layer (Aug 13 2026) ────────────────────────────────────────────
+# User-held trades: entry → live net P&L, stop/horizon alerts, and the tracker's
+# own history on the symbol. READS signals (tracker.db opened mode=ro inside
+# db.py) and never creates them — R1 untouched by construction. Auth rides the
+# app-wide _require_auth dependency like every other endpoint. MUST stay above
+# the static mount: a "/" mount swallows any route registered after it.
+
+_pos_price_cache = {"ts": 0.0, "prices": {}}
+_POS_PRICE_TTL = 60
+
+
+def _positions_live_prices(symbols):
+    """Batched last-close fetch with a 60s cache. Failure → {} — the tab shows
+    '—' for price and skips price-dependent alerts, it never errors out."""
+    now = time.time()
+    if _pos_price_cache["prices"] and now - _pos_price_cache["ts"] < _POS_PRICE_TTL \
+            and all(s in _pos_price_cache["prices"] for s in symbols):
+        return _pos_price_cache["prices"]
+    prices = {}
+    try:
+        import yfinance as yf
+        data = yf.download(list(symbols), period="5d", interval="1d",
+                           group_by="ticker", auto_adjust=False,
+                           progress=False, threads=True)
+        for s in symbols:
+            # group_by="ticker" returns MultiIndex columns even for ONE symbol,
+            # so probe the per-ticker shape first and fall back to flat. A
+            # len(symbols)>1 branch here silently priced nothing for a single
+            # open position (caught live, Aug 13 2026).
+            try:
+                try:
+                    closes = data[s]["Close"].dropna()
+                except Exception:
+                    closes = data["Close"].dropna()
+                if len(closes):
+                    prices[s] = float(closes.iloc[-1])
+            except Exception:
+                pass
+    except Exception:
+        pass
+    if prices:
+        _pos_price_cache["ts"] = now
+        _pos_price_cache["prices"] = prices
+    return prices
+
+
+@app.get("/api/positions")
+def api_positions_list(status: str = "open"):
+    if status not in ("open", "closed", "all"):
+        raise HTTPException(status_code=400, detail="status must be open|closed|all")
+    rows = _db.positions_list(status)
+    open_syms = sorted({r["symbol"] for r in rows if r["status"] == "open"})
+    prices = _positions_live_prices(open_syms) if open_syms else {}
+    for r in rows:
+        is_open = r["status"] == "open"
+        cur = prices.get(r["symbol"]) if is_open else None
+        r["current_price"] = cur
+        r["days_held"] = _db.position_trading_days_held(r["entry_date"]) if is_open else None
+        r["net_pnl_pct"] = (_db.position_net_pnl_pct(r["entry_price"], cur)
+                            if is_open else r["exit_ret_net_pct"])
+        r["alerts"] = (_db.position_alerts(r["entry_price"], cur, r["stop_pct"], r["days_held"])
+                       if is_open else [])
+        r["signals"] = _db.position_signal_history(r["symbol"])
+    return {"positions": rows,
+            "commission_pct_per_side": _db.COMMISSION_PCT_PER_SIDE,
+            "horizon_tdays": _db.POSITION_HORIZON_TDAYS}
+
+
+@app.post("/api/positions")
+def api_position_open(req: PositionOpenRequest):
+    rid = _db.position_open_row(req.symbol, req.entry_price, req.entry_date,
+                                req.stop_pct, req.notes)
+    return {"id": rid, "status": "open"}
+
+
+@app.post("/api/positions/{pos_id}/close")
+def api_position_close(pos_id: int, req: PositionCloseRequest):
+    res = _db.position_close_row(pos_id, req.exit_price)
+    if res is None:
+        raise HTTPException(status_code=404, detail="position not found or already closed")
+    return res
+
 
 # ── Static frontend ──────────────────────────────────────────────────────────
 

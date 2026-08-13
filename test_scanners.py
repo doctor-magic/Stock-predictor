@@ -542,3 +542,109 @@ class TestScreenerQuotesMalformed(unittest.TestCase):
     def test_thin_but_healthy_green_day_passes(self):
         # A green day legitimately yields few day_losers — must NOT look malformed.
         self.assertFalse(scanners.screener_quotes_malformed(self._q(6)))
+
+
+class TestPositionsLayer(unittest.TestCase):
+    """Positions layer (Aug 13 2026) — pure functions + CRUD on a scratch DB.
+
+    The layer READS signals and never creates them; these tests also lock the
+    read-only guarantee against tracker.db (mode=ro must refuse writes).
+    """
+
+    def setUp(self):
+        import db as _db
+        self.db = _db
+
+    # ── net P&L: commission on BOTH sides ────────────────────────────────────
+    def test_net_pnl_subtracts_round_trip_commission(self):
+        # The CCL case from the Aug-11 session: entry 28.74, price 27.75.
+        # Gross = -3.4446%, net = gross - 0.16 = -3.60 (2dp).
+        self.assertEqual(self.db.position_net_pnl_pct(28.74, 27.75), -3.60)
+
+    def test_net_pnl_flat_price_is_negative_commission(self):
+        self.assertEqual(self.db.position_net_pnl_pct(100.0, 100.0), -0.16)
+
+    def test_net_pnl_none_on_missing_inputs(self):
+        self.assertIsNone(self.db.position_net_pnl_pct(None, 50.0))
+        self.assertIsNone(self.db.position_net_pnl_pct(50.0, None))
+        self.assertIsNone(self.db.position_net_pnl_pct(0, 50.0))
+
+    # ── trading-days-held: weekend + NYSE holiday skipped ────────────────────
+    def test_days_held_skips_weekend_and_holiday(self):
+        from datetime import date as _date
+        # Jul 3 2026 = July-4th observed (NYSE closed), Jul 4-5 = weekend.
+        # Entry Wed Jul 1 → today Tue Jul 7: sessions after entry are
+        # Jul 2 (Thu) and Jul 6 (Mon) and Jul 7 (Tue) = 3.
+        held = self.db.position_trading_days_held("2026-07-01", today=_date(2026, 7, 7))
+        self.assertEqual(held, 3)
+
+    def test_days_held_entry_today_is_zero(self):
+        from datetime import date as _date
+        self.assertEqual(
+            self.db.position_trading_days_held("2026-08-13", today=_date(2026, 8, 13)), 0)
+
+    # ── alerts: stop + horizon rules ─────────────────────────────────────────
+    def test_stop_alert_fires_at_threshold(self):
+        alerts = self.db.position_alerts(100.0, 97.0, stop_pct=3.0, days_held=2)
+        self.assertEqual([a["kind"] for a in alerts], ["STOP"])
+
+    def test_stop_alert_quiet_above_threshold(self):
+        alerts = self.db.position_alerts(100.0, 97.5, stop_pct=3.0, days_held=2)
+        self.assertEqual(alerts, [])
+
+    def test_no_stop_configured_no_stop_alert(self):
+        alerts = self.db.position_alerts(100.0, 50.0, stop_pct=None, days_held=2)
+        self.assertEqual(alerts, [])
+
+    def test_horizon_alert_at_10_trading_days(self):
+        alerts = self.db.position_alerts(100.0, 101.0, stop_pct=None, days_held=10)
+        self.assertEqual([a["kind"] for a in alerts], ["HORIZON"])
+
+    def test_stop_and_horizon_stack(self):
+        alerts = self.db.position_alerts(100.0, 90.0, stop_pct=5.0, days_held=11)
+        self.assertEqual({a["kind"] for a in alerts}, {"STOP", "HORIZON"})
+
+    def test_alerts_skip_price_rules_when_price_missing(self):
+        # Live-price fetch failure must not crash and must not fire STOP.
+        alerts = self.db.position_alerts(100.0, None, stop_pct=3.0, days_held=11)
+        self.assertEqual([a["kind"] for a in alerts], ["HORIZON"])
+
+    # ── CRUD round-trip on a scratch DB ──────────────────────────────────────
+    def test_open_close_roundtrip(self):
+        import os, tempfile
+        with tempfile.TemporaryDirectory() as td:
+            p = os.path.join(td, "positions_test.db")
+            self.db.positions_db_init(db_path=p)
+            rid = self.db.position_open_row("ccl", 28.74, "2026-08-04",
+                                            stop_pct=3.0, db_path=p)
+            rows = self.db.positions_list("open", db_path=p)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["symbol"], "CCL")  # upper-cased on write
+            res = self.db.position_close_row(rid, 27.75, db_path=p)
+            self.assertEqual(res["exit_ret_net_pct"], -3.60)
+            self.assertEqual(self.db.positions_list("open", db_path=p), [])
+            # closing twice must refuse
+            self.assertIsNone(self.db.position_close_row(rid, 27.75, db_path=p))
+
+    # ── the read-only guarantee ──────────────────────────────────────────────
+    def test_signal_history_cannot_write_tracker(self):
+        import os, sqlite3, tempfile
+        with tempfile.TemporaryDirectory() as td:
+            tp = os.path.join(td, "tracker_test.db")
+            con = sqlite3.connect(tp)
+            con.execute("""CREATE TABLE signals (id INTEGER PRIMARY KEY, sym TEXT,
+                           date_logged TEXT, confidence REAL)""")
+            con.execute("""CREATE TABLE outcomes (id INTEGER PRIMARY KEY,
+                           signal_id INTEGER, fwd_ret REAL)""")
+            con.execute("INSERT INTO signals VALUES (1,'CCL','2026-06-22',0.595)")
+            con.execute("INSERT INTO outcomes VALUES (1,1,-0.1101)")
+            con.commit(); con.close()
+            h = self.db.position_signal_history("CCL", tracker_path=tp,
+                                                lookback_days=14, limit=5)
+            self.assertEqual(len(h["resolved"]), 1)
+            self.assertEqual(h["resolved"][0]["fwd_ret_pct"], -11.0)
+            # the guarantee itself: a mode=ro handle refuses writes
+            ro = sqlite3.connect(f"file:{tp}?mode=ro", uri=True)
+            with self.assertRaises(sqlite3.OperationalError):
+                ro.execute("INSERT INTO signals VALUES (2,'X','2026-01-01',0.5)")
+            ro.close()

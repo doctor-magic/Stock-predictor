@@ -52,8 +52,10 @@ from datetime import datetime, timezone
 _HERE = os.path.dirname(os.path.abspath(__file__))
 RECEIPT_PATH = os.path.join(_HERE, "backup_state.json")
 
-# Every one of these is live-captured and unrebuildable.
-DATABASES = ["setup_log.db", "tracker.db", "falling_knife_log.db"]
+# Every one of these is live-captured and unrebuildable. positions.db (added
+# Aug 13 2026 with the positions layer) is user-entered trade state — not
+# research, but exactly as unrebuildable as the signal captures.
+DATABASES = ["setup_log.db", "tracker.db", "falling_knife_log.db", "positions.db"]
 
 # Well above any plausible size for these files. Composite uploads are what
 # make GCS omit md5Hash; a missing hash is a hard failure below, so this is the

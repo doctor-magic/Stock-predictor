@@ -2393,3 +2393,83 @@ SEPARATELY, A QUESTION ANSWERED WITHOUT A CODE CHANGE: scanner BUY count went 2-
   which is precisely why the endpoint is alpha vs SPY on the same days and not absolute return.
 
 STILL OPEN: unchanged from Aug 3 — nothing new opened today.
+
+===========================================================================================
+  (no commit)  Aug 13 — a week of analysis that shipped nothing, on purpose
+
+WHAT HAPPENED: a Reddit thread on SPX options seeded a review sweep. Six rounds of
+  propose-then-retract followed — two spec amendments, a covariate migration, a gate-
+  calibration bundle, a funnel counter, a reversion-tab fix — every one withdrawn after
+  its own audit. Zero deploys. The frozen specs (r1 5b369d9, lev) were never touched, and
+  the one real artifact (a tested volume/atr14 migration in db.py) was deliberately
+  reverted from the working tree after its rationale was preserved. LESSON, written as a
+  rule: check WHO CONSUMES a covariate/counter/amendment BEFORE proposing it, measure
+  offline before proposing a deploy, and propose at most once.
+
+WHAT THE WEEK ACTUALLY PRODUCED (all exploratory, all preserved in PENDING.md → Parked):
+  1. THE DEMOTION FINDING. Two post-threshold filters in core_logic.py (cmf<0 → HOLD,
+     close<SMA50 → HOLD) demote ~65% of ALL model BUYs after they clear the confidence
+     threshold — measured twice, independently agreeing: scan_results direct (241/353 of
+     >=0.57 rows, 39 rows >=0.70) and a 6-month offline reconstruction over the frozen R1
+     universe (baseline 64.8%, reversion <=-5% population 73.4%; the CMF leg is
+     non-selective 56.7% vs 55.5% — the SMA50 leg carries ALL the selectivity).
+     This single fact unified three "separate" mysteries: reversion_hunter's 0 rows ever
+     (0.70 ceiling for the non-index majority x 73% demotion for survivors — NOT either
+     alone), the p_buy diagnostic reading "grazing the ceiling" while ml_buy=0 (p_buy is
+     captured BEFORE the filters — structurally blind to them), and beta-gate starvation
+     (beta>1.5 AND verdict==BUY cannot fire when BUY is choked upstream).
+     UNTOUCHABLE until the R1 unblind — the filters feed the frozen cohort, and demoted
+     BUYs never reach tracker.db, so "were they actually worse?" is unanswerable without
+     pre-registered demotion logging first.
+  2. Prediction-budget question CLOSED (was open since Jul 30): ml_na 4-15 all week,
+     fk_downgrade=0 on all 75 lines Aug 3-7. Change nothing.
+  3. Backup verified USABLE, not just intact: independent SHA-256 vs the server heartbeat
+     AND sqlite integrity_check ok AND row counts advancing (setup_log 1530→1591,
+     tracker 205→213 across Aug 11→12). The Aug-10 log shows the 928162c retry firing in
+     production and saving that night's run. Streak Aug 9-12 green; the 06-08 gap is
+     visible as missing dirs, exactly as designed.
+  4. THE CCL ANSWER, and the gap it exposed. User held CCL through 6 BUY signals in 8
+     days (incl. one at 30.14, the worst entry; June's 4 resolved CCL signals went -11.0,
+     -7.8, -3.0, +0.2 pct). The system measures fixed-horizon population alpha ONLY — no
+     position awareness, no exit rule, no path (MAE/MFE parked), no memory of repeat
+     signals. That is not a bug; it is a missing layer, and it is the only pre-December
+     user-facing value identified all week. BUILD STARTED Aug 13: a position/exit layer
+     that READS signals and never creates them — own positions.db, read-only against
+     tracker.db, R1 untouched by construction.
+
+STILL OPEN: the position layer build (see next entry); third off-VM setup_log copy
+  (REVIEW 2026-08-17); CLAUDE.md trim stages 3-4 (REVIEW 2026-08-17).
+
+===========================================================================================
+  (commit follows)  Aug 13 — positions layer BUILT + DEPLOYED, live-verified end to end
+
+WHAT SHIPPED: a 9th tab, "הפוזיציות שלי" — the layer the CCL case showed was missing.
+  User enters symbol/entry/date/optional stop; the tab shows live price, net P&L
+  (0.08%/side commission, both sides), NYSE trading-days held, and two alerts:
+  STOP (gross <= -stop_pct; the user's own "first entry going wrong = exit signal"
+  rule) and HORIZON (>= 10 trading days — past the system's measured horizon, where
+  it has no claim). Next to them: the tracker's own recent signal count on the
+  symbol + how its past resolved signals ended — the exact info whose absence let
+  6 fresh CCL signals in 8 days read as 6 independent opportunities.
+
+R1 SAFETY IS STRUCTURAL, NOT POLICY: own positions.db (WAL, in backup set as of
+  this deploy — backup_dbs.py DATABASES + the Mac pull picks it up automatically);
+  tracker.db is opened mode=ro inside db.py, so this layer physically cannot write
+  the research DB; a unit test locks the mode=ro refusal. No scanner, verdict, or
+  logging path was touched. setup_log/tracker schemas untouched.
+
+SURFACES: db.py (positions CRUD + 3 pure functions: net pnl, trading-days-held,
+  alerts), models.py (2 pydantic v2 request models), api.py (GET/POST /api/positions,
+  POST /api/positions/{id}/close, 60s batched price cache; registered ABOVE the
+  static mount — a "/" mount swallows routes registered after it), App.jsx
+  (PositionsView), test_scanners.py (+13 tests, gate now 87), backup_dbs.py (+1 db).
+
+ONE LIVE BUG CAUGHT AND FIXED DURING DEPLOY: yf.download(group_by="ticker") returns
+  MultiIndex columns even for ONE symbol; the len(symbols)>1 extraction branch
+  silently priced nothing for a single open position (current_price null on the
+  first production GET). Fixed to probe-per-ticker-then-flat; second deploy verified
+  live: CCL 27.67, net -3.88%, STOP firing at -3.7% <= -3.0%. Smoke row deleted;
+  positions.db live and EMPTY. NOTE for future debugging: ambient Yahoo "Invalid
+  Crumb" 401s exist in the journal (4 yesterday, pre-deploy) — a null current_price
+  can also be Yahoo flaking, which the tab renders as '—' with price alerts skipped,
+  never an error.

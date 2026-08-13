@@ -22,3 +22,16 @@ class ScanRequest(BaseModel):
     task_id: Optional[str] = None
     force_refresh: bool = False
     premium_only: bool = False
+
+
+class PositionOpenRequest(BaseModel):
+    # Positions layer (Aug 13 2026) — user-held trades, reads signals only
+    symbol: str = Field(..., min_length=1, max_length=12, pattern=r"^[A-Za-z0-9.\-]+$")
+    entry_price: float = Field(..., gt=0)
+    entry_date: Optional[str] = Field(None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    stop_pct: Optional[float] = Field(None, gt=0, le=50)
+    notes: Optional[str] = Field(None, max_length=300)
+
+
+class PositionCloseRequest(BaseModel):
+    exit_price: float = Field(..., gt=0)

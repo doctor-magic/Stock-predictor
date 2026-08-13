@@ -57,12 +57,6 @@ Closing an item: move it to `## Archive` with a one-line outcome. Append-only �
 
 ## Open — date-reviewed
 
-- **Prediction-budget question.** Funnel now shows in-session coverage is not the binding
-  constraint; the falling-knife downgrade ate the first ML survivor. Decide nothing before
-  the evidence is in, and pre-register before changing coverage.
-  `REVIEW:` 2026-08-10 — read the `fk_downgrade` counter across the Aug 3–7 week
-  (`journalctl -u stock-app.service | grep reversion-funnel`).
-
 - **Third off-VM copy of `setup_log.db`.** The cohort now lives in two domains (VM + Mac).
   GCS with versioning is the right target; it is a cost + setup decision, not a copy.
   `REVIEW:` 2026-08-17.
@@ -102,9 +96,22 @@ These are observations, not tasks. Acting on one without pre-registering it firs
   at the sitting. Exploratory only.
 - Overnight-gap covariate (log-only).
 - MAE/MFE outcome columns captured at resolution.
+- volume/atr14 execution-cost covariates for `setup_log` — no consumer question exists yet.
+  A tested 20-line `db.py` migration was written and deliberately reverted Aug 13 2026
+  (recreate from the commit-less rationale in the Aug-13 handoff entry). True bid/ask exists
+  nowhere in the equity path — only options chains carry it.
+- The two post-threshold BUY filters (`cmf < 0`, `close < SMA50`, `core_logic.py`) demote
+  ~65% of all model BUYs (73% on the ≤−5% reversion population; CMF leg non-selective,
+  SMA50 leg carries all the difference — measured offline Aug 11 2026, two agreeing methods).
+  Unvalidated but UNTOUCHABLE until the R1 unblind: they feed the frozen cohort, and demoted
+  BUYs never enter `tracker.db`, so validating them requires pre-registered demotion logging first.
 
 ## Archive
 
+- **Prediction-budget question — closed Aug 13 2026.** Every leg answered NO across the
+  Aug 3–7 window: coverage not binding (`ml_na` 4–15 all week), `fk_downgrade=0` on all 75
+  funnel lines, "change nothing" wins. The finding it left behind (post-threshold demotion)
+  moved to Parked with its constraint.
 - **THE SITTING — closed Jul 24 2026.** Beta-gate status quo (no extension to `/api/scan`);
   H1/H2 deferred on thin buckets; lev boundary frozen at semis 0.37; scanner-health criterion
   deferred as mis-specified, watchdog check #6 shipped instead. Code freeze lifted.

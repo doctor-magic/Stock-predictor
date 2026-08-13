@@ -523,9 +523,169 @@ def get_setup_breakdown():
     return {"total_logged": total, "resolved": resolved, "breakdown": breakdown}
 
 
+# ── Positions layer (Aug 13 2026) ─────────────────────────────────────────────
+# The system measures fixed-horizon population alpha; it has NO concept of a held
+# position (the CCL case: 6 BUY signals in 8 days at ever-worse entries, and the
+# holder got nothing). This layer closes that gap for the USER, not the research:
+# it READS signals and never creates them. Its own state lives in positions.db;
+# the only research DB it touches is tracker.db, opened mode=ro so this code
+# physically cannot write it. R1 is untouched by construction.
+
+_POSITIONS_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "positions.db")
+_TRACKER_DB_RO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tracker.db")
+
+COMMISSION_PCT_PER_SIDE = 0.08   # broker rate per trade — net P&L subtracts BOTH sides
+POSITION_HORIZON_TDAYS  = 10     # the tracker's own measurement horizon
+
+
+def positions_db_init(db_path=None):
+    con = sqlite3.connect(db_path or _POSITIONS_DB, timeout=30)
+    con.execute("PRAGMA journal_mode=WAL")
+    con.execute("""CREATE TABLE IF NOT EXISTS positions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        symbol      TEXT NOT NULL,
+        entry_price REAL NOT NULL,
+        entry_date  TEXT NOT NULL,
+        stop_pct    REAL,
+        notes       TEXT,
+        status      TEXT NOT NULL DEFAULT 'open',
+        opened_ts   TEXT NOT NULL,
+        closed_ts   TEXT,
+        exit_price  REAL,
+        exit_ret_net_pct REAL
+    )""")
+    con.commit()
+    con.close()
+
+
+def position_net_pnl_pct(entry_price, current_price,
+                         commission_per_side=COMMISSION_PCT_PER_SIDE):
+    """Gross move minus commission on BOTH sides — the number the user banks.
+    Pure math, unit-tested."""
+    if not entry_price or not current_price or entry_price <= 0:
+        return None
+    return round((current_price / entry_price - 1) * 100 - 2 * commission_per_side, 2)
+
+
+def position_trading_days_held(entry_date_str, today=None):
+    """NYSE sessions strictly AFTER entry_date, up to and including today.
+    Entry day itself is day 0 — matches how the tracker counts its horizon.
+    Pure calendar walk, unit-tested."""
+    from market_calendar import NYSE_HOLIDAYS
+    from datetime import timedelta
+    try:
+        d = date.fromisoformat(entry_date_str)
+    except Exception:
+        return None
+    today = today or datetime.now(_ET).date()
+    if d >= today:
+        return 0
+    held = 0
+    while d < today:
+        d += timedelta(days=1)
+        if d.weekday() < 5 and d.isoformat() not in NYSE_HOLIDAYS:
+            held += 1
+    return held
+
+
+def position_alerts(entry_price, current_price, stop_pct, days_held,
+                    horizon=POSITION_HORIZON_TDAYS):
+    """Rule evaluation → list of alert dicts. Pure, no I/O, unit-tested.
+    STOP embodies the user's own logged rule: first entry going wrong is an
+    exit signal, not an add-more signal."""
+    alerts = []
+    if entry_price and current_price and entry_price > 0:
+        gross = (current_price / entry_price - 1) * 100
+        if stop_pct is not None and gross <= -abs(stop_pct):
+            alerts.append({"kind": "STOP",
+                           "detail": f"{gross:.1f}% ≤ -{abs(stop_pct):.1f}%"})
+    if days_held is not None and days_held >= horizon:
+        alerts.append({"kind": "HORIZON",
+                       "detail": f"{days_held} ≥ {horizon} trading days — past the system's measured horizon"})
+    return alerts
+
+
+def position_open_row(symbol, entry_price, entry_date=None, stop_pct=None,
+                      notes=None, db_path=None):
+    con = sqlite3.connect(db_path or _POSITIONS_DB, timeout=30)
+    cur = con.execute(
+        "INSERT INTO positions (symbol, entry_price, entry_date, stop_pct, notes, status, opened_ts) "
+        "VALUES (?,?,?,?,?,'open',?)",
+        (symbol.upper(), float(entry_price),
+         entry_date or datetime.now(_ET).date().isoformat(),
+         stop_pct, notes, datetime.utcnow().isoformat()))
+    con.commit()
+    rid = cur.lastrowid
+    con.close()
+    return rid
+
+
+def position_close_row(pos_id, exit_price, db_path=None):
+    con = sqlite3.connect(db_path or _POSITIONS_DB, timeout=30)
+    row = con.execute("SELECT entry_price, status FROM positions WHERE id=?",
+                      (pos_id,)).fetchone()
+    if not row or row[1] != "open":
+        con.close()
+        return None
+    net = position_net_pnl_pct(row[0], float(exit_price))
+    con.execute("UPDATE positions SET status='closed', closed_ts=?, exit_price=?, "
+                "exit_ret_net_pct=? WHERE id=?",
+                (datetime.utcnow().isoformat(), float(exit_price), net, pos_id))
+    con.commit()
+    con.close()
+    return {"id": pos_id, "exit_price": float(exit_price), "exit_ret_net_pct": net}
+
+
+def positions_list(status="open", db_path=None):
+    con = sqlite3.connect(db_path or _POSITIONS_DB, timeout=30)
+    con.row_factory = sqlite3.Row
+    if status == "all":
+        rows = con.execute("SELECT * FROM positions ORDER BY id DESC").fetchall()
+    else:
+        rows = con.execute("SELECT * FROM positions WHERE status=? ORDER BY id DESC",
+                           (status,)).fetchall()
+    out = [dict(r) for r in rows]
+    con.close()
+    return out
+
+
+def position_signal_history(symbol, tracker_path=None, lookback_days=14, limit=5):
+    """READ-ONLY look at tracker.db for one symbol: current signal pressure and
+    how past resolved signals actually ended. mode=ro is the guarantee — this
+    layer cannot write the research DB even by bug."""
+    path = tracker_path or _TRACKER_DB_RO
+    try:
+        con = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=30)
+    except Exception:
+        return None
+    try:
+        recent = con.execute(
+            "SELECT COUNT(*) FROM signals WHERE sym=? AND date_logged >= date('now', ?)",
+            (symbol.upper(), f"-{int(lookback_days)} day")).fetchone()[0]
+        resolved = con.execute(
+            "SELECT s.date_logged, s.confidence, o.fwd_ret FROM signals s "
+            "JOIN outcomes o ON o.signal_id = s.id "
+            "WHERE s.sym=? ORDER BY s.date_logged DESC LIMIT ?",
+            (symbol.upper(), int(limit))).fetchall()
+        hist = [{"date": r[0],
+                 "confidence": round(r[1], 3) if r[1] is not None else None,
+                 "fwd_ret_pct": round(r[2] * 100, 1) if r[2] is not None else None}
+                for r in resolved]
+        rets = [h["fwd_ret_pct"] for h in hist if h["fwd_ret_pct"] is not None]
+        return {"recent_signals": recent,
+                "lookback_days": lookback_days,
+                "resolved": hist,
+                "resolved_mean_pct": round(sum(rets) / len(rets), 1) if rets else None}
+    except Exception:
+        return None
+    finally:
+        con.close()
+
+
 try:
     fk_db_init()
     setup_db_init()
+    positions_db_init()
 except Exception:
     pass
 
