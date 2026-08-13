@@ -2194,8 +2194,17 @@ function PositionsView() {
                 <tr key={row.id} className={`border-b border-gray-800 ${row.status === 'closed' ? 'opacity-50' : ''}`}>
                   <td className="p-2">
                     <div className="flex items-center gap-1.5 whitespace-nowrap">
-                      <a href={`https://www.tradingview.com/chart/?symbol=${row.symbol}`} target="_blank" rel="noreferrer"
-                         className="text-neon-blue hover:underline">{row.symbol}</a>
+                      <a
+                        href={`https://finance.yahoo.com/quote/${row.symbol}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        title={`View ${row.symbol} on Yahoo Finance`}
+                        className="inline-flex items-center gap-2 text-neon-blue hover:text-white hover:underline transition-colors group"
+                      >
+                        <span className="uppercase">{row.symbol}</span>
+                        <ExternalLink className="w-4 h-4 opacity-40 group-hover:opacity-100 transition-opacity" />
+                      </a>
+                      <a href={`https://www.tradingview.com/chart/?symbol=${row.symbol}`} target="_blank" rel="noopener noreferrer" className="text-[10px] font-mono px-1 py-0.5 rounded bg-yellow-500/10 text-yellow-500/60 hover:text-yellow-300 hover:bg-yellow-500/20 border border-yellow-500/20 transition-colors" title="TradingView Chart">TV</a>
                       {row.notes && <span className="text-gray-500" title={row.notes}><Info className="w-3 h-3" /></span>}
                     </div>
                     <div className="text-[10px] text-gray-500">{row.entry_date}</div>
