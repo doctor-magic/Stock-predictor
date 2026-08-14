@@ -2511,3 +2511,12 @@ ONE LIVE BUG CAUGHT AND FIXED DURING DEPLOY: yf.download(group_by="ticker") retu
   ONE TEST BUG WORTH REMEMBERING: I first asserted -$360 where the answer is
   -$103.46 — multiplied the percentage by share count instead of by basis. The
   consistency assertion (usd == basis*pct/100) passed and caught it.
+
+  ROUNDING BUG, found by the user reading his own screen (Aug 14): CCL showed
+  a $20.66 loss where the arithmetic gives $20.54. Cause: position_net_pnl_usd
+  multiplied the basis by the percentage AFTER it had been rounded to 2dp, so
+  the rounding error scaled with position size — $0.12 on a $3k position, $0.60
+  on the $63k one. Fixed by extracting _position_net_pct_raw() and rounding only
+  at the edges; pct and usd now both derive from the same unrounded value.
+  Regression test pins both live cases. LESSON: when one displayed number is
+  derived from another, round once, at the very end — never chain roundings.

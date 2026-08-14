@@ -565,13 +565,22 @@ def positions_db_init(db_path=None):
     con.close()
 
 
+def _position_net_pct_raw(entry_price, current_price, commission_per_side):
+    """UNROUNDED net percentage. Rounding belongs at the edges only: rounding
+    here first and then multiplying by the basis inflates the error by the size
+    of the position (a 0.005pp rounding on a $63k position is $3, and the user
+    spotted exactly that — a $20.54 loss displayed as $20.66)."""
+    if not entry_price or not current_price or entry_price <= 0:
+        return None
+    return (current_price / entry_price - 1) * 100 - 2 * commission_per_side
+
+
 def position_net_pnl_pct(entry_price, current_price,
                          commission_per_side=COMMISSION_PCT_PER_SIDE):
     """Gross move minus commission on BOTH sides — the number the user banks.
     Pure math, unit-tested."""
-    if not entry_price or not current_price or entry_price <= 0:
-        return None
-    return round((current_price / entry_price - 1) * 100 - 2 * commission_per_side, 2)
+    raw = _position_net_pct_raw(entry_price, current_price, commission_per_side)
+    return None if raw is None else round(raw, 2)
 
 
 def position_cost_basis(entry_price, shares):
@@ -588,11 +597,11 @@ def position_net_pnl_usd(entry_price, current_price, shares,
     more exact — it differs by <0.01pp on a 50% move, far below the spread the
     user actually pays — and two subtly different commission models shown side
     by side is the worse bug.)"""
-    pct = position_net_pnl_pct(entry_price, current_price, commission_per_side)
+    raw = _position_net_pct_raw(entry_price, current_price, commission_per_side)
     basis = position_cost_basis(entry_price, shares)
-    if pct is None or basis is None:
+    if raw is None or basis is None:
         return None
-    return round(basis * pct / 100, 2)
+    return round(basis * raw / 100, 2)
 
 
 def positions_totals(rows):

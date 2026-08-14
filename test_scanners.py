@@ -747,13 +747,24 @@ class TestPositionDollars(unittest.TestCase):
         self.assertIsNone(self.db.position_cost_basis(28.74, None))
         self.assertIsNone(self.db.position_cost_basis(None, 100))
 
-    def test_usd_pnl_matches_pct_exactly(self):
-        # The two figures sit side by side on screen; they must not disagree.
+    def test_usd_pnl_agrees_with_pct_to_the_cent(self):
+        # The two figures sit side by side on screen. They must agree — but the
+        # dollar figure is computed from the UNROUNDED percentage, so it may
+        # differ from (rounded pct x basis) by up to half a cent per $100.
         entry, cur, sh = 28.74, 27.75, 100
         pct = self.db.position_net_pnl_pct(entry, cur)
         usd = self.db.position_net_pnl_usd(entry, cur, sh)
-        self.assertEqual(usd, round(entry * sh * pct / 100, 2))
-        self.assertEqual(usd, -103.46)   # -3.60% of the $2,874 basis
+        self.assertEqual(usd, -103.60)
+        self.assertAlmostEqual(usd, entry * sh * pct / 100, delta=0.20)
+
+    def test_rounding_happens_only_at_the_edge(self):
+        # Regression for the bug the user caught: CCL 28.51 -> 28.36 on 105
+        # shares is a $20.54 loss. Rounding the percentage to 2dp BEFORE
+        # multiplying by the basis reported $20.66 — the error scales with
+        # position size, so it was $0.60 on a $63k position.
+        usd = self.db.position_net_pnl_usd(28.51, 28.36, 105)
+        self.assertEqual(usd, -20.54)
+        self.assertEqual(self.db.position_net_pnl_usd(585.0, 594.53, 109), 936.75)
 
     def test_usd_pnl_none_without_shares(self):
         self.assertIsNone(self.db.position_net_pnl_usd(28.74, 27.75, None))
