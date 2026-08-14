@@ -31,6 +31,7 @@ class PositionOpenRequest(BaseModel):
     entry_date: Optional[str] = Field(None, pattern=r"^\d{4}-\d{2}-\d{2}$")
     stop_pct: Optional[float] = Field(None, gt=0, le=50)
     notes: Optional[str] = Field(None, max_length=300)
+    shares: Optional[float] = Field(None, gt=0)
 
 
 class PositionCloseRequest(BaseModel):
@@ -45,3 +46,4 @@ class PositionEditRequest(BaseModel):
     entry_date: Optional[str] = Field(None, pattern=r"^\d{4}-\d{2}-\d{2}$")
     stop_pct: Optional[float] = Field(None, gt=0, le=50)
     notes: Optional[str] = Field(None, max_length=300)
+    shares: Optional[float] = Field(None, gt=0)

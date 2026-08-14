@@ -727,3 +727,104 @@ class TestPositionEdit(unittest.TestCase):
         self.db.position_close_row(self.pid, 27.75, db_path=self.path)
         self.assertIsNone(self.db.position_update_row(self.pid, notes="x",
                                                       db_path=self.path))
+
+
+class TestPositionDollars(unittest.TestCase):
+    """Share count and dollar P&L (Aug 14 2026).
+
+    Shares is nullable: rows entered before the column existed have none, and
+    every dollar figure must return None for them rather than guessing 1 share.
+    """
+
+    def setUp(self):
+        import db as _db
+        self.db = _db
+
+    def test_cost_basis(self):
+        self.assertEqual(self.db.position_cost_basis(28.74, 100), 2874.0)
+
+    def test_cost_basis_none_without_shares(self):
+        self.assertIsNone(self.db.position_cost_basis(28.74, None))
+        self.assertIsNone(self.db.position_cost_basis(None, 100))
+
+    def test_usd_pnl_matches_pct_exactly(self):
+        # The two figures sit side by side on screen; they must not disagree.
+        entry, cur, sh = 28.74, 27.75, 100
+        pct = self.db.position_net_pnl_pct(entry, cur)
+        usd = self.db.position_net_pnl_usd(entry, cur, sh)
+        self.assertEqual(usd, round(entry * sh * pct / 100, 2))
+        self.assertEqual(usd, -103.46)   # -3.60% of the $2,874 basis
+
+    def test_usd_pnl_none_without_shares(self):
+        self.assertIsNone(self.db.position_net_pnl_usd(28.74, 27.75, None))
+
+    def test_usd_pnl_fractional_shares(self):
+        self.assertEqual(self.db.position_net_pnl_usd(100.0, 110.0, 0.5), 4.92)
+
+    def test_flat_price_loses_only_commission(self):
+        # 0.16% round trip on a $10,000 position = $16
+        self.assertEqual(self.db.position_net_pnl_usd(100.0, 100.0, 100), -16.0)
+
+    # ── portfolio roll-up ────────────────────────────────────────────────────
+    def _row(self, **kw):
+        base = {"status": "open", "entry_price": 100.0, "shares": 10,
+                "net_pnl_usd": 100.0}
+        base.update(kw)
+        return base
+
+    def test_totals_sums_open_rows(self):
+        t = self.db.positions_totals([self._row(), self._row(net_pnl_usd=-40.0)])
+        self.assertEqual(t["cost_basis"], 2000.0)
+        self.assertEqual(t["net_pnl_usd"], 60.0)
+        self.assertEqual(t["net_pnl_pct"], 3.0)
+        self.assertEqual((t["counted"], t["skipped"]), (2, 0))
+
+    def test_totals_skips_rows_without_shares_and_says_so(self):
+        # A partial total must never be readable as a complete one.
+        t = self.db.positions_totals([self._row(),
+                                      self._row(shares=None, net_pnl_usd=None)])
+        self.assertEqual(t["counted"], 1)
+        self.assertEqual(t["skipped"], 1)
+        self.assertEqual(t["cost_basis"], 1000.0)
+
+    def test_totals_skips_rows_with_no_live_price(self):
+        t = self.db.positions_totals([self._row(net_pnl_usd=None)])
+        self.assertEqual((t["counted"], t["skipped"]), (0, 1))
+        self.assertIsNone(t["net_pnl_usd"])
+
+    def test_totals_ignores_closed_rows(self):
+        t = self.db.positions_totals([self._row(), self._row(status="closed")])
+        self.assertEqual(t["counted"], 1)
+        self.assertEqual(t["skipped"], 0)   # closed is not "skipped", it is out of scope
+
+    def test_totals_empty(self):
+        t = self.db.positions_totals([])
+        self.assertEqual((t["counted"], t["skipped"]), (0, 0))
+        self.assertIsNone(t["cost_basis"])
+
+    # ── shares survives open + edit ──────────────────────────────────────────
+    def test_shares_roundtrip_and_edit(self):
+        import os, tempfile
+        with tempfile.TemporaryDirectory() as td:
+            p = os.path.join(td, "pos.db")
+            self.db.positions_db_init(db_path=p)
+            rid = self.db.position_open_row("CCL", 28.74, "2026-08-04",
+                                            shares=50, db_path=p)
+            self.assertEqual(self.db.positions_list("open", db_path=p)[0]["shares"], 50.0)
+            self.db.position_update_row(rid, shares=75, db_path=p)
+            self.assertEqual(self.db.positions_list("open", db_path=p)[0]["shares"], 75.0)
+            self.db.position_update_row(rid, shares=None, db_path=p)
+            self.assertIsNone(self.db.positions_list("open", db_path=p)[0]["shares"])
+
+    def test_migration_is_idempotent_on_existing_db(self):
+        # The live DB already holds rows; re-running init must not lose them.
+        import os, tempfile
+        with tempfile.TemporaryDirectory() as td:
+            p = os.path.join(td, "pos.db")
+            self.db.positions_db_init(db_path=p)
+            self.db.position_open_row("CCL", 28.0, "2026-08-13", db_path=p)
+            self.db.positions_db_init(db_path=p)          # run again
+            self.db.positions_db_init(db_path=p)          # and again
+            rows = self.db.positions_list("open", db_path=p)
+            self.assertEqual(len(rows), 1)
+            self.assertIsNone(rows[0]["shares"])

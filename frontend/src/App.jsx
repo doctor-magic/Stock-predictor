@@ -2088,9 +2088,9 @@ function PositionsView() {
   const [error, setError] = useState(null)
   const [showClosed, setShowClosed] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [form, setForm] = useState({ symbol: '', entry_price: '', entry_date: '', stop_pct: '', notes: '' })
+  const [form, setForm] = useState({ symbol: '', entry_price: '', shares: '', entry_date: '', stop_pct: '', notes: '' })
   const [editingId, setEditingId] = useState(null)
-  const [editForm, setEditForm] = useState({ entry_price: '', entry_date: '', stop_pct: '', notes: '' })
+  const [editForm, setEditForm] = useState({ entry_price: '', shares: '', entry_date: '', stop_pct: '', notes: '' })
 
   const fetchData = useCallback(() => {
     setLoading(true); setError(null)
@@ -2111,12 +2111,13 @@ function PositionsView() {
     if (!form.symbol || !form.entry_price) return
     setSaving(true)
     const body = { symbol: form.symbol.trim().toUpperCase(), entry_price: parseFloat(form.entry_price) }
+    if (form.shares)     body.shares     = parseFloat(form.shares)
     if (form.entry_date) body.entry_date = form.entry_date
     if (form.stop_pct)   body.stop_pct   = parseFloat(form.stop_pct)
     if (form.notes)      body.notes      = form.notes
     fetch('/api/positions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json() })
-      .then(() => { setForm({ symbol: '', entry_price: '', entry_date: '', stop_pct: '', notes: '' }); setSaving(false); fetchData() })
+      .then(() => { setForm({ symbol: '', entry_price: '', shares: '', entry_date: '', stop_pct: '', notes: '' }); setSaving(false); fetchData() })
       .catch(e => { setError(e.message); setSaving(false) })
   }
 
@@ -2124,6 +2125,7 @@ function PositionsView() {
     setEditingId(row.id)
     setEditForm({
       entry_price: row.entry_price ?? '',
+      shares:      row.shares ?? '',
       entry_date:  row.entry_date ?? '',
       stop_pct:    row.stop_pct ?? '',
       notes:       row.notes ?? '',
@@ -2136,6 +2138,7 @@ function PositionsView() {
     // a STOP alert).
     const body = {
       entry_price: parseFloat(editForm.entry_price),
+      shares:      editForm.shares === '' ? null : parseFloat(editForm.shares),
       entry_date:  editForm.entry_date || undefined,
       stop_pct:    editForm.stop_pct === '' ? null : parseFloat(editForm.stop_pct),
       notes:       editForm.notes === '' ? null : editForm.notes,
@@ -2182,11 +2185,13 @@ function PositionsView() {
         </div>
       </div>
 
-      <form onSubmit={openPosition} className="grid grid-cols-2 sm:grid-cols-6 gap-2 mb-6">
+      <form onSubmit={openPosition} className="grid grid-cols-2 sm:grid-cols-7 gap-2 mb-6">
         <input type="text" placeholder="סימבול" className="glass-input uppercase" value={form.symbol}
                onChange={e => setForm({ ...form, symbol: e.target.value.toUpperCase() })} />
         <input type="number" step="0.01" min="0.01" placeholder="מחיר כניסה" className="glass-input" value={form.entry_price}
                onChange={e => setForm({ ...form, entry_price: e.target.value })} />
+        <input type="number" step="0.0001" min="0.0001" placeholder="כמות מניות" className="glass-input" value={form.shares}
+               onChange={e => setForm({ ...form, shares: e.target.value })} />
         <input type="date" className="glass-input" title="תאריך כניסה (ברירת מחדל: היום)" value={form.entry_date}
                onChange={e => setForm({ ...form, entry_date: e.target.value })} />
         <input type="number" step="0.1" min="0.1" max="50" placeholder="% סטופ (רשות)" className="glass-input" value={form.stop_pct}
@@ -2211,8 +2216,10 @@ function PositionsView() {
               <tr className="text-gray-400 border-b border-gray-700 text-right">
                 <th className="p-2">סימבול</th>
                 <th className="p-2">כניסה</th>
+                <th className="p-2">כמות</th>
                 <th className="p-2">נוכחי</th>
                 <th className="p-2">P&L נטו</th>
+                <th className="p-2">רווח $</th>
                 <th className="p-2">ימי מסחר</th>
                 <th className="p-2">התראות</th>
                 <th className="p-2">אותות המערכת</th>
@@ -2252,9 +2259,23 @@ function PositionsView() {
                              onChange={e => setEditForm({ ...editForm, entry_price: e.target.value })} />
                     ) : fmt(row.entry_price)}
                   </td>
+                  <td className="p-2">
+                    {editingId === row.id ? (
+                      <input type="number" step="0.0001" min="0.0001" placeholder="כמות" className="glass-input w-20 py-0.5" value={editForm.shares}
+                             onChange={e => setEditForm({ ...editForm, shares: e.target.value })} />
+                    ) : row.shares == null ? (
+                      <span className="text-gray-600" title="לא הוזנה כמות — אין רווח בדולר">—</span>
+                    ) : (<>
+                      {fmt(row.shares, row.shares % 1 === 0 ? 0 : 4)}
+                      {row.cost_basis != null && <div className="text-[10px] text-gray-500">${fmt(row.cost_basis)}</div>}
+                    </>)}
+                  </td>
                   <td className="p-2">{row.status === 'closed' ? fmt(row.exit_price) : fmt(row.current_price)}</td>
                   <td className={`p-2 font-bold ${pnlClass(row.net_pnl_pct)}`}>
                     {row.net_pnl_pct == null ? '—' : `${row.net_pnl_pct > 0 ? '+' : ''}${fmt(row.net_pnl_pct)}%`}
+                  </td>
+                  <td className={`p-2 font-bold ${pnlClass(row.net_pnl_usd)}`}>
+                    {row.net_pnl_usd == null ? '—' : `${row.net_pnl_usd > 0 ? '+' : '-'}$${fmt(Math.abs(row.net_pnl_usd))}`}
                   </td>
                   <td className="p-2">{row.status === 'closed' ? 'סגורה' : (row.days_held ?? '—')}</td>
                   <td className="p-2">
@@ -2309,6 +2330,35 @@ function PositionsView() {
                 </tr>
               ))}
             </tbody>
+            {data?.totals?.counted > 0 && (
+              <tfoot>
+                <tr className="border-t-2 border-gray-700 font-bold">
+                  <td className="p-2 text-gray-300">
+                    סה"כ פתוח
+                    <div className="text-[10px] text-gray-500 font-normal">{data.totals.counted} פוזיציות</div>
+                  </td>
+                  <td className="p-2" colSpan={2}>
+                    <span className="text-gray-400">${fmt(data.totals.cost_basis)}</span>
+                    <div className="text-[10px] text-gray-500 font-normal">עלות</div>
+                  </td>
+                  <td className="p-2"></td>
+                  <td className={`p-2 ${pnlClass(data.totals.net_pnl_pct)}`}>
+                    {data.totals.net_pnl_pct == null ? '—' : `${data.totals.net_pnl_pct > 0 ? '+' : ''}${fmt(data.totals.net_pnl_pct)}%`}
+                  </td>
+                  <td className={`p-2 ${pnlClass(data.totals.net_pnl_usd)}`}>
+                    {data.totals.net_pnl_usd == null ? '—' : `${data.totals.net_pnl_usd > 0 ? '+' : '-'}$${fmt(Math.abs(data.totals.net_pnl_usd))}`}
+                  </td>
+                  <td className="p-2" colSpan={4}>
+                    {data.totals.skipped > 0 && (
+                      <span className="text-[10px] text-yellow-600 font-normal"
+                            title="פוזיציות בלי כמות מניות או בלי מחיר חי אינן נספרות בסיכום">
+                        ⚠ {data.totals.skipped} לא נספרו
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              </tfoot>
+            )}
           </table>
         </div>
       )}

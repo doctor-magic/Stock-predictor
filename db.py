@@ -554,6 +554,13 @@ def positions_db_init(db_path=None):
         exit_price  REAL,
         exit_ret_net_pct REAL
     )""")
+    # Share count (Aug 14 2026) — without it the P&L is an abstract percentage.
+    # Idempotent ADD COLUMN, NULL for rows entered before it existed; every
+    # dollar figure below returns None when shares is NULL rather than guessing 1.
+    try:
+        con.execute("ALTER TABLE positions ADD COLUMN shares REAL")
+    except Exception:
+        pass  # column already exists
     con.commit()
     con.close()
 
@@ -565,6 +572,52 @@ def position_net_pnl_pct(entry_price, current_price,
     if not entry_price or not current_price or entry_price <= 0:
         return None
     return round((current_price / entry_price - 1) * 100 - 2 * commission_per_side, 2)
+
+
+def position_cost_basis(entry_price, shares):
+    """What the position cost to open, before commission. None if unknown."""
+    if not entry_price or not shares:
+        return None
+    return round(entry_price * shares, 2)
+
+
+def position_net_pnl_usd(entry_price, current_price, shares,
+                         commission_per_side=COMMISSION_PCT_PER_SIDE):
+    """Dollar P&L, DERIVED from the percentage so the two can never disagree
+    on screen. (A per-side charge on each leg's actual value would be a hair
+    more exact — it differs by <0.01pp on a 50% move, far below the spread the
+    user actually pays — and two subtly different commission models shown side
+    by side is the worse bug.)"""
+    pct = position_net_pnl_pct(entry_price, current_price, commission_per_side)
+    basis = position_cost_basis(entry_price, shares)
+    if pct is None or basis is None:
+        return None
+    return round(basis * pct / 100, 2)
+
+
+def positions_totals(rows):
+    """Portfolio roll-up over OPEN rows that have both shares and a live price.
+    Reports how many rows were skipped so a partial total is never read as
+    complete. Pure, unit-tested."""
+    basis = pnl = counted = skipped = 0
+    for r in rows:
+        if r.get("status") != "open":
+            continue
+        b = position_cost_basis(r.get("entry_price"), r.get("shares"))
+        u = r.get("net_pnl_usd")
+        if b is None or u is None:
+            skipped += 1
+            continue
+        basis += b
+        pnl += u
+        counted += 1
+    if not counted:
+        return {"cost_basis": None, "net_pnl_usd": None, "net_pnl_pct": None,
+                "counted": 0, "skipped": skipped}
+    return {"cost_basis": round(basis, 2),
+            "net_pnl_usd": round(pnl, 2),
+            "net_pnl_pct": round(pnl / basis * 100, 2) if basis else None,
+            "counted": counted, "skipped": skipped}
 
 
 def position_trading_days_held(entry_date_str, today=None):
@@ -606,21 +659,22 @@ def position_alerts(entry_price, current_price, stop_pct, days_held,
 
 
 def position_open_row(symbol, entry_price, entry_date=None, stop_pct=None,
-                      notes=None, db_path=None):
+                      notes=None, shares=None, db_path=None):
     con = sqlite3.connect(db_path or _POSITIONS_DB, timeout=30)
     cur = con.execute(
-        "INSERT INTO positions (symbol, entry_price, entry_date, stop_pct, notes, status, opened_ts) "
-        "VALUES (?,?,?,?,?,'open',?)",
+        "INSERT INTO positions (symbol, entry_price, entry_date, stop_pct, notes, shares, status, opened_ts) "
+        "VALUES (?,?,?,?,?,?,'open',?)",
         (symbol.upper(), float(entry_price),
          entry_date or datetime.now(_ET).date().isoformat(),
-         stop_pct, notes, datetime.utcnow().isoformat()))
+         stop_pct, notes, (float(shares) if shares else None),
+         datetime.utcnow().isoformat()))
     con.commit()
     rid = cur.lastrowid
     con.close()
     return rid
 
 
-_POSITION_EDITABLE = ("entry_price", "entry_date", "stop_pct", "notes")
+_POSITION_EDITABLE = ("entry_price", "entry_date", "stop_pct", "notes", "shares")
 
 
 def position_update_row(pos_id, db_path=None, **fields):
@@ -641,6 +695,8 @@ def position_update_row(pos_id, db_path=None, **fields):
         return None
     if "entry_price" in fields:
         fields["entry_price"] = float(fields["entry_price"])
+    if fields.get("shares") is not None:
+        fields["shares"] = float(fields["shares"])
     if "symbol" in fields:
         fields["symbol"] = str(fields["symbol"]).upper()
     sets = ", ".join(f"{k}=?" for k in fields)

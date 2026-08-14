@@ -1897,10 +1897,14 @@ def api_positions_list(status: str = "open"):
         r["days_held"] = _db.position_trading_days_held(r["entry_date"]) if is_open else None
         r["net_pnl_pct"] = (_db.position_net_pnl_pct(r["entry_price"], cur)
                             if is_open else r["exit_ret_net_pct"])
+        r["cost_basis"] = _db.position_cost_basis(r["entry_price"], r.get("shares"))
+        r["net_pnl_usd"] = _db.position_net_pnl_usd(
+            r["entry_price"], cur if is_open else r["exit_price"], r.get("shares"))
         r["alerts"] = (_db.position_alerts(r["entry_price"], cur, r["stop_pct"], r["days_held"])
                        if is_open else [])
         r["signals"] = _db.position_signal_history(r["symbol"])
     return {"positions": rows,
+            "totals": _db.positions_totals(rows),
             "commission_pct_per_side": _db.COMMISSION_PCT_PER_SIDE,
             "horizon_tdays": _db.POSITION_HORIZON_TDAYS}
 
@@ -1908,7 +1912,7 @@ def api_positions_list(status: str = "open"):
 @app.post("/api/positions")
 def api_position_open(req: PositionOpenRequest):
     rid = _db.position_open_row(req.symbol, req.entry_price, req.entry_date,
-                                req.stop_pct, req.notes)
+                                req.stop_pct, req.notes, req.shares)
     return {"id": rid, "status": "open"}
 
 

@@ -2493,3 +2493,21 @@ ONE LIVE BUG CAUGHT AND FIXED DURING DEPLOY: yf.download(group_by="ticker") retu
   Live-verified on a throwaway row: add stop 3% + change price, then null-clear
   the stop leaving price untouched. The user's two real positions were not
   touched — both still carry NO stop, so only HORIZON can fire on them.
+
+  SHARES + DOLLAR P&L Aug 14 (user asked — percent alone is abstract):
+  nullable `shares REAL` (idempotent ADD COLUMN; the 3 live rows predate it and
+  keep NULL), plus cost_basis, net_pnl_usd, and a portfolio roll-up in the GET.
+  DESIGN CALL: the dollar figure is DERIVED from the percentage rather than
+  charging 0.08% against each leg's actual value. The per-leg model is a hair
+  more exact (<0.01pp on a 50% move, far under the spread actually paid), but
+  the two numbers sit side by side on screen and two subtly different commission
+  models shown together is the worse bug. One formula, guaranteed consistent.
+  NULL shares never guesses 1 — every dollar field returns None, and the totals
+  row reports `skipped` so a partial total can't read as complete. 13 tests
+  (gate 109) incl. an idempotent-migration test, since the live DB has rows.
+  Live-verified: F @10.00 x100 = $1,000 basis, +41.04% -> +$410.40, roll-up
+  agrees, 3 real rows skipped for lack of shares. Migration preserved all three
+  (CCL/PLTR/META, snapshot at /tmp/positions_pre_migration.db on the VM).
+  ONE TEST BUG WORTH REMEMBERING: I first asserted -$360 where the answer is
+  -$103.46 — multiplied the percentage by share count instead of by basis. The
+  consistency assertion (usd == basis*pct/100) passed and caught it.
