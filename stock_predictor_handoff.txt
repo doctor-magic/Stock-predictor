@@ -2473,3 +2473,11 @@ ONE LIVE BUG CAUGHT AND FIXED DURING DEPLOY: yf.download(group_by="ticker") retu
   Crumb" 401s exist in the journal (4 yesterday, pre-deploy) — a null current_price
   can also be Yahoo flaking, which the tab renders as '—' with price alerts skipped,
   never an error.
+
+  FOLLOW-UP same day (d9d8ed4): the positions symbol cell now follows the site-wide
+  convention — Yahoo Finance link + ExternalLink icon, plus the small yellow TV badge,
+  matching Volume Leaders and the scanner. Cosmetic only, no logic touched.
+
+  VERIFIED Aug 14 08:17: positions.db entered the backup set on its first run after
+  the deploy — 4 files in the pull, all PRAGMA integrity_check ok, heartbeat lists all
+  four. The layer is in real use (2 open positions logged by the user on Aug 13).
