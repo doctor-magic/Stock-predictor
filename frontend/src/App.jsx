@@ -1,5 +1,5 @@
 ﻿import { useState, useEffect, useCallback } from 'react'
-import { Search, Activity, AlertCircle, BarChart3, TrendingUp, TrendingDown, Minus, BookOpen, ListFilter, RefreshCw, ExternalLink, Info, Zap, Briefcase } from 'lucide-react'
+import { Search, Activity, AlertCircle, BarChart3, TrendingUp, TrendingDown, Minus, BookOpen, ListFilter, RefreshCw, ExternalLink, Info, Zap, Briefcase, Pencil, Check, X } from 'lucide-react'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, LineChart, Line, ReferenceLine } from 'recharts'
 import ReactMarkdown from 'react-markdown'
 export default function App() {
@@ -2089,6 +2089,8 @@ function PositionsView() {
   const [showClosed, setShowClosed] = useState(false)
   const [saving, setSaving] = useState(false)
   const [form, setForm] = useState({ symbol: '', entry_price: '', entry_date: '', stop_pct: '', notes: '' })
+  const [editingId, setEditingId] = useState(null)
+  const [editForm, setEditForm] = useState({ entry_price: '', entry_date: '', stop_pct: '', notes: '' })
 
   const fetchData = useCallback(() => {
     setLoading(true); setError(null)
@@ -2115,6 +2117,34 @@ function PositionsView() {
     fetch('/api/positions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json() })
       .then(() => { setForm({ symbol: '', entry_price: '', entry_date: '', stop_pct: '', notes: '' }); setSaving(false); fetchData() })
+      .catch(e => { setError(e.message); setSaving(false) })
+  }
+
+  const startEdit = (row) => {
+    setEditingId(row.id)
+    setEditForm({
+      entry_price: row.entry_price ?? '',
+      entry_date:  row.entry_date ?? '',
+      stop_pct:    row.stop_pct ?? '',
+      notes:       row.notes ?? '',
+    })
+  }
+
+  const saveEdit = (id) => {
+    // Send every editable key: an explicit null clears the stop, which is the
+    // whole point of an edit form (a position saved without one can never fire
+    // a STOP alert).
+    const body = {
+      entry_price: parseFloat(editForm.entry_price),
+      entry_date:  editForm.entry_date || undefined,
+      stop_pct:    editForm.stop_pct === '' ? null : parseFloat(editForm.stop_pct),
+      notes:       editForm.notes === '' ? null : editForm.notes,
+    }
+    if (!body.entry_price || body.entry_price <= 0) { setError('מחיר כניסה חייב להיות גדול מאפס'); return }
+    setSaving(true)
+    fetch(`/api/positions/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json() })
+      .then(() => { setEditingId(null); setSaving(false); fetchData() })
       .catch(e => { setError(e.message); setSaving(false) })
   }
 
@@ -2207,15 +2237,31 @@ function PositionsView() {
                       <a href={`https://www.tradingview.com/chart/?symbol=${row.symbol}`} target="_blank" rel="noopener noreferrer" className="text-[10px] font-mono px-1 py-0.5 rounded bg-yellow-500/10 text-yellow-500/60 hover:text-yellow-300 hover:bg-yellow-500/20 border border-yellow-500/20 transition-colors" title="TradingView Chart">TV</a>
                       {row.notes && <span className="text-gray-500" title={row.notes}><Info className="w-3 h-3" /></span>}
                     </div>
-                    <div className="text-[10px] text-gray-500">{row.entry_date}</div>
+                    {editingId === row.id ? (<>
+                      <input type="date" className="glass-input text-[10px] py-0.5 mt-1 w-32" value={editForm.entry_date}
+                             onChange={e => setEditForm({ ...editForm, entry_date: e.target.value })} />
+                      <input type="text" placeholder="הערה" className="glass-input text-[10px] py-0.5 mt-1 w-32" value={editForm.notes}
+                             onChange={e => setEditForm({ ...editForm, notes: e.target.value })} />
+                    </>) : (
+                      <div className="text-[10px] text-gray-500">{row.entry_date}</div>
+                    )}
                   </td>
-                  <td className="p-2">{fmt(row.entry_price)}</td>
+                  <td className="p-2">
+                    {editingId === row.id ? (
+                      <input type="number" step="0.01" min="0.01" className="glass-input w-24 py-0.5" value={editForm.entry_price}
+                             onChange={e => setEditForm({ ...editForm, entry_price: e.target.value })} />
+                    ) : fmt(row.entry_price)}
+                  </td>
                   <td className="p-2">{row.status === 'closed' ? fmt(row.exit_price) : fmt(row.current_price)}</td>
                   <td className={`p-2 font-bold ${pnlClass(row.net_pnl_pct)}`}>
                     {row.net_pnl_pct == null ? '—' : `${row.net_pnl_pct > 0 ? '+' : ''}${fmt(row.net_pnl_pct)}%`}
                   </td>
                   <td className="p-2">{row.status === 'closed' ? 'סגורה' : (row.days_held ?? '—')}</td>
                   <td className="p-2">
+                    {editingId === row.id ? (
+                      <input type="number" step="0.1" min="0.1" max="50" placeholder="% סטופ" className="glass-input w-20 py-0.5" value={editForm.stop_pct}
+                             onChange={e => setEditForm({ ...editForm, stop_pct: e.target.value })} />
+                    ) : (<>
                     {(row.alerts ?? []).length === 0 && row.status === 'open' && <span className="text-green-600">✓</span>}
                     {(row.alerts ?? []).map((a, i) => (
                       <span key={i} title={a.detail}
@@ -2223,6 +2269,7 @@ function PositionsView() {
                         {a.kind === 'STOP' ? '⛔ סטופ' : '⏳ מעבר לאופק'}
                       </span>
                     ))}
+                    </>)}
                   </td>
                   <td className="p-2 text-xs">
                     {row.signals ? (
@@ -2235,12 +2282,29 @@ function PositionsView() {
                     ) : <span className="text-gray-600">—</span>}
                   </td>
                   <td className="p-2">
-                    {row.status === 'open' && (
-                      <button onClick={() => closePosition(row)}
-                              className="text-xs text-gray-400 hover:text-red-400 border border-gray-700 rounded px-2 py-0.5">
-                        סגור
-                      </button>
-                    )}
+                    {row.status === 'open' && (editingId === row.id ? (
+                      <div className="flex items-center gap-1 whitespace-nowrap">
+                        <button onClick={() => saveEdit(row.id)} disabled={saving}
+                                className="text-green-400 hover:text-green-200 disabled:opacity-40" title="שמור">
+                          <Check className="w-4 h-4" />
+                        </button>
+                        <button onClick={() => setEditingId(null)}
+                                className="text-gray-500 hover:text-white" title="בטל">
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2 whitespace-nowrap">
+                        <button onClick={() => startEdit(row)}
+                                className="text-gray-400 hover:text-neon-blue" title="ערוך פוזיציה">
+                          <Pencil className="w-4 h-4" />
+                        </button>
+                        <button onClick={() => closePosition(row)}
+                                className="text-xs text-gray-400 hover:text-red-400 border border-gray-700 rounded px-2 py-0.5">
+                          סגור
+                        </button>
+                      </div>
+                    ))}
                   </td>
                 </tr>
               ))}

@@ -2481,3 +2481,15 @@ ONE LIVE BUG CAUGHT AND FIXED DURING DEPLOY: yf.download(group_by="ticker") retu
   VERIFIED Aug 14 08:17: positions.db entered the backup set on its first run after
   the deploy — 4 files in the pull, all PRAGMA integrity_check ok, heartbeat lists all
   four. The layer is in real use (2 open positions logged by the user on Aug 13).
+
+  EDIT ADDED Aug 14 (user asked — create and close existed, update did not):
+  PATCH /api/positions/{id} + a pencil icon that turns the row into inline
+  inputs (entry price, date, stop, notes) with ✓/✗. The load-bearing detail is
+  partial-update semantics: the endpoint reads pydantic's model_fields_set, so
+  an ABSENT key leaves a field alone while an EXPLICIT null clears it —
+  conflating the two is how an edit form silently wipes a stop the user still
+  wanted. db.position_update_row refuses non-editable fields (status,
+  exit_price) and refuses closed positions outright. 9 new tests, gate now 96.
+  Live-verified on a throwaway row: add stop 3% + change price, then null-clear
+  the stop leaving price untouched. The user's two real positions were not
+  touched — both still carry NO stop, so only HORIZON can fire on them.

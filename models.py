@@ -35,3 +35,13 @@ class PositionOpenRequest(BaseModel):
 
 class PositionCloseRequest(BaseModel):
     exit_price: float = Field(..., gt=0)
+
+
+class PositionEditRequest(BaseModel):
+    # Partial edit of an OPEN position. Every field optional; the endpoint reads
+    # model_fields_set so an omitted stop_pct means "leave it" while an explicit
+    # null means "clear it".
+    entry_price: Optional[float] = Field(None, gt=0)
+    entry_date: Optional[str] = Field(None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    stop_pct: Optional[float] = Field(None, gt=0, le=50)
+    notes: Optional[str] = Field(None, max_length=300)

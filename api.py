@@ -88,7 +88,8 @@ def _require_auth(credentials: Optional[HTTPBasicCredentials] = Depends(_securit
     return credentials.username
 
 logger = logging.getLogger(__name__)
-from models import PredictionResult, ScanRequest, PositionOpenRequest, PositionCloseRequest
+from models import (PredictionResult, ScanRequest, PositionOpenRequest,
+                    PositionCloseRequest, PositionEditRequest)
 
 IMPORTANCE_DESCRIPTIONS: dict[str, str] = {
     "sma200_dist":  "Distance from 200-day SMA — measures long-term trend positioning.",
@@ -1909,6 +1910,22 @@ def api_position_open(req: PositionOpenRequest):
     rid = _db.position_open_row(req.symbol, req.entry_price, req.entry_date,
                                 req.stop_pct, req.notes)
     return {"id": rid, "status": "open"}
+
+
+@app.patch("/api/positions/{pos_id}")
+def api_position_update(pos_id: int, req: PositionEditRequest):
+    # model_fields_set = the keys the client actually sent. This is what lets an
+    # explicit null clear the stop while an omitted key leaves it untouched.
+    fields = {k: getattr(req, k) for k in req.model_fields_set}
+    if not fields:
+        raise HTTPException(status_code=400, detail="no fields to update")
+    try:
+        res = _db.position_update_row(pos_id, **fields)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if res is None:
+        raise HTTPException(status_code=404, detail="position not found or not open")
+    return res
 
 
 @app.post("/api/positions/{pos_id}/close")

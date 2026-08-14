@@ -620,6 +620,39 @@ def position_open_row(symbol, entry_price, entry_date=None, stop_pct=None,
     return rid
 
 
+_POSITION_EDITABLE = ("entry_price", "entry_date", "stop_pct", "notes")
+
+
+def position_update_row(pos_id, db_path=None, **fields):
+    """Partial update of an OPEN position. Only the keys actually passed are
+    written — the caller (api layer) derives them from pydantic's
+    model_fields_set, so `stop_pct=None` means CLEAR THE STOP and an absent
+    stop_pct means leave it alone. Conflating those two is how an edit form
+    silently wipes a stop the user still wanted."""
+    unknown = set(fields) - set(_POSITION_EDITABLE)
+    if unknown:
+        raise ValueError(f"not editable: {sorted(unknown)}")
+    if not fields:
+        return None
+    con = sqlite3.connect(db_path or _POSITIONS_DB, timeout=30)
+    row = con.execute("SELECT status FROM positions WHERE id=?", (pos_id,)).fetchone()
+    if not row or row[0] != "open":
+        con.close()
+        return None
+    if "entry_price" in fields:
+        fields["entry_price"] = float(fields["entry_price"])
+    if "symbol" in fields:
+        fields["symbol"] = str(fields["symbol"]).upper()
+    sets = ", ".join(f"{k}=?" for k in fields)
+    con.execute(f"UPDATE positions SET {sets} WHERE id=?",
+                (*fields.values(), pos_id))
+    con.commit()
+    con.row_factory = sqlite3.Row
+    out = dict(con.execute("SELECT * FROM positions WHERE id=?", (pos_id,)).fetchone())
+    con.close()
+    return out
+
+
 def position_close_row(pos_id, exit_price, db_path=None):
     con = sqlite3.connect(db_path or _POSITIONS_DB, timeout=30)
     row = con.execute("SELECT entry_price, status FROM positions WHERE id=?",

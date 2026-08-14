@@ -648,3 +648,82 @@ class TestPositionsLayer(unittest.TestCase):
             with self.assertRaises(sqlite3.OperationalError):
                 ro.execute("INSERT INTO signals VALUES (2,'X','2026-01-01',0.5)")
             ro.close()
+
+
+class TestPositionEdit(unittest.TestCase):
+    """position_update_row — partial edit of an OPEN position (Aug 14 2026).
+
+    The load-bearing distinction: an ABSENT key leaves a field alone, while an
+    explicit None CLEARS it. Conflating them is how an edit form silently wipes
+    a stop the user still wanted.
+    """
+
+    def setUp(self):
+        import db as _db
+        import os, tempfile
+        self.db = _db
+        self._td = tempfile.TemporaryDirectory()
+        self.path = os.path.join(self._td.name, "positions_edit.db")
+        self.db.positions_db_init(db_path=self.path)
+        self.pid = self.db.position_open_row("CCL", 28.74, "2026-08-04",
+                                             stop_pct=3.0, notes="orig",
+                                             db_path=self.path)
+
+    def tearDown(self):
+        self._td.cleanup()
+
+    def _row(self):
+        return self.db.positions_list("open", db_path=self.path)[0]
+
+    def test_absent_key_leaves_field_untouched(self):
+        self.db.position_update_row(self.pid, entry_price=30.0, db_path=self.path)
+        r = self._row()
+        self.assertEqual(r["entry_price"], 30.0)
+        self.assertEqual(r["stop_pct"], 3.0)      # untouched
+        self.assertEqual(r["notes"], "orig")      # untouched
+
+    def test_explicit_none_clears_the_stop(self):
+        self.db.position_update_row(self.pid, stop_pct=None, db_path=self.path)
+        self.assertIsNone(self._row()["stop_pct"])
+
+    def test_adding_a_stop_makes_the_alert_reachable(self):
+        # The real motivation: a position saved without a stop can never fire
+        # a STOP alert. Adding one must make it fire.
+        r = self._row()
+        self.db.position_update_row(self.pid, stop_pct=None, db_path=self.path)
+        r = self._row()
+        self.assertEqual(self.db.position_alerts(r["entry_price"], 27.0,
+                                                 r["stop_pct"], 3), [])
+        self.db.position_update_row(self.pid, stop_pct=2.0, db_path=self.path)
+        r = self._row()
+        alerts = self.db.position_alerts(r["entry_price"], 27.0, r["stop_pct"], 3)
+        self.assertEqual([a["kind"] for a in alerts], ["STOP"])
+
+    def test_entry_price_coerced_to_float(self):
+        self.db.position_update_row(self.pid, entry_price="31.5", db_path=self.path)
+        self.assertEqual(self._row()["entry_price"], 31.5)
+
+    def test_multiple_fields_at_once(self):
+        self.db.position_update_row(self.pid, entry_price=29.0,
+                                    entry_date="2026-08-05", notes="edited",
+                                    db_path=self.path)
+        r = self._row()
+        self.assertEqual((r["entry_price"], r["entry_date"], r["notes"]),
+                         (29.0, "2026-08-05", "edited"))
+
+    def test_rejects_non_editable_field(self):
+        with self.assertRaises(ValueError):
+            self.db.position_update_row(self.pid, status="closed", db_path=self.path)
+        with self.assertRaises(ValueError):
+            self.db.position_update_row(self.pid, exit_price=1.0, db_path=self.path)
+
+    def test_empty_update_is_a_noop(self):
+        self.assertIsNone(self.db.position_update_row(self.pid, db_path=self.path))
+
+    def test_missing_id_returns_none(self):
+        self.assertIsNone(self.db.position_update_row(9999, notes="x", db_path=self.path))
+
+    def test_closed_position_refuses_edit(self):
+        self.db.position_close_row(self.pid, 27.75, db_path=self.path)
+        self.assertIsNone(self.db.position_update_row(self.pid, notes="x",
+                                                      db_path=self.path))
