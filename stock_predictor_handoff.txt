@@ -2520,3 +2520,20 @@ ONE LIVE BUG CAUGHT AND FIXED DURING DEPLOY: yf.download(group_by="ticker") retu
   at the edges; pct and usd now both derive from the same unrounded value.
   Regression test pins both live cases. LESSON: when one displayed number is
   derived from another, round once, at the very end — never chain roundings.
+
+  UI REWORK Aug 16 — user: "the interface is very bad". First item: clicking the
+  pencil should open the row in the wide form at the top, not sprout tiny inputs
+  inside narrow table cells. Correct, and it was a bad call on my part: the
+  cells are ~80px wide in an RTL table, so a date + number + text input in them
+  were unusable, and the caret could land off-screen.
+  Now ONE form serves both modes (editingId null = open, an id = edit): the
+  pencil fills it, scrollIntoView brings it into view, the form and the row both
+  highlight, symbol is disabled while editing (it is not an editable field), and
+  a "cancel edit" escape sits in the header. Fields got real <label>s — the
+  placeholders were truncating ("% סטופ (רשות)" rendered as "פ (רשות)%").
+  Also: an inline hint when editing a position with no stop, since that is
+  exactly the state that makes a STOP alert unreachable.
+  CAUGHT PRE-DEPLOY: useRef was used but never imported. The Vite build passed
+  clean — it does not resolve identifiers — so this would have been a runtime
+  crash on the tab. A grep audit of every identifier the new code touches is now
+  part of the routine; a green frontend build is NOT a correctness signal.

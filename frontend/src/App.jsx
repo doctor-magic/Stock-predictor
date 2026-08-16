@@ -1,5 +1,5 @@
-﻿import { useState, useEffect, useCallback } from 'react'
-import { Search, Activity, AlertCircle, BarChart3, TrendingUp, TrendingDown, Minus, BookOpen, ListFilter, RefreshCw, ExternalLink, Info, Zap, Briefcase, Pencil, Check, X } from 'lucide-react'
+﻿import { useState, useEffect, useCallback, useRef } from 'react'
+import { Search, Activity, AlertCircle, BarChart3, TrendingUp, TrendingDown, Minus, BookOpen, ListFilter, RefreshCw, ExternalLink, Info, Zap, Briefcase, Pencil, X } from 'lucide-react'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, LineChart, Line, ReferenceLine } from 'recharts'
 import ReactMarkdown from 'react-markdown'
 export default function App() {
@@ -2088,9 +2088,12 @@ function PositionsView() {
   const [error, setError] = useState(null)
   const [showClosed, setShowClosed] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [form, setForm] = useState({ symbol: '', entry_price: '', shares: '', entry_date: '', stop_pct: '', notes: '' })
+  // ONE form serves both "open" and "edit" — editing inside narrow table cells
+  // was unusable. editingId null = open mode, an id = editing that row.
+  const EMPTY_FORM = { symbol: '', entry_price: '', shares: '', entry_date: '', stop_pct: '', notes: '' }
+  const [form, setForm] = useState(EMPTY_FORM)
   const [editingId, setEditingId] = useState(null)
-  const [editForm, setEditForm] = useState({ entry_price: '', shares: '', entry_date: '', stop_pct: '', notes: '' })
+  const formRef = useRef(null)
 
   const fetchData = useCallback(() => {
     setLoading(true); setError(null)
@@ -2106,10 +2109,47 @@ function PositionsView() {
     return () => clearInterval(iv)
   }, [fetchData])
 
-  const openPosition = (e) => {
+  const cancelEdit = () => { setEditingId(null); setForm(EMPTY_FORM); setError(null) }
+
+  const startEdit = (row) => {
+    // Fill the wide top form and bring it into view — clicking the pencil and
+    // having a caret appear somewhere off-screen is the bug this replaces.
+    setEditingId(row.id)
+    setError(null)
+    setForm({
+      symbol:      row.symbol,
+      entry_price: row.entry_price ?? '',
+      shares:      row.shares ?? '',
+      entry_date:  row.entry_date ?? '',
+      stop_pct:    row.stop_pct ?? '',
+      notes:       row.notes ?? '',
+    })
+    formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }
+
+  const submitForm = (e) => {
     e.preventDefault()
-    if (!form.symbol || !form.entry_price) return
+    if (!form.entry_price) return
+    if (!editingId && !form.symbol) return
     setSaving(true)
+
+    if (editingId) {
+      // Send every editable key: an explicit null CLEARS a field, which is the
+      // point of an edit form (a position with no stop can never fire a STOP).
+      const body = {
+        entry_price: parseFloat(form.entry_price),
+        shares:      form.shares   === '' ? null : parseFloat(form.shares),
+        stop_pct:    form.stop_pct === '' ? null : parseFloat(form.stop_pct),
+        notes:       form.notes    === '' ? null : form.notes,
+      }
+      if (form.entry_date) body.entry_date = form.entry_date
+      fetch(`/api/positions/${editingId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+        .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json() })
+        .then(() => { setEditingId(null); setForm(EMPTY_FORM); setSaving(false); fetchData() })
+        .catch(e => { setError(e.message); setSaving(false) })
+      return
+    }
+
     const body = { symbol: form.symbol.trim().toUpperCase(), entry_price: parseFloat(form.entry_price) }
     if (form.shares)     body.shares     = parseFloat(form.shares)
     if (form.entry_date) body.entry_date = form.entry_date
@@ -2117,37 +2157,7 @@ function PositionsView() {
     if (form.notes)      body.notes      = form.notes
     fetch('/api/positions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json() })
-      .then(() => { setForm({ symbol: '', entry_price: '', shares: '', entry_date: '', stop_pct: '', notes: '' }); setSaving(false); fetchData() })
-      .catch(e => { setError(e.message); setSaving(false) })
-  }
-
-  const startEdit = (row) => {
-    setEditingId(row.id)
-    setEditForm({
-      entry_price: row.entry_price ?? '',
-      shares:      row.shares ?? '',
-      entry_date:  row.entry_date ?? '',
-      stop_pct:    row.stop_pct ?? '',
-      notes:       row.notes ?? '',
-    })
-  }
-
-  const saveEdit = (id) => {
-    // Send every editable key: an explicit null clears the stop, which is the
-    // whole point of an edit form (a position saved without one can never fire
-    // a STOP alert).
-    const body = {
-      entry_price: parseFloat(editForm.entry_price),
-      shares:      editForm.shares === '' ? null : parseFloat(editForm.shares),
-      entry_date:  editForm.entry_date || undefined,
-      stop_pct:    editForm.stop_pct === '' ? null : parseFloat(editForm.stop_pct),
-      notes:       editForm.notes === '' ? null : editForm.notes,
-    }
-    if (!body.entry_price || body.entry_price <= 0) { setError('מחיר כניסה חייב להיות גדול מאפס'); return }
-    setSaving(true)
-    fetch(`/api/positions/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
-      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json() })
-      .then(() => { setEditingId(null); setSaving(false); fetchData() })
+      .then(() => { setForm(EMPTY_FORM); setSaving(false); fetchData() })
       .catch(e => { setError(e.message); setSaving(false) })
   }
 
@@ -2185,23 +2195,62 @@ function PositionsView() {
         </div>
       </div>
 
-      <form onSubmit={openPosition} className="grid grid-cols-2 sm:grid-cols-7 gap-2 mb-6">
-        <input type="text" placeholder="סימבול" className="glass-input uppercase" value={form.symbol}
-               onChange={e => setForm({ ...form, symbol: e.target.value.toUpperCase() })} />
-        <input type="number" step="0.01" min="0.01" placeholder="מחיר כניסה" className="glass-input" value={form.entry_price}
-               onChange={e => setForm({ ...form, entry_price: e.target.value })} />
-        <input type="number" step="0.0001" min="0.0001" placeholder="כמות מניות" className="glass-input" value={form.shares}
-               onChange={e => setForm({ ...form, shares: e.target.value })} />
-        <input type="date" className="glass-input" title="תאריך כניסה (ברירת מחדל: היום)" value={form.entry_date}
-               onChange={e => setForm({ ...form, entry_date: e.target.value })} />
-        <input type="number" step="0.1" min="0.1" max="50" placeholder="% סטופ (רשות)" className="glass-input" value={form.stop_pct}
-               onChange={e => setForm({ ...form, stop_pct: e.target.value })} />
-        <input type="text" placeholder="הערה (רשות)" className="glass-input" value={form.notes}
-               onChange={e => setForm({ ...form, notes: e.target.value })} />
-        <button type="submit" disabled={saving || !form.symbol || !form.entry_price}
-                className="glass-input bg-neon-blue/20 hover:bg-neon-blue/40 disabled:opacity-40 font-bold">
-          {saving ? '...' : '+ פתח'}
-        </button>
+      <form ref={formRef} onSubmit={submitForm}
+            className={`mb-6 rounded-lg border p-4 transition-colors ${editingId ? 'border-neon-blue/60 bg-neon-blue/5' : 'border-gray-700/60'}`}>
+        <div className="flex items-center justify-between mb-3">
+          <span className="text-sm font-bold text-gray-300">
+            {editingId ? <>עריכת <span className="text-neon-blue font-mono">{form.symbol}</span></> : 'פתיחת פוזיציה חדשה'}
+          </span>
+          {editingId && (
+            <button type="button" onClick={cancelEdit} className="text-xs text-gray-400 hover:text-white flex items-center gap-1">
+              <X className="w-3.5 h-3.5" /> בטל עריכה
+            </button>
+          )}
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+          <label className="flex flex-col gap-1">
+            <span className="text-[11px] text-gray-400">סימבול</span>
+            <input type="text" className="glass-input uppercase disabled:opacity-50" value={form.symbol} disabled={!!editingId}
+                   title={editingId ? 'לא ניתן לשנות סימבול — סגור ופתח פוזיציה חדשה' : ''}
+                   onChange={e => setForm({ ...form, symbol: e.target.value.toUpperCase() })} />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-[11px] text-gray-400">מחיר כניסה</span>
+            <input type="number" step="0.01" min="0.01" className="glass-input" value={form.entry_price}
+                   onChange={e => setForm({ ...form, entry_price: e.target.value })} />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-[11px] text-gray-400">כמות מניות</span>
+            <input type="number" step="0.0001" min="0.0001" className="glass-input" value={form.shares}
+                   onChange={e => setForm({ ...form, shares: e.target.value })} />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-[11px] text-gray-400">תאריך כניסה</span>
+            <input type="date" className="glass-input" value={form.entry_date}
+                   onChange={e => setForm({ ...form, entry_date: e.target.value })} />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-[11px] text-gray-400">סטופ % <span className="text-gray-600">(רשות)</span></span>
+            <input type="number" step="0.1" min="0.1" max="50" className="glass-input" value={form.stop_pct}
+                   onChange={e => setForm({ ...form, stop_pct: e.target.value })} />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-[11px] text-gray-400">הערה <span className="text-gray-600">(רשות)</span></span>
+            <input type="text" className="glass-input" value={form.notes}
+                   onChange={e => setForm({ ...form, notes: e.target.value })} />
+          </label>
+        </div>
+
+        <div className="flex items-center gap-3 mt-3">
+          <button type="submit" disabled={saving || !form.entry_price || (!editingId && !form.symbol)}
+                  className="glass-input bg-neon-blue/20 hover:bg-neon-blue/40 disabled:opacity-40 font-bold px-6">
+            {saving ? '...' : editingId ? '✓ שמור שינויים' : '+ פתח פוזיציה'}
+          </button>
+          {editingId && !form.stop_pct && (
+            <span className="text-[11px] text-yellow-600">בלי סטופ, התראת ⛔ לא תוכל לירות על הפוזיציה הזו</span>
+          )}
+        </div>
       </form>
 
       {error && <div className="text-red-400 text-sm mb-4 font-mono">שגיאה: {error}</div>}
@@ -2228,7 +2277,7 @@ function PositionsView() {
             </thead>
             <tbody>
               {rows.map(row => (
-                <tr key={row.id} className={`border-b border-gray-800 ${row.status === 'closed' ? 'opacity-50' : ''}`}>
+                <tr key={row.id} className={`border-b border-gray-800 ${row.status === 'closed' ? 'opacity-50' : ''} ${editingId === row.id ? 'bg-neon-blue/10' : ''}`}>
                   <td className="p-2">
                     <div className="flex items-center gap-1.5 whitespace-nowrap">
                       <a
@@ -2244,26 +2293,13 @@ function PositionsView() {
                       <a href={`https://www.tradingview.com/chart/?symbol=${row.symbol}`} target="_blank" rel="noopener noreferrer" className="text-[10px] font-mono px-1 py-0.5 rounded bg-yellow-500/10 text-yellow-500/60 hover:text-yellow-300 hover:bg-yellow-500/20 border border-yellow-500/20 transition-colors" title="TradingView Chart">TV</a>
                       {row.notes && <span className="text-gray-500" title={row.notes}><Info className="w-3 h-3" /></span>}
                     </div>
-                    {editingId === row.id ? (<>
-                      <input type="date" className="glass-input text-[10px] py-0.5 mt-1 w-32" value={editForm.entry_date}
-                             onChange={e => setEditForm({ ...editForm, entry_date: e.target.value })} />
-                      <input type="text" placeholder="הערה" className="glass-input text-[10px] py-0.5 mt-1 w-32" value={editForm.notes}
-                             onChange={e => setEditForm({ ...editForm, notes: e.target.value })} />
-                    </>) : (
-                      <div className="text-[10px] text-gray-500">{row.entry_date}</div>
-                    )}
+                    <div className="text-[10px] text-gray-500">{row.entry_date}</div>
                   </td>
                   <td className="p-2">
-                    {editingId === row.id ? (
-                      <input type="number" step="0.01" min="0.01" className="glass-input w-24 py-0.5" value={editForm.entry_price}
-                             onChange={e => setEditForm({ ...editForm, entry_price: e.target.value })} />
-                    ) : fmt(row.entry_price)}
+                    {fmt(row.entry_price)}
                   </td>
                   <td className="p-2">
-                    {editingId === row.id ? (
-                      <input type="number" step="0.0001" min="0.0001" placeholder="כמות" className="glass-input w-20 py-0.5" value={editForm.shares}
-                             onChange={e => setEditForm({ ...editForm, shares: e.target.value })} />
-                    ) : row.shares == null ? (
+                    {row.shares == null ? (
                       <span className="text-gray-600" title="לא הוזנה כמות — אין רווח בדולר">—</span>
                     ) : (<>
                       {fmt(row.shares, row.shares % 1 === 0 ? 0 : 4)}
@@ -2279,10 +2315,6 @@ function PositionsView() {
                   </td>
                   <td className="p-2">{row.status === 'closed' ? 'סגורה' : (row.days_held ?? '—')}</td>
                   <td className="p-2">
-                    {editingId === row.id ? (
-                      <input type="number" step="0.1" min="0.1" max="50" placeholder="% סטופ" className="glass-input w-20 py-0.5" value={editForm.stop_pct}
-                             onChange={e => setEditForm({ ...editForm, stop_pct: e.target.value })} />
-                    ) : (<>
                     {(row.alerts ?? []).length === 0 && row.status === 'open' && <span className="text-green-600">✓</span>}
                     {(row.alerts ?? []).map((a, i) => (
                       <span key={i} title={a.detail}
@@ -2290,7 +2322,6 @@ function PositionsView() {
                         {a.kind === 'STOP' ? '⛔ סטופ' : '⏳ מעבר לאופק'}
                       </span>
                     ))}
-                    </>)}
                   </td>
                   <td className="p-2 text-xs">
                     {row.signals ? (
@@ -2303,21 +2334,11 @@ function PositionsView() {
                     ) : <span className="text-gray-600">—</span>}
                   </td>
                   <td className="p-2">
-                    {row.status === 'open' && (editingId === row.id ? (
-                      <div className="flex items-center gap-1 whitespace-nowrap">
-                        <button onClick={() => saveEdit(row.id)} disabled={saving}
-                                className="text-green-400 hover:text-green-200 disabled:opacity-40" title="שמור">
-                          <Check className="w-4 h-4" />
-                        </button>
-                        <button onClick={() => setEditingId(null)}
-                                className="text-gray-500 hover:text-white" title="בטל">
-                          <X className="w-4 h-4" />
-                        </button>
-                      </div>
-                    ) : (
+                    {row.status === 'open' && (
                       <div className="flex items-center gap-2 whitespace-nowrap">
                         <button onClick={() => startEdit(row)}
-                                className="text-gray-400 hover:text-neon-blue" title="ערוך פוזיציה">
+                                className={`hover:text-neon-blue ${editingId === row.id ? 'text-neon-blue' : 'text-gray-400'}`}
+                                title="ערוך פוזיציה">
                           <Pencil className="w-4 h-4" />
                         </button>
                         <button onClick={() => closePosition(row)}
@@ -2325,7 +2346,7 @@ function PositionsView() {
                           סגור
                         </button>
                       </div>
-                    ))}
+                    )}
                   </td>
                 </tr>
               ))}
