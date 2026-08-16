@@ -2537,3 +2537,27 @@ ONE LIVE BUG CAUGHT AND FIXED DURING DEPLOY: yf.download(group_by="ticker") retu
   clean — it does not resolve identifiers — so this would have been a runtime
   crash on the tab. A grep audit of every identifier the new code touches is now
   part of the routine; a green frontend build is NOT a correctness signal.
+
+  PRIVACY HOLE CLOSED Aug 16 — user: "this is a site any user can see; if I
+  entered my positions, anyone can see them". He was right about the design and
+  I had shipped it. Facts as found: BASIC_AUTH_USERS held exactly ONE account
+  (elim), so nothing was actually exposed — but the positions table had no owner
+  concept at all, so a second entry in that env var would have shown every user
+  the whole book. Worse, ids are sequential AUTOINCREMENT, so PATCH/close by a
+  guessed integer would have hit another user's row.
+  FIX: `owner TEXT` + index; owner is a REQUIRED positional arg on
+  positions_list / position_open_row / position_update_row / position_close_row,
+  so a call site that forgets it raises TypeError instead of silently returning
+  everything. Owner is part of the WHERE clause, not a check after the lookup —
+  another user's id is simply "not found", leaking nothing about existence.
+  _require_auth already returned the username; it was declared app-wide only, so
+  each endpoint now also takes `user: str = Depends(_require_auth)` — that is
+  what actually hands the identity to the handler.
+  BACKFILL POLICY (fail closed): api.py claims ownerless rows for the sole
+  account ONLY when exactly one is configured. With 2+ accounts the rows stay
+  owner=NULL and are invisible to EVERY reader — an unowned position must never
+  default to shared. Verified live: "backfilled owner on 3 pre-ownership row(s)",
+  all three now owner=elim, the tab still shows them, wrong password and unknown
+  user both 401. Snapshot before the migration: /tmp/positions_pre_owner.db.
+  10 isolation tests (gate 120) cover read scoping, the guessed-id edit/close
+  attack, per-user totals, and that owner is required rather than defaultable.

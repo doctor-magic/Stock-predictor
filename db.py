@@ -561,8 +561,31 @@ def positions_db_init(db_path=None):
         con.execute("ALTER TABLE positions ADD COLUMN shares REAL")
     except Exception:
         pass  # column already exists
+    # Ownership (Aug 16 2026) — the table was built with no owner concept, so a
+    # second entry in BASIC_AUTH_USERS would have shown everyone every position,
+    # and sequential ids made another user's row editable by guessing a number.
+    # Every function below now takes `owner` as a REQUIRED first argument: a call
+    # site that forgets it raises TypeError instead of silently leaking.
+    try:
+        con.execute("ALTER TABLE positions ADD COLUMN owner TEXT")
+    except Exception:
+        pass  # column already exists
+    con.execute("CREATE INDEX IF NOT EXISTS idx_positions_owner ON positions(owner)")
     con.commit()
     con.close()
+
+
+def positions_backfill_owner(owner, db_path=None):
+    """Assign pre-ownership rows to `owner`. Caller decides whether this is safe
+    — api.py only calls it when exactly ONE account is configured, so there is
+    no ambiguity about whose rows these are. Rows left NULL stay invisible to
+    every reader (fail closed), never visible to all."""
+    con = sqlite3.connect(db_path or _POSITIONS_DB, timeout=30)
+    cur = con.execute("UPDATE positions SET owner=? WHERE owner IS NULL", (owner,))
+    con.commit()
+    n = cur.rowcount
+    con.close()
+    return n
 
 
 def _position_net_pct_raw(entry_price, current_price, commission_per_side):
@@ -667,13 +690,13 @@ def position_alerts(entry_price, current_price, stop_pct, days_held,
     return alerts
 
 
-def position_open_row(symbol, entry_price, entry_date=None, stop_pct=None,
+def position_open_row(owner, symbol, entry_price, entry_date=None, stop_pct=None,
                       notes=None, shares=None, db_path=None):
     con = sqlite3.connect(db_path or _POSITIONS_DB, timeout=30)
     cur = con.execute(
-        "INSERT INTO positions (symbol, entry_price, entry_date, stop_pct, notes, shares, status, opened_ts) "
-        "VALUES (?,?,?,?,?,?,'open',?)",
-        (symbol.upper(), float(entry_price),
+        "INSERT INTO positions (owner, symbol, entry_price, entry_date, stop_pct, notes, shares, status, opened_ts) "
+        "VALUES (?,?,?,?,?,?,?,'open',?)",
+        (owner, symbol.upper(), float(entry_price),
          entry_date or datetime.now(_ET).date().isoformat(),
          stop_pct, notes, (float(shares) if shares else None),
          datetime.utcnow().isoformat()))
@@ -686,7 +709,7 @@ def position_open_row(symbol, entry_price, entry_date=None, stop_pct=None,
 _POSITION_EDITABLE = ("entry_price", "entry_date", "stop_pct", "notes", "shares")
 
 
-def position_update_row(pos_id, db_path=None, **fields):
+def position_update_row(pos_id, owner, db_path=None, **fields):
     """Partial update of an OPEN position. Only the keys actually passed are
     written — the caller (api layer) derives them from pydantic's
     model_fields_set, so `stop_pct=None` means CLEAR THE STOP and an absent
@@ -698,7 +721,10 @@ def position_update_row(pos_id, db_path=None, **fields):
     if not fields:
         return None
     con = sqlite3.connect(db_path or _POSITIONS_DB, timeout=30)
-    row = con.execute("SELECT status FROM positions WHERE id=?", (pos_id,)).fetchone()
+    # owner is part of the lookup, not a check after it — another user's row is
+    # simply not found, so a guessed id reveals nothing about whether it exists.
+    row = con.execute("SELECT status FROM positions WHERE id=? AND owner=?",
+                      (pos_id, owner)).fetchone()
     if not row or row[0] != "open":
         con.close()
         return None
@@ -709,39 +735,41 @@ def position_update_row(pos_id, db_path=None, **fields):
     if "symbol" in fields:
         fields["symbol"] = str(fields["symbol"]).upper()
     sets = ", ".join(f"{k}=?" for k in fields)
-    con.execute(f"UPDATE positions SET {sets} WHERE id=?",
-                (*fields.values(), pos_id))
+    con.execute(f"UPDATE positions SET {sets} WHERE id=? AND owner=?",
+                (*fields.values(), pos_id, owner))
     con.commit()
     con.row_factory = sqlite3.Row
-    out = dict(con.execute("SELECT * FROM positions WHERE id=?", (pos_id,)).fetchone())
+    out = dict(con.execute("SELECT * FROM positions WHERE id=? AND owner=?",
+                           (pos_id, owner)).fetchone())
     con.close()
     return out
 
 
-def position_close_row(pos_id, exit_price, db_path=None):
+def position_close_row(pos_id, owner, exit_price, db_path=None):
     con = sqlite3.connect(db_path or _POSITIONS_DB, timeout=30)
-    row = con.execute("SELECT entry_price, status FROM positions WHERE id=?",
-                      (pos_id,)).fetchone()
+    row = con.execute("SELECT entry_price, status FROM positions WHERE id=? AND owner=?",
+                      (pos_id, owner)).fetchone()
     if not row or row[1] != "open":
         con.close()
         return None
     net = position_net_pnl_pct(row[0], float(exit_price))
     con.execute("UPDATE positions SET status='closed', closed_ts=?, exit_price=?, "
-                "exit_ret_net_pct=? WHERE id=?",
-                (datetime.utcnow().isoformat(), float(exit_price), net, pos_id))
+                "exit_ret_net_pct=? WHERE id=? AND owner=?",
+                (datetime.utcnow().isoformat(), float(exit_price), net, pos_id, owner))
     con.commit()
     con.close()
     return {"id": pos_id, "exit_price": float(exit_price), "exit_ret_net_pct": net}
 
 
-def positions_list(status="open", db_path=None):
+def positions_list(owner, status="open", db_path=None):
     con = sqlite3.connect(db_path or _POSITIONS_DB, timeout=30)
     con.row_factory = sqlite3.Row
     if status == "all":
-        rows = con.execute("SELECT * FROM positions ORDER BY id DESC").fetchall()
+        rows = con.execute("SELECT * FROM positions WHERE owner=? ORDER BY id DESC",
+                           (owner,)).fetchall()
     else:
-        rows = con.execute("SELECT * FROM positions WHERE status=? ORDER BY id DESC",
-                           (status,)).fetchall()
+        rows = con.execute("SELECT * FROM positions WHERE owner=? AND status=? "
+                           "ORDER BY id DESC", (owner, status)).fetchall()
     out = [dict(r) for r in rows]
     con.close()
     return out

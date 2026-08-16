@@ -1847,6 +1847,21 @@ def get_gainers(force: bool = False):
 _pos_price_cache = {"ts": 0.0, "prices": {}}
 _POS_PRICE_TTL = 60
 
+# One-time ownership backfill for rows created before the owner column existed.
+# Runs ONLY when exactly one account is configured — then there is no question
+# whose rows they are. With two or more accounts the rows keep owner=NULL and
+# stay invisible to everyone: an unowned position must never default to shared.
+try:
+    if len(_BASIC_AUTH_USERS) == 1:
+        _n = _db.positions_backfill_owner(next(iter(_BASIC_AUTH_USERS)))
+        if _n:
+            print(f"[positions] backfilled owner on {_n} pre-ownership row(s)",
+                  flush=True)
+    elif not _ENABLE_AUTH:
+        _db.positions_backfill_owner("auth_disabled")
+except Exception as _e:
+    print(f"[positions] owner backfill skipped: {_e}", flush=True)
+
 
 def _positions_live_prices(symbols):
     """Batched last-close fetch with a 60s cache. Failure → {} — the tab shows
@@ -1883,11 +1898,15 @@ def _positions_live_prices(symbols):
     return prices
 
 
+# Positions are PER-USER. _require_auth is already an app-wide dependency, but
+# declaring it here too is what hands the endpoint the username — without it the
+# rows are global, which is how a second entry in BASIC_AUTH_USERS would have
+# exposed every user's book to every other user.
 @app.get("/api/positions")
-def api_positions_list(status: str = "open"):
+def api_positions_list(status: str = "open", user: str = Depends(_require_auth)):
     if status not in ("open", "closed", "all"):
         raise HTTPException(status_code=400, detail="status must be open|closed|all")
-    rows = _db.positions_list(status)
+    rows = _db.positions_list(user, status)
     open_syms = sorted({r["symbol"] for r in rows if r["status"] == "open"})
     prices = _positions_live_prices(open_syms) if open_syms else {}
     for r in rows:
@@ -1910,21 +1929,22 @@ def api_positions_list(status: str = "open"):
 
 
 @app.post("/api/positions")
-def api_position_open(req: PositionOpenRequest):
-    rid = _db.position_open_row(req.symbol, req.entry_price, req.entry_date,
+def api_position_open(req: PositionOpenRequest, user: str = Depends(_require_auth)):
+    rid = _db.position_open_row(user, req.symbol, req.entry_price, req.entry_date,
                                 req.stop_pct, req.notes, req.shares)
     return {"id": rid, "status": "open"}
 
 
 @app.patch("/api/positions/{pos_id}")
-def api_position_update(pos_id: int, req: PositionEditRequest):
+def api_position_update(pos_id: int, req: PositionEditRequest,
+                        user: str = Depends(_require_auth)):
     # model_fields_set = the keys the client actually sent. This is what lets an
     # explicit null clear the stop while an omitted key leaves it untouched.
     fields = {k: getattr(req, k) for k in req.model_fields_set}
     if not fields:
         raise HTTPException(status_code=400, detail="no fields to update")
     try:
-        res = _db.position_update_row(pos_id, **fields)
+        res = _db.position_update_row(pos_id, user, **fields)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     if res is None:
@@ -1933,8 +1953,9 @@ def api_position_update(pos_id: int, req: PositionEditRequest):
 
 
 @app.post("/api/positions/{pos_id}/close")
-def api_position_close(pos_id: int, req: PositionCloseRequest):
-    res = _db.position_close_row(pos_id, req.exit_price)
+def api_position_close(pos_id: int, req: PositionCloseRequest,
+                       user: str = Depends(_require_auth)):
+    res = _db.position_close_row(pos_id, user, req.exit_price)
     if res is None:
         raise HTTPException(status_code=404, detail="position not found or already closed")
     return res

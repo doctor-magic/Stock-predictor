@@ -615,16 +615,16 @@ class TestPositionsLayer(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             p = os.path.join(td, "positions_test.db")
             self.db.positions_db_init(db_path=p)
-            rid = self.db.position_open_row("ccl", 28.74, "2026-08-04",
+            rid = self.db.position_open_row("u1", "ccl", 28.74, "2026-08-04",
                                             stop_pct=3.0, db_path=p)
-            rows = self.db.positions_list("open", db_path=p)
+            rows = self.db.positions_list("u1", "open", db_path=p)
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0]["symbol"], "CCL")  # upper-cased on write
-            res = self.db.position_close_row(rid, 27.75, db_path=p)
+            res = self.db.position_close_row(rid, "u1", 27.75, db_path=p)
             self.assertEqual(res["exit_ret_net_pct"], -3.60)
-            self.assertEqual(self.db.positions_list("open", db_path=p), [])
+            self.assertEqual(self.db.positions_list("u1", "open", db_path=p), [])
             # closing twice must refuse
-            self.assertIsNone(self.db.position_close_row(rid, 27.75, db_path=p))
+            self.assertIsNone(self.db.position_close_row(rid, "u1", 27.75, db_path=p))
 
     # ── the read-only guarantee ──────────────────────────────────────────────
     def test_signal_history_cannot_write_tracker(self):
@@ -665,7 +665,7 @@ class TestPositionEdit(unittest.TestCase):
         self._td = tempfile.TemporaryDirectory()
         self.path = os.path.join(self._td.name, "positions_edit.db")
         self.db.positions_db_init(db_path=self.path)
-        self.pid = self.db.position_open_row("CCL", 28.74, "2026-08-04",
+        self.pid = self.db.position_open_row("u1", "CCL", 28.74, "2026-08-04",
                                              stop_pct=3.0, notes="orig",
                                              db_path=self.path)
 
@@ -673,38 +673,38 @@ class TestPositionEdit(unittest.TestCase):
         self._td.cleanup()
 
     def _row(self):
-        return self.db.positions_list("open", db_path=self.path)[0]
+        return self.db.positions_list("u1", "open", db_path=self.path)[0]
 
     def test_absent_key_leaves_field_untouched(self):
-        self.db.position_update_row(self.pid, entry_price=30.0, db_path=self.path)
+        self.db.position_update_row(self.pid, "u1", entry_price=30.0, db_path=self.path)
         r = self._row()
         self.assertEqual(r["entry_price"], 30.0)
         self.assertEqual(r["stop_pct"], 3.0)      # untouched
         self.assertEqual(r["notes"], "orig")      # untouched
 
     def test_explicit_none_clears_the_stop(self):
-        self.db.position_update_row(self.pid, stop_pct=None, db_path=self.path)
+        self.db.position_update_row(self.pid, "u1", stop_pct=None, db_path=self.path)
         self.assertIsNone(self._row()["stop_pct"])
 
     def test_adding_a_stop_makes_the_alert_reachable(self):
         # The real motivation: a position saved without a stop can never fire
         # a STOP alert. Adding one must make it fire.
         r = self._row()
-        self.db.position_update_row(self.pid, stop_pct=None, db_path=self.path)
+        self.db.position_update_row(self.pid, "u1", stop_pct=None, db_path=self.path)
         r = self._row()
         self.assertEqual(self.db.position_alerts(r["entry_price"], 27.0,
                                                  r["stop_pct"], 3), [])
-        self.db.position_update_row(self.pid, stop_pct=2.0, db_path=self.path)
+        self.db.position_update_row(self.pid, "u1", stop_pct=2.0, db_path=self.path)
         r = self._row()
         alerts = self.db.position_alerts(r["entry_price"], 27.0, r["stop_pct"], 3)
         self.assertEqual([a["kind"] for a in alerts], ["STOP"])
 
     def test_entry_price_coerced_to_float(self):
-        self.db.position_update_row(self.pid, entry_price="31.5", db_path=self.path)
+        self.db.position_update_row(self.pid, "u1", entry_price="31.5", db_path=self.path)
         self.assertEqual(self._row()["entry_price"], 31.5)
 
     def test_multiple_fields_at_once(self):
-        self.db.position_update_row(self.pid, entry_price=29.0,
+        self.db.position_update_row(self.pid, "u1", entry_price=29.0,
                                     entry_date="2026-08-05", notes="edited",
                                     db_path=self.path)
         r = self._row()
@@ -713,19 +713,19 @@ class TestPositionEdit(unittest.TestCase):
 
     def test_rejects_non_editable_field(self):
         with self.assertRaises(ValueError):
-            self.db.position_update_row(self.pid, status="closed", db_path=self.path)
+            self.db.position_update_row(self.pid, "u1", status="closed", db_path=self.path)
         with self.assertRaises(ValueError):
-            self.db.position_update_row(self.pid, exit_price=1.0, db_path=self.path)
+            self.db.position_update_row(self.pid, "u1", exit_price=1.0, db_path=self.path)
 
     def test_empty_update_is_a_noop(self):
-        self.assertIsNone(self.db.position_update_row(self.pid, db_path=self.path))
+        self.assertIsNone(self.db.position_update_row(self.pid, "u1", db_path=self.path))
 
     def test_missing_id_returns_none(self):
-        self.assertIsNone(self.db.position_update_row(9999, notes="x", db_path=self.path))
+        self.assertIsNone(self.db.position_update_row(9999, "u1", notes="x", db_path=self.path))
 
     def test_closed_position_refuses_edit(self):
-        self.db.position_close_row(self.pid, 27.75, db_path=self.path)
-        self.assertIsNone(self.db.position_update_row(self.pid, notes="x",
+        self.db.position_close_row(self.pid, "u1", 27.75, db_path=self.path)
+        self.assertIsNone(self.db.position_update_row(self.pid, "u1", notes="x",
                                                       db_path=self.path))
 
 
@@ -819,13 +819,13 @@ class TestPositionDollars(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             p = os.path.join(td, "pos.db")
             self.db.positions_db_init(db_path=p)
-            rid = self.db.position_open_row("CCL", 28.74, "2026-08-04",
+            rid = self.db.position_open_row("u1", "CCL", 28.74, "2026-08-04",
                                             shares=50, db_path=p)
-            self.assertEqual(self.db.positions_list("open", db_path=p)[0]["shares"], 50.0)
-            self.db.position_update_row(rid, shares=75, db_path=p)
-            self.assertEqual(self.db.positions_list("open", db_path=p)[0]["shares"], 75.0)
-            self.db.position_update_row(rid, shares=None, db_path=p)
-            self.assertIsNone(self.db.positions_list("open", db_path=p)[0]["shares"])
+            self.assertEqual(self.db.positions_list("u1", "open", db_path=p)[0]["shares"], 50.0)
+            self.db.position_update_row(rid, "u1", shares=75, db_path=p)
+            self.assertEqual(self.db.positions_list("u1", "open", db_path=p)[0]["shares"], 75.0)
+            self.db.position_update_row(rid, "u1", shares=None, db_path=p)
+            self.assertIsNone(self.db.positions_list("u1", "open", db_path=p)[0]["shares"])
 
     def test_migration_is_idempotent_on_existing_db(self):
         # The live DB already holds rows; re-running init must not lose them.
@@ -833,9 +833,117 @@ class TestPositionDollars(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             p = os.path.join(td, "pos.db")
             self.db.positions_db_init(db_path=p)
-            self.db.position_open_row("CCL", 28.0, "2026-08-13", db_path=p)
+            self.db.position_open_row("u1", "CCL", 28.0, "2026-08-13", db_path=p)
             self.db.positions_db_init(db_path=p)          # run again
             self.db.positions_db_init(db_path=p)          # and again
-            rows = self.db.positions_list("open", db_path=p)
+            rows = self.db.positions_list("u1", "open", db_path=p)
             self.assertEqual(len(rows), 1)
             self.assertIsNone(rows[0]["shares"])
+
+
+class TestPositionOwnership(unittest.TestCase):
+    """Per-user isolation (Aug 16 2026).
+
+    The positions table shipped with no owner concept: one extra entry in
+    BASIC_AUTH_USERS would have shown every user the whole book, and ids are
+    sequential so another user's row was editable by guessing a number. These
+    tests are the regression net for both holes.
+    """
+
+    def setUp(self):
+        import db as _db
+        import os, tempfile
+        self.db = _db
+        self._td = tempfile.TemporaryDirectory()
+        self.p = os.path.join(self._td.name, "pos.db")
+        self.db.positions_db_init(db_path=self.p)
+        self.alice = self.db.position_open_row("alice", "CCL", 28.0, "2026-08-04",
+                                               stop_pct=3.0, shares=100, db_path=self.p)
+        self.bob = self.db.position_open_row("bob", "PLTR", 144.0, "2026-08-04",
+                                             shares=10, db_path=self.p)
+
+    def tearDown(self):
+        self._td.cleanup()
+
+    # ── read isolation ───────────────────────────────────────────────────────
+    def test_each_user_sees_only_their_own(self):
+        a = self.db.positions_list("alice", "open", db_path=self.p)
+        b = self.db.positions_list("bob", "open", db_path=self.p)
+        self.assertEqual([r["symbol"] for r in a], ["CCL"])
+        self.assertEqual([r["symbol"] for r in b], ["PLTR"])
+
+    def test_status_all_is_also_scoped(self):
+        self.db.position_close_row(self.bob, "bob", 150.0, db_path=self.p)
+        a = self.db.positions_list("alice", "all", db_path=self.p)
+        self.assertEqual([r["symbol"] for r in a], ["CCL"])
+
+    def test_unknown_user_sees_nothing(self):
+        self.assertEqual(self.db.positions_list("mallory", "all", db_path=self.p), [])
+
+    # ── write isolation: the guessed-id attack ───────────────────────────────
+    def test_cannot_edit_another_users_position_by_id(self):
+        self.assertIsNone(self.db.position_update_row(self.alice, "bob",
+                                                      entry_price=1.0, db_path=self.p))
+        # and alice's row is untouched
+        self.assertEqual(
+            self.db.positions_list("alice", "open", db_path=self.p)[0]["entry_price"], 28.0)
+
+    def test_cannot_close_another_users_position_by_id(self):
+        self.assertIsNone(self.db.position_close_row(self.alice, "bob", 1.0,
+                                                     db_path=self.p))
+        self.assertEqual(
+            self.db.positions_list("alice", "open", db_path=self.p)[0]["status"], "open")
+
+    def test_owner_can_still_edit_and_close_their_own(self):
+        self.assertIsNotNone(self.db.position_update_row(self.alice, "alice",
+                                                         stop_pct=5.0, db_path=self.p))
+        self.assertEqual(
+            self.db.positions_list("alice", "open", db_path=self.p)[0]["stop_pct"], 5.0)
+        self.assertIsNotNone(self.db.position_close_row(self.alice, "alice", 30.0,
+                                                        db_path=self.p))
+
+    # ── totals never mix users ───────────────────────────────────────────────
+    def test_totals_are_per_user(self):
+        rows = self.db.positions_list("alice", "open", db_path=self.p)
+        for r in rows:
+            r["net_pnl_usd"] = self.db.position_net_pnl_usd(r["entry_price"], 29.0,
+                                                            r["shares"])
+        t = self.db.positions_totals(rows)
+        self.assertEqual(t["counted"], 1)
+        self.assertEqual(t["cost_basis"], 2800.0)   # alice only, not bob's $1,440
+
+    # ── the backfill policy ──────────────────────────────────────────────────
+    def test_backfill_claims_only_ownerless_rows(self):
+        import sqlite3
+        con = sqlite3.connect(self.p)
+        con.execute("INSERT INTO positions (symbol, entry_price, entry_date, status, "
+                    "opened_ts) VALUES ('META',585.0,'2026-08-13','open','x')")
+        con.commit(); con.close()
+        n = self.db.positions_backfill_owner("alice", db_path=self.p)
+        self.assertEqual(n, 1)
+        self.assertEqual(
+            sorted(r["symbol"] for r in self.db.positions_list("alice", "open", db_path=self.p)),
+            ["CCL", "META"])
+        # bob's row was never touched
+        self.assertEqual([r["symbol"] for r in self.db.positions_list("bob", "open", db_path=self.p)],
+                         ["PLTR"])
+
+    def test_ownerless_rows_are_invisible_to_everyone(self):
+        # Fail closed: with 2+ accounts configured api.py does NOT backfill, and
+        # an unowned row must not fall through to some default reader.
+        import sqlite3
+        con = sqlite3.connect(self.p)
+        con.execute("INSERT INTO positions (symbol, entry_price, entry_date, status, "
+                    "opened_ts) VALUES ('SECRET',1.0,'2026-08-13','open','x')")
+        con.commit(); con.close()
+        for who in ("alice", "bob", "", None):
+            syms = [r["symbol"] for r in self.db.positions_list(who, "all", db_path=self.p)]
+            self.assertNotIn("SECRET", syms)
+
+    def test_owner_is_required_not_optional(self):
+        # A call site that forgets the owner must fail loudly, never fall back
+        # to "all rows".
+        with self.assertRaises(TypeError):
+            self.db.positions_list()
+        with self.assertRaises(TypeError):
+            self.db.position_open_row("CCL", 28.0)
