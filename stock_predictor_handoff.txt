@@ -2624,3 +2624,22 @@ ONE LIVE BUG CAUGHT AND FIXED DURING DEPLOY: yf.download(group_by="ticker") retu
   5/5 DBs pass integrity_check, setup_log 1777 / signals 234 / outcomes 151,
   all three positions intact, disk 29%, mem 657MB of 3910 (the Jul-5 no-swap
   decision still holds).
+
+  SIGNALS COLUMN REWRITTEN Aug 17 — user: "the signals thing isn't clear to me".
+  It rendered as "0 אותות/14י" and, worse, on CCL the BiDi algorithm tore the
+  leading "6" off its Hebrew word and parked it at the far edge of the cell:
+  "אותות/14י · ממוצע -5.4% 6". Two separate defects — an unexplained format and
+  a bidirectional-text bug — in a column whose whole job is context.
+  Now two labelled lines, every number wrapped in <bdi> so the isolate keeps it
+  with its word: "6 אותות ב-14 ימים" / "קודמים: 4 · ממוצע -5.4%", with an
+  explicit empty state ("אין אותות לאחרונה") instead of a bare 0. The count of
+  resolved rows is shown INLINE next to the mean — a mean with no n was the
+  misleading part, since it is at most 5 signals on one symbol. Header carries a
+  dotted underline and a tooltip saying what the column is, that it is about the
+  SYMBOL and not the user's position, and that a single-symbol sample is too
+  small to conclude from; the row tooltip lists each past signal and repeats
+  "anecdote, not evidence".
+  RULE: in this RTL UI, any number adjacent to Hebrew text goes in <bdi>. The
+  existing BiDi guidance covered code and filenames on their own lines; inline
+  numerics need the same care and are easier to miss because they only break
+  once the value has more than one digit.

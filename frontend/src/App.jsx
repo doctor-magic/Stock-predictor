@@ -2271,7 +2271,12 @@ function PositionsView() {
                 <th className="p-2">רווח $</th>
                 <th className="p-2">ימי מסחר</th>
                 <th className="p-2">התראות</th>
-                <th className="p-2">אותות המערכת</th>
+                <th className="p-2">
+                  <span className="border-b border-dotted border-gray-600 cursor-help"
+                        title={"כמה פעמים המערכת נתנה אות BUY על המניה הזו לאחרונה, ואיך נגמרו האותות הקודמים שלה.\n\nזה לא ניתוח של הפוזיציה שלך — זו רק הדעה של המערכת על השם, להקשר.\nמדגם של מניה בודדת הוא קטן מכדי להסיק ממנו."}>
+                    אותות המערכת
+                  </span>
+                </th>
                 <th className="p-2"></th>
               </tr>
             </thead>
@@ -2324,14 +2329,41 @@ function PositionsView() {
                     ))}
                   </td>
                   <td className="p-2 text-xs">
-                    {row.signals ? (
-                      <span title={(row.signals.resolved ?? []).map(h => `${h.date}: conf ${h.confidence ?? '—'} → ${h.fwd_ret_pct == null ? 'פתוח' : h.fwd_ret_pct + '%'}`).join('\n')}>
-                        {row.signals.recent_signals} אותות/{row.signals.lookback_days}י
-                        {row.signals.resolved_mean_pct != null && (
-                          <span className={pnlClass(row.signals.resolved_mean_pct)}> · ממוצע {row.signals.resolved_mean_pct > 0 ? '+' : ''}{row.signals.resolved_mean_pct}%</span>
-                        )}
-                      </span>
-                    ) : <span className="text-gray-600">—</span>}
+                    {/* Every number is wrapped in <bdi>: without it the BiDi
+                        algorithm tears a leading digit off its Hebrew word and
+                        parks it at the far edge ("6" ended up detached from
+                        "אותות" on the live page). */}
+                    {row.signals ? (() => {
+                      const s = row.signals
+                      const done = s.resolved ?? []
+                      const tip = [
+                        `כמה פעמים המערכת נתנה אות BUY על ${row.symbol} ב-${s.lookback_days} הימים האחרונים,`,
+                        `ומתחתיו: איך נגמרו האותות הקודמים שכבר הבשילו (תשואה על פני 10 ימי מסחר).`,
+                        '',
+                        ...done.map(h => `${h.date} · ביטחון ${h.confidence ?? '—'} → ${h.fwd_ret_pct == null ? 'עדיין פתוח' : h.fwd_ret_pct + '%'}`),
+                        done.length ? '' : null,
+                        done.length ? `זהו מדגם של ${done.length} על מניה אחת — אנקדוטה, לא ראיה.` : null,
+                      ].filter(v => v !== null).join('\n')
+                      return (
+                        <div className="flex flex-col gap-0.5 leading-tight" title={tip}>
+                          {s.recent_signals > 0 ? (
+                            <span className="text-gray-200">
+                              <bdi className="font-bold">{s.recent_signals}</bdi> אותות ב־<bdi>{s.lookback_days}</bdi> ימים
+                            </span>
+                          ) : (
+                            <span className="text-gray-600">אין אותות לאחרונה</span>
+                          )}
+                          {done.length > 0 && (
+                            <span className="text-gray-500 text-[11px]">
+                              קודמים: <bdi>{done.length}</bdi> ·{' '}
+                              ממוצע <bdi className={pnlClass(s.resolved_mean_pct)}>
+                                {s.resolved_mean_pct > 0 ? '+' : ''}{s.resolved_mean_pct}%
+                              </bdi>
+                            </span>
+                          )}
+                        </div>
+                      )
+                    })() : <span className="text-gray-600">—</span>}
                   </td>
                   <td className="p-2">
                     {row.status === 'open' && (
