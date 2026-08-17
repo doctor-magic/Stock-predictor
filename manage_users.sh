@@ -67,6 +67,20 @@ if [[ "$ACTION" != "remove" ]]; then
     echo "ERROR: the password cannot contain ',' or ':' — they separate the fields." >&2
     exit 1
   fi
+  # ASCII ONLY. HTTP Basic Auth carries credentials as base64 of raw bytes with
+  # no agreed encoding, so a non-ASCII character (Hebrew, accents, emoji) is
+  # encoded one way by the browser and decoded another way by Starlette — the
+  # password then never matches and the account is locked out, taking
+  # live_tracker.py and warm_volume_cache.sh down with it. Learned the hard way
+  # on Aug 17 2026: a 5-Hebrew-character password produced exactly that.
+  if LC_ALL=C grep -qP '[^\x20-\x7E]' <<< "$PW" 2>/dev/null \
+     || [[ "$(LC_ALL=C printf '%s' "$PW" | wc -c)" -ne "${#PW}" ]]; then
+    echo "ERROR: use ASCII only — English letters, digits and symbols." >&2
+    echo "       Hebrew or other non-ASCII characters cannot travel through" >&2
+    echo "       HTTP Basic Auth and would lock the account out." >&2
+    echo "       Nothing changed." >&2
+    exit 1
+  fi
 fi
 
 BACKUP="${ENVF}.bak.$(date -u +%Y%m%dT%H%M%SZ)"
@@ -89,6 +103,9 @@ action, target, path = os.environ["ACTION"], os.environ["TARGET"], os.environ["E
 password = sys.stdin.read()
 if action != "remove" and not password:
     sys.exit("refusing to write an EMPTY password — that would lock the account out")
+if action != "remove" and not all(32 <= ord(c) < 127 for c in password):
+    sys.exit("refusing to write a non-ASCII password — HTTP Basic Auth cannot "
+             "carry it and the account would be locked out")
 
 lines = open(path).read().splitlines()
 idx = next((i for i, l in enumerate(lines) if l.startswith("BASIC_AUTH_USERS=")), None)

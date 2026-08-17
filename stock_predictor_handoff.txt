@@ -2584,3 +2584,43 @@ ONE LIVE BUG CAUGHT AND FIXED DURING DEPLOY: yf.download(group_by="ticker") retu
   Fixed by writing the helper to a temp file; an explicit empty-password refusal
   now backstops it. LESSON: rehearse destructive scripts against a throwaway
   copy before they ever touch the real file — this one would have cost the login.
+
+  I LOCKED THE USER OUT WITH MY OWN SCRIPT — Aug 17, ~40 minutes.
+  He ran `manage_users.sh passwd elim` exactly as instructed and typed a Hebrew
+  password. The script accepted it: I validated length, ',' and ':' but never
+  ASCII. HTTP Basic Auth carries credentials as base64 of raw bytes with no
+  agreed encoding, so the browser encodes one way and Starlette decodes another
+  and the compare can never match. Result: he could not log in, AND
+  warm_volume_cache.sh started failing (6x 401 in 40 minutes) because it
+  authenticates with the same pair. live_tracker.py at 20:05 would have been
+  next — that is the R1 feed.
+  DIAGNOSIS THAT WORKED, and the shape to reuse: never print the secret. A
+  python one-liner reported `user='elim' password_length=8 ascii_only=False`
+  and then a Counter of unicodedata categories gave `{'HEBREW': 5, 'ascii': 3}`.
+  Enough to identify the bug exactly, with the password never on screen or in a
+  log. The same check now runs as a post-change verification, building the
+  Authorization header the way live_tracker._basic_auth_header does — a 200
+  there is a real statement about the crons, not a guess.
+  FIX: ASCII-only guard in TWO layers (bash grep -P '[^\x20-\x7E]' plus a python
+  backstop), rehearsed against a Hebrew password of the same 5-heb/3-ascii shape
+  before deploying. No data was lost at any point.
+  TWO LESSONS: (1) a validator that checks length and delimiters but not
+  CHARACTER SET is not a validator for anything that crosses a protocol
+  boundary; (2) both of this script's real bugs — the heredoc-stdin one and this
+  one — were caught by rehearsing on a throwaway copy, and the one I did NOT
+  rehearse in place (the live passwd run) is the one that bit. Rehearse the
+  actual invocation, not just the code path.
+
+  VM REBOOT Aug 17 (unrelated, done same session): kernel 6.17.0-1020 -> 1022
+  plus libc6, pending since the Jul 5 downgrade (uptime 6w1d). elimaoz99 has NO
+  sudo for reboot (NOPASSWD covers only systemctl restart stock-app.service,
+  chown, chattr) and gcloud is not installed on the Mac, so it is a Console
+  Stop -> Start — NOT Reset, which is a power cut against SQLite in WAL mode.
+  Timing rule worth keeping: reboot outside 16:30-23:00 IDT, because that window
+  is when the */25 warm cron collects setup_log rows and a gap there is a
+  sample-composition gap, not just downtime.
+  Verified after: kernel 1022, no reboot-required, service active/enabled with
+  NRestarts=0, auth 200 on health+positions+volume-leaders, 12 crontab lines,
+  5/5 DBs pass integrity_check, setup_log 1777 / signals 234 / outcomes 151,
+  all three positions intact, disk 29%, mem 657MB of 3910 (the Jul-5 no-swap
+  decision still holds).
