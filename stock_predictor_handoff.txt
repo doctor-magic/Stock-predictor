@@ -2561,3 +2561,26 @@ ONE LIVE BUG CAUGHT AND FIXED DURING DEPLOY: yf.download(group_by="ticker") retu
   user both 401. Snapshot before the migration: /tmp/positions_pre_owner.db.
   10 isolation tests (gate 120) cover read scoping, the guessed-id edit/close
   attack, per-user totals, and that owner is required rather than defaultable.
+
+  manage_users.sh Aug 17 — user reported the nano recipe "doesn't let me change
+  the password". Server was fine (nano/vim/vi/ed all present, file 664 and owned
+  by elimaoz99, no immutable flag), so the cause was almost certainly a missing
+  TTY when three lines are pasted at once; `ssh -t ... 'nano ~/…/api_data.env'`
+  is the one-liner fix. But hand-editing a secrets file is the wrong interface
+  anyway: one stray comma makes BASIC_AUTH_USERS parse to nothing, and the
+  fail-closed design then 503s every request — locked out with the site down.
+  The script does list / passwd / add / remove with: password never on the
+  command line (read -s, piped on stdin — argv is world-readable via ps),
+  timestamped backup, parse-back check before writing, automatic restore if the
+  rewrite fails, service restart plus an is-active verdict, and three refusals —
+  empty password, removing the LAST login, and removing the FIRST login (both
+  live_tracker.py and warm_volume_cache.sh authenticate as pair #1, so removing
+  or reordering it silently changes which account the crons run as). add always
+  appends last; passwd rewrites in place; both preserve position.
+  BUG CAUGHT IN REHEARSAL, not in production: the helper was `python3 - <<'PY'`,
+  but a heredoc IS stdin, so the program landed where the password should have
+  been and every password silently became EMPTY — the rewritten line read
+  `elim:,dani:`, which would have locked the account out on the next restart.
+  Fixed by writing the helper to a temp file; an explicit empty-password refusal
+  now backstops it. LESSON: rehearse destructive scripts against a throwaway
+  copy before they ever touch the real file — this one would have cost the login.

@@ -33,7 +33,8 @@ BACKEND_FILES=("api.py" "scanners.py" "db.py" "market_calendar.py"
 # the remaining cron scripts) is still deployed manually — expanding to those
 # changes model/behaviour surface and is its own decision, not this one.
 SUPPORT_FILES=("backup_dbs.py" "r1_sitting.py" "watchdog.py" "live_tracker.py"
-               "resolve_setups.py" "fetch_intraday.py" "pre_scan.py")
+               "resolve_setups.py" "fetch_intraday.py" "pre_scan.py"
+               "manage_users.sh")
 SERVICE="stock-app.service"
 
 BACKEND_ONLY=false
