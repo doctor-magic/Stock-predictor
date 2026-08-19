@@ -1793,7 +1793,8 @@ function ReversionView() {
                 <th className="p-3 px-4 border-b border-white/10 text-center">Day %</th>
                 <th className="p-3 px-4 border-b border-white/10 text-center">VWAP Gap</th>
                 <th className="p-3 px-4 border-b border-white/10 text-center">RSI</th>
-                <th className="p-3 px-4 border-b border-white/10 text-center">RVOL</th>
+                <th className="p-3 px-4 border-b border-white/10 text-center" title="נפח מצטבר מתחילת היום מול הנפח היומי הממוצע">נפח יומי</th>
+                <th className="p-3 px-4 border-b border-white/10 text-center" title="נר 5 דקות בודד מול אותו חלון בימים קודמים — מדד רגעי, מתחלף כל רענון">פרץ 5ד</th>
                 <th className="p-3 px-4 border-b border-white/10 text-center">פעולה</th>
               </tr>
             </thead>
@@ -1827,6 +1828,37 @@ function ReversionView() {
                   ? 'text-yellow-400'
                   : 'text-red-400'
 
+                // Day-basis volume — the "is the whole day heavy" read. Separate
+                // from the 5-min burst beside it; conflating them once turned a
+                // 2.2x day into a 15x one (NUE, Aug 19 2026).
+                const dayRvolCls = row.rvol_day != null && row.rvol_day >= 3
+                  ? 'text-orange-400 font-bold'
+                  : row.rvol_day != null && row.rvol_day >= 1.5
+                  ? 'text-yellow-400'
+                  : 'text-gray-400'
+
+                const dayRvolTitle = row.rvol_day == null ? '' : [
+                  row.rvol_day_basis === '10d' ? 'בסיס: ממוצע 10 ימים' : 'בסיס: ממוצע 3 חודשים',
+                  row.is_live ? 'מצטבר מתחילת היום — מתכנס עד הסגירה' : 'יום מסחר מלא',
+                ].join(' · ')
+
+                // rvol_quality has always been in the payload, never shown. "legacy"
+                // means the cached median path missed and the mean fallback ran —
+                // which is the norm here, since intraday_cache.db only covers the
+                // most-actives universe, not day_losers.
+                const burstBasisMark = row.rvol == null ? null
+                  : row.rvol_quality === 'legacy' ? '~'
+                  : row.rvol_quality === 'partial' ? '·'
+                  : null
+
+                const burstTitle = [
+                  'נר 5 דקות מול אותו חלון בימים קודמים',
+                  row.rvol_quality === 'legacy'   ? 'בסיס: ממוצע 10 ימים (גיבוי)'
+                    : row.rvol_quality === 'full'    ? 'בסיס: חציון 20 ימים'
+                    : row.rvol_quality === 'partial' ? 'בסיס: חציון חלקי, פחות מ‑10 ימים'
+                    : null,
+                ].filter(Boolean).join(' · ')
+
                 return (
                   <tr
                     key={row.symbol}
@@ -1845,7 +1877,7 @@ function ReversionView() {
                         </a>
                         <a href={`https://www.tradingview.com/chart/?symbol=${row.symbol}`} target="_blank" rel="noopener noreferrer" className="text-[10px] font-mono px-1 py-0.5 rounded bg-yellow-500/10 text-yellow-500/60 hover:text-yellow-300 hover:bg-yellow-500/20 border border-yellow-500/20 transition-colors" title="TradingView Chart">TV</a>
                         {row.rvol_alert && (
-                          <span className="relative flex h-3 w-3 flex-shrink-0" title={`🚨 RVOL חריג — ${row.rvol}x נפח גבוה במיוחד`}>
+                          <span className="relative flex h-3 w-3 flex-shrink-0" title={`🚨 פרץ נפח 5 דקות — ${row.rvol}x מול אותו חלון בימים קודמים`}>
                             <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
                             <span className="relative inline-flex rounded-full h-3 w-3 bg-red-500"></span>
                           </span>
@@ -1871,8 +1903,14 @@ function ReversionView() {
                       </span>
                     </td>
                     <td className="p-3 px-4 text-center font-mono text-xs">
-                      <span className={rvolCls} title={row.rvol_quality ? `quality: ${row.rvol_quality}` : ''}>
+                      <span className={dayRvolCls} title={dayRvolTitle}>
+                        {row.rvol_day != null ? `${row.rvol_day}x` : '—'}
+                      </span>
+                    </td>
+                    <td className="p-3 px-4 text-center font-mono text-xs">
+                      <span className={rvolCls} title={burstTitle}>
                         {row.rvol != null ? `${row.rvol}x` : '—'}
+                        {burstBasisMark && <span className="text-gray-600 ml-0.5">{burstBasisMark}</span>}
                       </span>
                     </td>
                     <td className="p-3 px-4 text-center">

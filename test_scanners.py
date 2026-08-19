@@ -947,3 +947,58 @@ class TestPositionOwnership(unittest.TestCase):
             self.db.positions_list()
         with self.assertRaises(TypeError):
             self.db.position_open_row("CCL", 28.0)
+
+
+class TestComputeDayRvol(unittest.TestCase):
+    """Day-basis relative volume (added Aug 19 2026).
+
+    Born from a live misread: the Reversion Hunter RVOL column showed NUE at 15x
+    and it was taken to mean "the day traded 15x normal". It did not — 15x was one
+    5-minute bar against its own slot history, and the same name printed 23.8 at
+    14:50 and 3.3 at 15:05. The whole day was 2.2x. These two numbers answer
+    different questions and now live in different columns.
+    """
+
+    def test_prefers_three_month_basis(self):
+        self.assertEqual(scanners.compute_day_rvol(3_000_000, 1_500_000, 500_000),
+                         (2.0, "3m"))
+
+    def test_falls_back_to_ten_day_when_three_month_missing(self):
+        self.assertEqual(scanners.compute_day_rvol(3_000_000, None, 1_000_000),
+                         (3.0, "10d"))
+
+    def test_falls_back_to_ten_day_when_three_month_is_zero(self):
+        # A zero baseline is the division-by-zero trap, not a valid "quiet stock".
+        self.assertEqual(scanners.compute_day_rvol(3_000_000, 0, 1_000_000),
+                         (3.0, "10d"))
+
+    def test_no_baseline_at_all_returns_none(self):
+        self.assertEqual(scanners.compute_day_rvol(3_000_000, None, None), (None, None))
+        self.assertEqual(scanners.compute_day_rvol(3_000_000, 0, 0), (None, None))
+
+    def test_missing_or_zero_current_volume_returns_none(self):
+        # Pre-open and halted names arrive with 0/None — must not read as 0.0x.
+        self.assertEqual(scanners.compute_day_rvol(None, 1_500_000, 1_000_000), (None, None))
+        self.assertEqual(scanners.compute_day_rvol(0, 1_500_000, 1_000_000), (None, None))
+
+    def test_rounds_to_one_decimal(self):
+        self.assertEqual(scanners.compute_day_rvol(1_234_567, 1_000_000, None), (1.2, "3m"))
+
+    def test_garbage_types_do_not_raise(self):
+        # Yahoo has shipped strings in numeric fields before; a scanner row must
+        # degrade to "no value", never take the endpoint down.
+        self.assertEqual(scanners.compute_day_rvol("lots", 1_500_000, None), (None, None))
+        self.assertEqual(scanners.compute_day_rvol(3_000_000, "avg", "avg"), (None, None))
+
+    def test_nue_aug_19_2026_regression(self):
+        # Real figures from the incident. The point of pinning them: 2.2 is what an
+        # honest day-basis read of that session was, against a column that said 15.
+        self.assertEqual(scanners.compute_day_rvol(3_420_518, 1_534_072, 1_191_630),
+                         (2.2, "3m"))
+
+    def test_basis_choice_is_material_not_cosmetic(self):
+        # Same session, two baselines, 0.7x apart — which is why the basis is
+        # returned and displayed rather than left implicit.
+        three_m, _ = scanners.compute_day_rvol(3_420_518, 1_534_072, 1_191_630)
+        ten_d, _ = scanners.compute_day_rvol(3_420_518, None, 1_191_630)
+        self.assertEqual((three_m, ten_d), (2.2, 2.9))

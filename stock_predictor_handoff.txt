@@ -2643,3 +2643,57 @@ ONE LIVE BUG CAUGHT AND FIXED DURING DEPLOY: yf.download(group_by="ticker") retu
   existing BiDi guidance covered code and filenames on their own lines; inline
   numerics need the same care and are easier to miss because they only break
   once the value has more than one digit.
+
+  ────────────────────────────────────────────────────────────────────────────
+  RVOL SPLIT INTO TWO COLUMNS — Aug 19 2026 (Reversion Hunter, display only)
+
+  ORIGIN: user asked which name on the Reversion Hunter table looked readiest to
+  bounce. NUE showed RVOL 15x; I ranked it first largely on that, calling it
+  capitulation volume. User then opened the TradingView chart, whose sidebar read
+  Volume 3.05M vs Average(30D) 1.36M — 2.2x, not 15x. I over-corrected and said
+  the screener number was simply wrong. It was not.
+
+  WHAT IT ACTUALLY IS: get_tod_rvol_cached() and its fallback both divide ONE
+  5-minute bar by the same 5-minute slot on prior days. Reproduced NUE live off
+  the server that afternoon:
+        14:45 -> 22.7   14:50 -> 23.8   14:55 -> 14.8
+        15:00 -> 12.3   15:05 ->  3.3   15:10 ->  4.9
+  So 15 was a real, correct number for a burst — and the displayed value is just
+  whichever bar happened to be last when the 900s cache was built. A metric that
+  moves 23.8 -> 3.3 in fifteen minutes cannot be used to rank rows against each
+  other, which is exactly what I had done with it.
+
+  SHIPPED: scanners.compute_day_rvol() + rvol_day / rvol_day_basis on the
+  reversion payload; frontend gets a "נפח יומי" column next to the renamed
+  "פרץ 5ד". Numerator and both baselines already arrive in the Yahoo screener
+  quote, so zero extra network calls on the e2-medium. 9 unit tests including a
+  regression pinning the real NUE figures (3,420,518 / 1,534,072 = 2.2).
+  Basis prefers 3-month over 10-day: on NUE the two gave 2.2 vs 2.9, and a
+  10-day window is contaminated for any name that has been selling off for a
+  week — i.e. the whole day_losers population. Basis is returned and shown in
+  the tooltip rather than left implicit.
+
+  TWO DEFECTS FOUND, BOTH DELIBERATELY NOT FIXED:
+  1. intraday_cache.db holds only the most-actives universe — 166 symbols. Of 10
+     names off that evening's day_losers table, 8 had ZERO rows (NUE, ZTO, KEYS,
+     TTMI, WDC, LRCX, CRWD, DELL); only NBIS and AAOI were covered. So this tab
+     nearly always takes the mean-over-10-days fallback, and the documented
+     "MEDIAN not mean" rule is not in force here. Left alone on purpose: that
+     same path feeds the VL RVOL-slope gate whose attribution clock restarted
+     Aug 5, so mean->median is a measurement-regime change for the next bundle,
+     not an incidental tweak.
+  2. rvol_alert threshold 5.0 has never been calibrated. On a per-bar metric >5
+     is routine — 176/1362 gainers and 79/583 VL logged rows clear it, all-time
+     max 264.4 (CBZ). And the flag is set only in the reversion path, which has
+     logged zero setup_log rows ever, so it has never been measured at all.
+
+  DEPLOY HELD until after 16:00 ET. The change is display-only and had no
+  urgency, and a restart at 15:38 ET would have wiped _rvol_history mid Power
+  Hour — blinding the RVOL-slope gate for the rest of an instrumented session
+  to ship a column rename. Committed first, deployed after the close.
+
+  LESSON: the misread was mine before it was the UI's. A column labelled RVOL in
+  a table of daily movers reads as daily by default, and I never checked which
+  question it answered before ranking on it. When a displayed number drives a
+  ranking, verify its denominator — and when the user's own chart disagrees with
+  the app, the app is not automatically the one that is wrong.

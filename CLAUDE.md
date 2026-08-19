@@ -220,18 +220,34 @@ Single predict | Scanner (with ALMOST BUY) | Daily report | FRED dashboard | Mac
 - **WATCH**: default
 
 ### API Response Fields
-`symbol`, `price`, `change_pct`, `volume`, `rsi`, `vwap`, `vwap_gap_pct`, `ml_signal`, `ml_confidence`, `regime`, `reversion_verdict`, `rvol`, `rvol_quality`, `rvol_alert`
+`symbol`, `price`, `change_pct`, `volume`, `rsi`, `vwap`, `vwap_gap_pct`, `ml_signal`, `ml_confidence`, `regime`, `reversion_verdict`, `rvol`, `rvol_quality`, `rvol_alert`, `rvol_day`, `rvol_day_basis`
 
 **Gotcha — field names differ from Volume Leaders:**
 - `ml_signal` (NOT `ml_verdict`)
 - `reversion_verdict` (NOT `verdict`)
 - `ml_confidence` is **0–100 scale** (backend does `round(conf * 100, 1)`) — do NOT multiply by 100 in frontend
 
+### Two RVOL metrics — do not conflate (added Aug 19 2026)
+The tab shows two volume columns because they answer different questions. Reading one as the other is a live misread that already happened: NUE printed `rvol` 15 and was taken to mean "the day traded 15x normal". The day was 2.2x.
+
+| Field | Column | What it divides | Behaviour |
+|-------|--------|-----------------|-----------|
+| `rvol` | פרץ 5ד | ONE 5-min bar ÷ same slot on prior days | Swings hard — NUE ran 23.8 at 14:50 and 3.3 at 15:05 the same afternoon. Reflects whichever bar was last when the 900s cache was built |
+| `rvol_day` | נפח יומי | session volume so far ÷ average FULL-day volume | Stable, converges by the close. `rvol_day_basis` = `"3m"` or `"10d"` |
+
+- `scanners.compute_day_rvol(current_vol, avg_3m, avg_10d)` — pure, unit-tested (`TestComputeDayRvol`, 9 cases incl. the NUE regression). Sourced from Yahoo screener fields already fetched (`averageDailyVolume3Month` / `averageDailyVolume10Day`) — **zero extra network calls**
+- Prefers the 3-month baseline: a 10-day window is contaminated once a name has been selling off for a week, which is exactly the `day_losers` population. On NUE Aug 19 the two bases gave 2.2 vs 2.9 — material, which is why the basis is returned and shown in the tooltip
+- **Display only.** `setup_log_event()` writes an explicit column list, so these keys pass through unwritten. Adding a DB column is a covariate decision for a milestone bundle, not a mid-collection tweak
+- **`rvol_quality` is now surfaced** as a small mark on the burst cell (`~` = legacy/mean fallback, `·` = partial). It was always in the payload and never shown
+
+**Known gap — the MEDIAN rule does not actually apply to this tab.** `intraday_cache.db` holds only the most-actives universe (166 symbols, Aug 19 2026). Checked 10 names off a live `day_losers` table: 8 had **zero** rows. So Reversion Hunter almost always falls to the `scanners.py:356-363` fallback, which uses **mean over 10 days**, not the documented median over 20. On NUE the gap was negligible (14.8 vs 14.5) but the invariant is silently off. **Do not "fix" this mid-collection** — that path also feeds the Volume Leaders RVOL-slope gate, whose attribution clock restarted Aug 5; changing mean→median is a measurement-regime change and belongs in the next bundle.
+
 ### RVOL Alert (added Jun 2 2026)
-- `rvol_alert = True` when `rvol > 5.0` (extreme intraday volume surge)
+- `rvol_alert = True` when `rvol > 5.0` (extreme intraday volume surge) — note this is the **5-min burst** metric, not `rvol_day`
 - Frontend: red animate-ping dot in Symbol cell, same CSS pattern as Volume Leaders Power Hour alert
-- Tooltip: `🚨 RVOL חריג — Nx נפח גבוה במיוחד`
+- Tooltip: `🚨 פרץ נפח 5 דקות — Nx מול אותו חלון בימים קודמים`
 - Threshold 5.0 chosen based on SOC 9.3x incident — catches genuine anomalies without noise
+- ⚠️ **Never calibrated.** On the burst metric `>5.0` is routine, not extreme: 176/1362 gainers rows and 79/583 VL rows exceed it (~13%), and the all-time max logged is 264.4 (CBZ, Jul 29 2026). The alert is set ONLY in the reversion path (`api.py`), and `setup_log` has **zero** `reversion_hunter` rows ever — so it has never been measured against an outcome. Calibrate once rows accrue; do not tune it blind
 
 ### Entry Rule
 Signal = awareness only. Enter ONLY on VWAP bounce confirmation, not immediately on signal.

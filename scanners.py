@@ -239,6 +239,36 @@ def classify_regime(highs, lows, closes) -> tuple[str, float]:
 
 # ── Intraday helpers ──────────────────────────────────────────────────────────
 
+def compute_day_rvol(current_vol, avg_3m, avg_10d):
+    """Day-basis relative volume: session volume so far / average FULL-day volume.
+
+    Deliberately NOT the same metric as get_tod_rvol_cached(), which divides ONE
+    5-minute bar by the same slot on prior days. That one answers "is something
+    happening right now" and swings hard — NUE ran 23.8 at 14:50 and 3.3 at 15:05
+    on Aug 19 2026. This one answers "is the whole day heavy", which is the
+    question a capitulation read actually rests on. Both are useful; conflating
+    them is what made a 2.3x day look like a 15x day.
+
+    Intraday the numerator is partial, so a mid-session value reads low by
+    construction and converges by the close — the UI carries that caveat.
+
+    Prefers the 3-month baseline: a 10-day window is already contaminated once a
+    name has been selling off for a week, which is precisely the population
+    day_losers hands us. Falls back to 10-day only when 3-month is missing.
+
+    Returns (ratio, basis) with basis in {"3m", "10d"}, or (None, None).
+    """
+    try:
+        if not current_vol or current_vol <= 0:
+            return None, None
+        for avg, basis in ((avg_3m, "3m"), (avg_10d, "10d")):
+            if avg and avg > 0:
+                return round(current_vol / avg, 1), basis
+        return None, None
+    except (TypeError, ValueError):
+        return None, None
+
+
 def get_tod_rvol_cached(symbol: str, time_slot: str, today_str: str):
     """Returns (rvol, quality) from intraday_cache.db median baseline."""
     try:

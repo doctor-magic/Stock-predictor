@@ -1597,6 +1597,15 @@ def get_reversion_leaders(min_market_cap: int = 500_000_000, force: bool = False
                 _db.fk_log_event(sym, price, quote.get("regularMarketChangePercent"),
                                  rsi, intra.get("rvol"), vwap_gap_pct)
 
+        # Day-basis RVOL alongside the 5-min burst gauge — two different questions
+        # (see scanners.compute_day_rvol). Display only: setup_log_event() reads an
+        # explicit column list, so these extra keys pass through it unwritten.
+        rvol_day, rvol_day_basis = scanners.compute_day_rvol(
+            quote.get("regularMarketVolume"),
+            quote.get("averageDailyVolume3Month"),
+            quote.get("averageDailyVolume10Day"),
+        )
+
         results.append({
             "symbol":            sym,
             "name":              _NAME_OVERRIDES.get(sym, quote.get("shortName", sym)),
@@ -1615,6 +1624,8 @@ def get_reversion_leaders(min_market_cap: int = 500_000_000, force: bool = False
             "rvol":               intra.get("rvol"),
             "rvol_quality":      intra.get("rvol_quality", "insufficient"),
             "rvol_alert":        bool((intra.get("rvol") or 0) > 5.0),
+            "rvol_day":          rvol_day,
+            "rvol_day_basis":    rvol_day_basis,
             "reversion_verdict": reversion_verdict,
             "regime":            regime,
             "adx":               adx_val,
