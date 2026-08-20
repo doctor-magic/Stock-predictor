@@ -195,8 +195,9 @@ FastAPI (`api.py`) + React (`frontend/src/App.jsx`, built with Vite → `fronten
 
 **Rule:** Never move scanner-related logic back into `api.py`. The refactor boundary is hard.
 
-## 8 Tabs
-Single predict | Scanner (with ALMOST BUY) | Daily report | FRED dashboard | Macro score | Volume Leaders | Wedge Scan | Reversion Hunter
+## 11 Tabs
+Single predict | Scanner (with ALMOST BUY) | Daily report | FRED dashboard | Macro score | Volume Leaders | Wedge Scan | Reversion Hunter | Momentum Hunter | Positions | Yield Curve → Banks
+> Count corrected Aug 20 2026: the header had read "8 Tabs" and omitted Momentum Hunter and Positions, both long since shipped. Verified against the `activeTab === '…'` conditionals in App.jsx, which is the only authority on this list.
 > Leumi Options tab removed Jun 18 2026 (friends finished using the calculator). Was a standalone frontend-only `LeumiOptionsView` in App.jsx — no backend/DB/cron. Removal touched App.jsx only (tab button + render conditional + component block + `Calculator` lucide import).
 
 ---
@@ -351,6 +352,32 @@ Leveraged-ETF flow as market sentiment: **dollar-volume** ratio short/long — `
 - **NO setup_log columns, NO gate (spec Jul 13 2026).** If sector data is ever wanted as a logged covariate, that is a new-covariate decision belonging in a milestone bundle — never mid-collection.
 - Frontend: CSS-grid strip under the VL market-context bar, sorted by day change; color buckets at ±0.5% / ±1.5%.
 
+### Yield Curve → Banks (added Aug 20 2026 — OBSERVATIONAL ONLY, not a gate, not logged)
+How the level and slope of the Treasury curve move US bank margins, using the specification from Alessandri & Nelson (2012), *Simple banking: profitability and the yield curve*, Bank of England Working Paper No. 452 — re-estimated on live US data rather than transferred on faith.
+- `bank_rates.py` — standalone module, **stdlib only** (no numpy/pandas/statsmodels; this box is RAM-constrained). Pure maths — `_decumulate_ytd`, `_ols`, `build_design`, `estimate`, `impulse_response`, `dollars_per_quarter` — all unit-tested in `test_bank_rates.py` (42 tests, wired into the deploy gate).
+- In `BACKEND_FILES`, not `SUPPORT_FILES`: api.py imports it, so it is inside the service's import graph and is bound by the same must-travel-together rule as market_calendar.py.
+- Two thin endpoints in api.py, routing only per the Jun 7 refactor boundary: `GET /api/bank-rates` (cached panel + per-bank estimates) and `POST /api/bank-rates/scenario` (pure maths over the cache, no network).
+- **FRED's own bank series are DISCONTINUED** — `USNIM`/`USROA`/`USROE` stop at 2020-07-01. Do not reintroduce them. The live source is the FDIC API (`api.fdic.gov/banks/financials`, no key required, verified reachable from the server). 17 CERTs verified active Aug 20 2026.
+- Adds `DGS3MO` to the FRED series this app pulls. `SLOPE = R10y − R3m`, which is the paper's own definition (their Section 5.2); the macro score's `10Y − 2Y` is a *different* slope and both are carried in the payload so the two screens can be reconciled rather than silently disagree.
+- Cache: `bank_rates_cache.json` on disk, TTL 6h, loaded at import so a restart does not force a refetch. Cold fetch measured at 9.4s on the server, warm instant, payload ~122KB. No cron.
+
+**Two things here will silently invert the result if "tidied" — both are locked by tests:**
+1. **Impulse timing.** The paper's shock is *unanticipated*, so the impact quarter's effect runs through the lag-1 difference coefficient, not the level (their p32). Because the lag-1 coefficient is larger in magnitude than the level coefficient, the impact quarter is NEGATIVE — the repricing friction that is the entire point of the paper. Standard regression timing flips it positive and the feature would then contradict the research it cites. `test_reproduces_the_papers_chart5_impact` pins this to their Chart 5 value of ≈ −0.024pp.
+2. **Paper unit transfer.** Table A says rates are in per cent, but the coefficient interpretations only reconcile if they entered in basis points — a genuine ambiguity in the source. We anchor on the four economic magnitudes the paper states in prose (9.2% / 8% of mean NIM, 14.4% / 18% of mean operating profit), which are mutually consistent. `TestPaperUnitTransfer` fails loudly if the scaling constant is edited.
+
+**Findings, for context — descriptive, NOT a pre-registered result and not actionable:**
+Re-estimated on 13–17 US banks, 123 quarters, 1995–2026, all four of the paper's signs replicate (level +, difference −, for both short rate and slope). Slope sensitivity transfers almost exactly (paper implies ≈0.12pp annualised per 100bp; US median 0.13); level sensitivity is roughly 4× weaker in the US. The model fits traditional commercial banks well (R² 0.6–0.92, |t| > 2) and fails on exactly the institutions it should — a credit-card monoline (COF) and the broker-dealer banks (GS, MS) — which mirrors the paper's own heterogeneity finding in their Section 6.4. Weak estimates are flagged server-side and greyed out in the UI rather than presented as results.
+
+**Resilience matrix (added same day, after a review of the model's blind spots).** The NIM model answers "who benefits from a steeper curve"; two additional cross-sectional layers answer "who survives getting there", both from the SAME FDIC fetch (extra fields on the one request — no new calls):
+- Layer 2, funding fragility (Drechsler-Savov-Schnabl deposit-franchise lens, cross-sectional proxies only — no nonlinear beta is fitted, 123 quarters per bank cannot support one): `DEPUNA/DEP` (uninsured share) and `DEPNIDOM/DEP` (non-interest-bearing share).
+- Layer 3, capital at risk (Jiang et al. 2023 / SVB mark-to-market lens): HTM unrealized = `SCHF−SCHA`, AFS unrealized = `SCAF−SCAA`, total over `RBCT1` Tier 1. Loss is NEGATIVE by convention (locked in tests). **Validation anchor:** ZION 2022Q4 computes to −21.8% of Tier 1, reproducing the known regional-bank stress ranking of that quarter; JPM −17.4% then, −7.0% by 2026Q1.
+- Pure function `resilience_metrics()` in bank_rates.py (missing field → None, never zero); 9 tests. Payload carries `schema: 2` and `_load_disk_cache` discards an older-shape cache instead of serving it for 6h with fields silently missing.
+- UI panel 5: tertile shading among the 17 banks — descriptive, not a score, not a threshold. `RESILIENCE_CAVEATS` (rendered in the panel): subsidiary-level DEPUNA includes operational/intercompany balances; AFS losses already sit in equity while HTM losses are recognized nowhere, so MTM/T1 is a thought experiment, not GAAP; the linear NIM model absorbs each bank's average deposit beta but not its nonlinearity.
+
+**Deliberately NOT built, and why:** (a) a regime-switching deposit-beta model — unfittable per bank without overfitting; the caveat states the bias direction instead. (b) A loan-loss-provisions / credit-cycle layer — a separate feature if ever wanted. (c) Any stock-price reaction mapping (bull steepener → rally etc.) — that is a narrative claim; the feature's core caveat is that margin ≠ equity return, and encoding the mapping would violate it.
+
+**Hard boundary.** Display only. NO setup_log columns, NO gate, no scanner verdict may read this, and it is outside the R1 and Stage B frozen cohorts entirely. This is a macro-quantitative panel about bank margins, not a catalyst narrative and not an entry signal. If curve data is ever wanted as a logged covariate, that is a new-covariate decision belonging in a milestone bundle — never mid-collection.
+
 ---
 
 ## Critical Rules (do not revert)
@@ -460,6 +487,7 @@ Rules only. The live counts, open questions and their triggers live in `PENDING.
   - Saved after every successful full fetch via `_save_fred_disk_cache(data)`
   - Survives service restarts — prevents burst of 11 FRED calls on first request after restart
 - **Stale-cache fallback:** if `valid < 4` indicators returned by fetch, serve existing cache instead of overwriting with nulls
+- `bank_rates.fetch_curve()` uses `frequency=q&aggregation_method=avg` on the same daily series. That is not a violation of the `frequency=m` line above — it is a different consumer needing quarterly observations for a quarterly regression. The rule that actually matters is honoured: `avg`, never `eop`, and sequential with `time.sleep(0.5)`. It keeps its own disk cache (`bank_rates_cache.json`), separate from `fred_cache.json`.
 
 ---
 

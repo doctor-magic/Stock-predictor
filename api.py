@@ -30,6 +30,7 @@ if os.path.exists(_env_path):
 import threading
 import core_logic
 import scanners
+import bank_rates
 import db as _db
 import db
 
@@ -89,7 +90,8 @@ def _require_auth(credentials: Optional[HTTPBasicCredentials] = Depends(_securit
 
 logger = logging.getLogger(__name__)
 from models import (PredictionResult, ScanRequest, PositionOpenRequest,
-                    PositionCloseRequest, PositionEditRequest)
+                    PositionCloseRequest, PositionEditRequest,
+                    BankScenarioRequest)
 
 IMPORTANCE_DESCRIPTIONS: dict[str, str] = {
     "sma200_dist":  "Distance from 200-day SMA — measures long-term trend positioning.",
@@ -862,6 +864,107 @@ def get_macro_score():
     _macro_score_cache["ts"] = now
     _macro_score_cache["data"] = data
     return data
+
+
+# ── Yield curve → banks (OBSERVATIONAL ONLY) ─────────────────────────────────
+# Alessandri & Nelson (2012), BoE WP452, re-estimated on US FDIC data.
+# DISPLAY ONLY, per the Sector Heatmap precedent: no gate, no setup_log column,
+# no scanner verdict may read this. Promotion is a milestone-bundle decision.
+# All heavy lifting lives in bank_rates.py; this is routing only, per the
+# Jun 7 refactor boundary.
+
+@app.get("/api/bank-rates")
+def api_bank_rates(force: bool = False):
+    if not FRED_API_KEY:
+        raise HTTPException(status_code=503, detail="FRED_API_KEY not configured on server.")
+    try:
+        data = bank_rates.get_bank_rates(FRED_API_KEY, force=force)
+    except Exception as e:
+        logging.exception("bank-rates failed")
+        raise HTTPException(status_code=503, detail="Bank rates temporarily unavailable.")
+    if data.get("error") and not data.get("banks"):
+        raise HTTPException(status_code=503, detail="Bank rates temporarily unavailable.")
+    return data
+
+
+@app.post("/api/bank-rates/scenario")
+def api_bank_rates_scenario(req: BankScenarioRequest):
+    """Run one curve scenario through both coefficient sets.
+
+    Pure maths over the cached estimates — no network, no DB. Returns the
+    per-quarter margin impulse for every bank we have an estimate for, under
+    the paper's UK coefficients and under that bank's own US-estimated ones.
+    """
+    data = bank_rates.get_bank_rates(FRED_API_KEY) if FRED_API_KEY else None
+    if not data or not data.get("banks"):
+        raise HTTPException(status_code=503, detail="Bank rates temporarily unavailable.")
+
+    paper_nim = bank_rates._paper_coefs("nim")
+    kw = dict(d_r3m_bp=req.d_r3m_bp, d_slope_bp=req.d_slope_bp,
+              horizon=req.horizon, persistence=req.persistence,
+              slope_persistence=req.slope_persistence, timing=req.timing)
+
+    results = []
+    for b in data["banks"]:
+        est = b.get("nim_full")
+        if not est:
+            continue
+        path = bank_rates.impulse_response(est, **kw)
+        assets = b.get("assets_thousands")
+        meta = est["_meta"]
+
+        # Headline number: the STEADY-STATE level effect, b/(1-ar), in pp of
+        # annualised margin. cum_pp is a sum of quarterly deviations and is not
+        # a level — it is useful for the dollar total and useless as a headline.
+        # A near-unit-root AR term has no finite steady state; report None
+        # rather than silently collapsing the headline to zero.
+        if "lr_slope" in meta:
+            lr = (meta["lr_slope"] * (req.d_slope_bp / 100.0)
+                  + meta["lr_r3m"] * (req.d_r3m_bp / 100.0))
+        else:
+            lr = None
+
+        # An estimate the data does not support must not be presented as one.
+        # The frontend greys these out rather than re-deriving the threshold.
+        t_slope, t_r3m = est["slope"]["t"], est["r3m"]["t"]
+        driver_t = t_slope if abs(req.d_slope_bp) >= abs(req.d_r3m_bp) else t_r3m
+        weak = (lr is None
+                or not (driver_t == driver_t and abs(driver_t) >= 2.0)
+                or meta["r2"] < 0.25)
+
+        results.append({
+            "ticker": b["ticker"],
+            "name": b["name"],
+            "assets_thousands": assets,
+            "path": path,
+            "lr_effect_pp": lr,               # steady state, annualised pp
+            "cum_pp": path[-1]["cum_pp"],     # sum of quarterly deviations
+            "trough_pp": min(r["effect_pp"] for r in path),
+            "trough_q": min(range(len(path)), key=lambda i: path[i]["effect_pp"]),
+            # Cumulative $ of extra net interest income across the whole horizon
+            # (linear, so this equals the sum of the per-quarter dollar effects).
+            "cum_dollars": bank_rates.dollars_per_quarter(path[-1]["cum_pp"], assets),
+            "slope_beta": est["slope"]["b"],
+            "slope_t": t_slope,
+            "r3m_beta": est["r3m"]["b"],
+            "r3m_t": t_r3m,
+            "r2": meta["r2"],
+            "n": meta["n"],
+            "weak": weak,
+            # Layers 2-3 ride along so the resilience matrix never has to
+            # join two payloads by ticker client-side.
+            "resilience": b.get("resilience"),
+        })
+
+    # Strong estimates first, best effect first within each group.
+    results.sort(key=lambda r: (not r["weak"], r["lr_effect_pp"] or 0.0),
+                 reverse=True)
+    return {
+        "scenario": req.model_dump(),
+        "paper": bank_rates.impulse_response(paper_nim, **kw),
+        "banks": results,
+        "caveats": bank_rates.PAPER_CAVEATS,
+    }
 
 
 _strategic_ctx_cache: dict = {"ts": 0, "data": None}

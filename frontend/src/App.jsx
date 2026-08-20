@@ -1,5 +1,5 @@
 ﻿import { useState, useEffect, useCallback, useRef } from 'react'
-import { Search, Activity, AlertCircle, BarChart3, TrendingUp, TrendingDown, Minus, BookOpen, ListFilter, RefreshCw, ExternalLink, Info, Zap, Briefcase, Pencil, X } from 'lucide-react'
+import { Search, Activity, AlertCircle, BarChart3, TrendingUp, TrendingDown, Minus, BookOpen, ListFilter, RefreshCw, ExternalLink, Info, Zap, Briefcase, Pencil, X, Landmark } from 'lucide-react'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, LineChart, Line, ReferenceLine } from 'recharts'
 import ReactMarkdown from 'react-markdown'
 export default function App() {
@@ -31,6 +31,7 @@ export default function App() {
           <TabButton active={activeTab === 'reversion'} onClick={() => setActiveTab('reversion')} icon={TrendingDown}>Reversion Hunter</TabButton>
           <TabButton active={activeTab === 'gainers'} onClick={() => setActiveTab('gainers')} icon={TrendingUp}>Momentum Hunter</TabButton>
           <TabButton active={activeTab === 'positions'} onClick={() => setActiveTab('positions')} icon={Briefcase}>הפוזיציות שלי</TabButton>
+          <TabButton active={activeTab === 'bank-rates'} onClick={() => setActiveTab('bank-rates')} icon={Landmark}>עקום ← בנקים</TabButton>
         </div>
       </header>
 
@@ -44,6 +45,7 @@ export default function App() {
         {activeTab === 'reversion'      && <ReversionView />}
         {activeTab === 'gainers'        && <GainersView />}
         {activeTab === 'positions'      && <PositionsView />}
+        {activeTab === 'bank-rates'     && <BankRatesView />}
       </main>
     </div>
   )
@@ -1014,6 +1016,391 @@ function MacroScoreCard({ ind }) {
         <div className="h-full rounded-full transition-all duration-500"
           style={{ width: `${barPct}%`, backgroundColor: color }} />
       </div>
+    </div>
+  )
+}
+
+// ----------------------------------------------------
+// VIEW 10: YIELD CURVE -> BANKS  (observational only, never a gate)
+// Alessandri & Nelson (2012), BoE WP452, re-estimated on US FDIC data.
+// ----------------------------------------------------
+const BR_PRESETS = [
+  { id: 'steepen',  label: 'התלוללות',        d_r3m_bp: 0,   d_slope_bp: 100 },
+  { id: 'flatten',  label: 'השטחה',           d_r3m_bp: 0,   d_slope_bp: -100 },
+  { id: 'hike',     label: 'העלאת ריבית',      d_r3m_bp: 100, d_slope_bp: -73 },
+  { id: 'cut',      label: 'הורדת ריבית',      d_r3m_bp: -100, d_slope_bp: 73 },
+]
+
+function BankRatesView() {
+  const [data, setData] = useState(null)
+  const [scenario, setScenario] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
+  const [preset, setPreset] = useState('steepen')
+  const [persistence, setPersistence] = useState(1.0)
+  const [selected, setSelected] = useState(null)
+
+  useEffect(() => {
+    fetch('/api/bank-rates')
+      .then(r => { if (!r.ok) throw new Error('שירות נתוני הבנקים אינו זמין כרגע'); return r.json() })
+      .then(d => { setData(d); setLoading(false) })
+      .catch(e => { setError(e.message); setLoading(false) })
+  }, [])
+
+  const runScenario = useCallback(() => {
+    const p = BR_PRESETS.find(x => x.id === preset)
+    if (!p) return
+    fetch('/api/bank-rates/scenario', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        d_r3m_bp: p.d_r3m_bp, d_slope_bp: p.d_slope_bp,
+        horizon: 12, persistence, timing: 'unanticipated',
+      }),
+    })
+      .then(r => { if (!r.ok) throw new Error('התרחיש נכשל'); return r.json() })
+      .then(setScenario)
+      .catch(e => setError(e.message))
+  }, [preset, persistence])
+
+  useEffect(() => { if (data) runScenario() }, [data, runScenario])
+
+  if (loading) return <div className="animate-spin w-8 h-8 border-4 border-neon-blue border-t-transparent rounded-full mt-10"></div>
+  if (error && !data) return <div className="glass-card bg-red-500/10 border-red-500/30 p-4 text-red-200 mt-10">{error}</div>
+  if (!data) return null
+
+  const c = data.curve || {}
+  const strong = (scenario?.banks || []).filter(b => !b.weak)
+  const weak = (scenario?.banks || []).filter(b => b.weak)
+  const activePreset = BR_PRESETS.find(x => x.id === preset)
+
+  return (
+    <div className="w-full max-w-6xl animate-signal flex flex-col gap-6">
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-1">
+        <h2 className="text-xl font-bold font-mono text-neon-blue">עקום התשואות ← בנקים</h2>
+        <span className="text-xs text-gray-500 font-mono">
+          <bdi>{data.updated_at ? new Date(data.updated_at).toLocaleDateString('he-IL') : '—'}</bdi>
+          {' · תצפיתי בלבד — לא משפיע על אף איתות'}
+        </span>
+      </div>
+
+      {/* PANEL 1 — the curve now */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+        <BRStat label="ריבית 3 חודשים" value={c.r3m} unit="%" />
+        <BRStat label="תשואת 2 שנים" value={c.r2y} unit="%" />
+        <BRStat label="תשואת 10 שנים" value={c.r10y} unit="%" />
+        <BRStat label="שיפוע 10ש׳ − 3ח׳" value={c.slope} unit="%" signed highlight />
+        <BRStat label="שינוי שיפוע ברבעון" value={c.d_slope_q} unit="pp" signed />
+      </div>
+
+      {c.history?.length > 1 && (
+        <div className="glass-card p-4">
+          <p className="text-xs font-mono text-gray-500 uppercase tracking-wider mb-2">
+            שיפוע העקום מאז 2000 · <bdi>{c.latest_q}</bdi>
+          </p>
+          <ResponsiveContainer width="100%" height={140}>
+            <LineChart data={c.history} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
+              <XAxis dataKey="q" tick={{ fontSize: 10, fill: '#9ca3af' }} minTickGap={40} />
+              <YAxis tick={{ fontSize: 10, fill: '#9ca3af' }} width={34} />
+              <ReferenceLine y={0} stroke="#ffffff33" strokeDasharray="3 3" />
+              <Tooltip contentStyle={{ background: '#0b1220', border: '1px solid #ffffff22', fontSize: 12 }}
+                       formatter={(v) => [`${(+v).toFixed(2)}%`, 'שיפוע']} />
+              <Line type="monotone" dataKey="slope" stroke="#00d2ff" strokeWidth={1.6} dot={false} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {/* PANEL 3 — scenario controls + the impulse path */}
+      <div className="glass-card p-4 flex flex-col gap-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs font-mono text-gray-500 uppercase tracking-wider ml-2">תרחיש</span>
+          {BR_PRESETS.map(p => (
+            <button key={p.id} onClick={() => setPreset(p.id)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-mono border transition ${
+                preset === p.id ? 'bg-neon-blue/20 border-neon-blue text-neon-blue'
+                                : 'border-white/10 text-gray-400 hover:border-white/30'}`}>
+              {p.label}
+            </button>
+          ))}
+          <label className="flex items-center gap-2 text-xs font-mono text-gray-400 mr-auto">
+            התמדה
+            <input type="range" min="0.3" max="1" step="0.05" value={persistence}
+                   onChange={e => setPersistence(parseFloat(e.target.value))}
+                   className="w-28 accent-cyan-400" />
+            <bdi className="w-8 text-gray-300">{persistence.toFixed(2)}</bdi>
+          </label>
+        </div>
+
+        <p className="text-xs text-gray-500 leading-relaxed">
+          זעזוע של
+          {' '}
+          <bdi className="font-mono text-gray-300">{activePreset?.d_r3m_bp} bp</bdi>
+          {' '}
+          לריבית הקצרה ושל
+          {' '}
+          <bdi className="font-mono text-gray-300">{activePreset?.d_slope_bp} bp</bdi>
+          {' '}
+          לשיפוע. התמדה
+          {' '}
+          <bdi className="font-mono text-gray-300">1.00</bdi>
+          {' '}
+          היא זעזוע קבוע. הזעזוע אינו צפוי, ולכן רבעון הפגיעה עובר דרך מקדם הפיגור — זו המוסכמת של המאמר, והיא זו שקובעת את הסימן ההתחלתי.
+        </p>
+
+        {scenario && (
+          <ResponsiveContainer width="100%" height={200}>
+            <LineChart data={scenario.paper.map((r, i) => ({
+              q: `Q${i + 1}`,
+              paper: r.effect_pp,
+              sel: selected ? (scenario.banks.find(b => b.ticker === selected)?.path[i]?.effect_pp ?? null) : null,
+            }))} margin={{ top: 6, right: 8, left: 0, bottom: 4 }}>
+              <XAxis dataKey="q" tick={{ fontSize: 10, fill: '#9ca3af' }} />
+              <YAxis tick={{ fontSize: 10, fill: '#9ca3af' }} width={44} />
+              <ReferenceLine y={0} stroke="#ffffff44" />
+              <Tooltip contentStyle={{ background: '#0b1220', border: '1px solid #ffffff22', fontSize: 12 }}
+                       formatter={(v, n) => [v === null ? '—' : `${(+v).toFixed(3)} pp`,
+                                             n === 'paper' ? 'מקדמי המאמר' : selected]} />
+              <Line type="monotone" dataKey="paper" stroke="#a78bfa" strokeWidth={2} dot={false} />
+              {selected && <Line type="monotone" dataKey="sel" stroke="#4ade80" strokeWidth={2} dot={false} />}
+            </LineChart>
+          </ResponsiveContainer>
+        )}
+        <p className="text-[11px] text-gray-600">
+          סגול = מקדמי המאמר (בריטניה 1992–2009). ירוק = הבנק שנבחר בטבלה, נאמד על נתוניו שלו.
+          הציר הוא סטייה מהמרווח הבסיסי, בנקודות אחוז שנתיות.
+        </p>
+      </div>
+
+      {/* PANEL 2 — sensitivity table */}
+      {scenario && (
+        <div className="glass-card p-4 overflow-x-auto">
+          <p className="text-xs font-mono text-gray-500 uppercase tracking-wider mb-3">
+            רגישות לפי בנק · לחיצה מציגה את המסלול בגרף
+          </p>
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-gray-500 text-xs font-mono border-b border-white/10">
+                <th className="text-right py-2 px-2">בנק</th>
+                <th className="text-right py-2 px-2">מקדם שיפוע</th>
+                <th className="text-right py-2 px-2">t</th>
+                <th className="text-right py-2 px-2">R²</th>
+                <th className="text-right py-2 px-2">אפקט מצב יציב</th>
+                <th className="text-right py-2 px-2">שפל</th>
+                <th className="text-right py-2 px-2">מצטבר 3ש׳</th>
+              </tr>
+            </thead>
+            <tbody>
+              {strong.map(b => <BRRow key={b.ticker} b={b} selected={selected} onSelect={setSelected} />)}
+              {weak.length > 0 && (
+                <tr><td colSpan={7} className="pt-4 pb-1 px-2 text-[11px] text-gray-600">
+                  המודל אינו מתאר את הבנקים הבאים — מקדם לא מובהק או כוח הסבר נמוך.
+                  אלה בעיקר מונוליין כרטיסי אשראי וברוקר־דילרים, בדיוק ההטרוגניות שהמאמר עצמו מתאר בסעיף 6.4.
+                </td></tr>
+              )}
+              {weak.map(b => <BRRow key={b.ticker} b={b} selected={selected} onSelect={setSelected} />)}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* PANEL 4 — realised NIM vs the curve */}
+      <BRRealisedPanel data={data} selected={selected} />
+
+      {/* PANEL 5 — resilience matrix: can the bank survive the ride?
+          Layer 1 = rate sensitivity (the model above); layers 2-3 = funding
+          fragility and mark-to-market capital erosion. Descriptive shading
+          by cross-sectional tertile — never a score, never a threshold. */}
+      <BRResilienceMatrix data={data} scenario={scenario} selected={selected} onSelect={setSelected} />
+
+      <div className="glass-card p-4 border-amber-500/20 bg-amber-500/5">
+        <p className="text-xs font-mono text-amber-300/80 uppercase tracking-wider mb-2">מה המספרים האלה אינם</p>
+        <ul className="text-xs text-gray-400 leading-relaxed list-disc pr-4 space-y-1">
+          {(data.caveats || []).map((t, i) => <li key={i}>{t}</li>)}
+        </ul>
+        <p className="text-[11px] text-gray-600 mt-3">
+          מקור:
+          {' '}
+          <bdi>{data.paper?.source}</bdi>
+          {' · '}
+          <bdi>{data.paper?.sample}</bdi>
+        </p>
+      </div>
+    </div>
+  )
+}
+
+function BRStat({ label, value, unit, signed = false, highlight = false }) {
+  const v = (value === null || value === undefined) ? null : +value
+  const color = !highlight ? '#e5e7eb' : v === null ? '#9ca3af' : v >= 0 ? '#4ade80' : '#f87171'
+  const txt = v === null ? '—' : `${signed && v > 0 ? '+' : ''}${v.toFixed(2)}${unit === '%' ? '%' : ''}`
+  return (
+    <div className="glass-card p-3">
+      <p className="text-[11px] text-gray-500 leading-tight">{label}</p>
+      <p className="text-lg font-bold font-mono mt-1" style={{ color }}><bdi>{txt}</bdi></p>
+    </div>
+  )
+}
+
+function BRRow({ b, selected, onSelect }) {
+  const dim = b.weak ? 'text-gray-600' : 'text-gray-300'
+  const lr = b.lr_effect_pp
+  const lrColor = b.weak ? '#6b7280' : lr === null ? '#6b7280' : lr >= 0 ? '#4ade80' : '#f87171'
+  const dollars = b.cum_dollars === null || b.cum_dollars === undefined
+    ? '—'
+    : `${b.cum_dollars < 0 ? '−' : ''}$${Math.abs(b.cum_dollars / 1e9).toFixed(1)}B`
+  return (
+    <tr onClick={() => onSelect(b.ticker === selected ? null : b.ticker)}
+        className={`border-b border-white/5 cursor-pointer transition ${
+          selected === b.ticker ? 'bg-neon-blue/10' : 'hover:bg-white/5'}`}>
+      <td className="py-2 px-2">
+        <span className={`font-mono font-semibold ${b.weak ? 'text-gray-500' : 'text-white'}`}>
+          <bdi>{b.ticker}</bdi>
+        </span>
+        <span className="block text-[10px] text-gray-600 leading-tight">{b.name}</span>
+      </td>
+      <td className={`py-2 px-2 font-mono ${dim}`}><bdi>{b.slope_beta.toFixed(3)}</bdi></td>
+      <td className={`py-2 px-2 font-mono ${dim}`}><bdi>{b.slope_t?.toFixed(2) ?? '—'}</bdi></td>
+      <td className={`py-2 px-2 font-mono ${dim}`}><bdi>{b.r2.toFixed(2)}</bdi></td>
+      <td className="py-2 px-2 font-mono font-semibold" style={{ color: lrColor }}>
+        <bdi>{lr === null ? '—' : `${lr > 0 ? '+' : ''}${lr.toFixed(2)} pp`}</bdi>
+      </td>
+      <td className={`py-2 px-2 font-mono ${dim}`}>
+        <bdi>{b.trough_pp.toFixed(3)}</bdi>
+        <span className="text-[10px] text-gray-600"> Q{b.trough_q + 1}</span>
+      </td>
+      <td className={`py-2 px-2 font-mono ${dim}`}><bdi>{dollars}</bdi></td>
+    </tr>
+  )
+}
+
+// Panel 5 — the resilience matrix. Tertile shading among the banks that have
+// the metric: green = friendliest third, red = most fragile third, gray = middle
+// or missing. Direction differs per column (high NIB is good, high uninsured is
+// fragile, more-negative MTM/T1 is worse, high CET1 is good).
+function brTertile(values, v, highIsGood) {
+  if (v === null || v === undefined || values.length < 3) return '#9ca3af'
+  const sorted = [...values].sort((a, b) => a - b)
+  const lo = sorted[Math.floor(sorted.length / 3)]
+  const hi = sorted[Math.floor(sorted.length * 2 / 3)]
+  const topBand = v >= hi, bottomBand = v <= lo
+  if (!topBand && !bottomBand) return '#9ca3af'
+  const good = highIsGood ? topBand : bottomBand
+  return good ? '#4ade80' : '#f87171'
+}
+
+function BRResilienceMatrix({ data, scenario, selected, onSelect }) {
+  const banks = (data.banks || []).filter(b => b.resilience)
+  if (!banks.length) return null
+  const lrByTicker = {}
+  for (const r of (scenario?.banks || [])) lrByTicker[r.ticker] = r
+
+  const col = (key) => banks.map(b => b.resilience[key]).filter(v => v !== null && v !== undefined)
+  const cols = {
+    uninsured: col('uninsured_pct'), nib: col('nib_pct'),
+    mtm: col('mtm_over_t1_pct'), cet1: col('cet1_ratio'),
+  }
+  const fmtPct = (v, digits = 1) => (v === null || v === undefined) ? '—' : `${v.toFixed(digits)}%`
+
+  return (
+    <div className="glass-card p-4 overflow-x-auto">
+      <p className="text-xs font-mono text-gray-500 uppercase tracking-wider mb-1">
+        מטריצת חוסן — מי מסוגל לשרוד את הדרך אל המרווח
+      </p>
+      <p className="text-[11px] text-gray-600 mb-3">
+        רובד 1 = רגישות המרווח מהמודל למעלה. רובד 2 = שבריריות מקורות. רובד 3 = שחיקת הון בשערוך מלא של תיק הניירות.
+        צביעה לפי שליש חתכי בין הבנקים — תיאורי, לא ציון.
+      </p>
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="text-gray-500 text-xs font-mono border-b border-white/10">
+            <th className="text-right py-2 px-2">בנק</th>
+            <th className="text-right py-2 px-2">רגישות (מצב יציב)</th>
+            <th className="text-right py-2 px-2">לא־מבוטחים / פיקדונות</th>
+            <th className="text-right py-2 px-2">ללא־ריבית / פיקדונות</th>
+            <th className="text-right py-2 px-2">MTM / הון רובד 1</th>
+            <th className="text-right py-2 px-2">CET1</th>
+          </tr>
+        </thead>
+        <tbody>
+          {banks.map(b => {
+            const r = b.resilience
+            const sc = lrByTicker[b.ticker]
+            const lr = sc && !sc.weak ? sc.lr_effect_pp : null
+            return (
+              <tr key={b.ticker}
+                  onClick={() => onSelect(b.ticker === selected ? null : b.ticker)}
+                  className={`border-b border-white/5 cursor-pointer transition ${
+                    selected === b.ticker ? 'bg-neon-blue/10' : 'hover:bg-white/5'}`}>
+                <td className="py-2 px-2 font-mono font-semibold text-white"><bdi>{b.ticker}</bdi></td>
+                <td className="py-2 px-2 font-mono"
+                    style={{ color: lr === null ? '#6b7280' : lr >= 0 ? '#4ade80' : '#f87171' }}>
+                  <bdi>{lr === null ? '—' : `${lr > 0 ? '+' : ''}${lr.toFixed(2)} pp`}</bdi>
+                  {sc?.weak && <span className="text-[10px] text-gray-600 mr-1">חלש</span>}
+                </td>
+                <td className="py-2 px-2 font-mono" style={{ color: brTertile(cols.uninsured, r.uninsured_pct, false) }}>
+                  <bdi>{fmtPct(r.uninsured_pct)}</bdi>
+                </td>
+                <td className="py-2 px-2 font-mono" style={{ color: brTertile(cols.nib, r.nib_pct, true) }}>
+                  <bdi>{fmtPct(r.nib_pct)}</bdi>
+                </td>
+                <td className="py-2 px-2 font-mono" style={{ color: brTertile(cols.mtm, r.mtm_over_t1_pct, true) }}>
+                  <bdi>{fmtPct(r.mtm_over_t1_pct)}</bdi>
+                </td>
+                <td className="py-2 px-2 font-mono" style={{ color: brTertile(cols.cet1, r.cet1_ratio, true) }}>
+                  <bdi>{fmtPct(r.cet1_ratio, 2)}</bdi>
+                </td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+      {(data.resilience_caveats || []).length > 0 && (
+        <ul className="text-[11px] text-gray-600 leading-relaxed list-disc pr-4 space-y-1 mt-3">
+          {data.resilience_caveats.map((t, i) => <li key={i} dir="auto">{t}</li>)}
+        </ul>
+      )}
+    </div>
+  )
+}
+
+// Panel 4 — did the relationship actually hold? Realised NIM against the slope,
+// for whichever bank is selected (falls back to the largest one).
+function BRRealisedPanel({ data, selected }) {
+  const bank = (data.banks || []).find(b => b.ticker === selected)
+    || (data.banks || []).find(b => b.nim_history?.length)
+  if (!bank?.nim_history?.length) return null
+
+  const slopeByQ = {}
+  for (const h of (data.curve?.history || [])) slopeByQ[h.q] = h.slope
+  const rows = bank.nim_history
+    .filter(h => slopeByQ[h.q] !== undefined)
+    .map(h => ({ q: h.q, nim: h.nim, slope: slopeByQ[h.q] }))
+  if (rows.length < 8) return null
+
+  return (
+    <div className="glass-card p-4">
+      <p className="text-xs font-mono text-gray-500 uppercase tracking-wider mb-2">
+        מימוש מול עקום · <bdi>{bank.ticker}</bdi> — מרווח הריבית בפועל מול שיפוע העקום
+      </p>
+      <ResponsiveContainer width="100%" height={190}>
+        <LineChart data={rows} margin={{ top: 6, right: 8, left: 0, bottom: 4 }}>
+          <XAxis dataKey="q" tick={{ fontSize: 10, fill: '#9ca3af' }} minTickGap={40} />
+          <YAxis yAxisId="l" tick={{ fontSize: 10, fill: '#4ade80' }} width={38} />
+          <YAxis yAxisId="r" orientation="right" tick={{ fontSize: 10, fill: '#00d2ff' }} width={38} />
+          <ReferenceLine yAxisId="r" y={0} stroke="#ffffff33" strokeDasharray="3 3" />
+          <Tooltip contentStyle={{ background: '#0b1220', border: '1px solid #ffffff22', fontSize: 12 }}
+                   formatter={(v, n) => [`${(+v).toFixed(2)}%`, n === 'nim' ? 'מרווח ריבית' : 'שיפוע']} />
+          <Line yAxisId="l" type="monotone" dataKey="nim" stroke="#4ade80" strokeWidth={1.8} dot={false} />
+          <Line yAxisId="r" type="monotone" dataKey="slope" stroke="#00d2ff" strokeWidth={1.4} dot={false} />
+        </LineChart>
+      </ResponsiveContainer>
+      <p className="text-[11px] text-gray-600 mt-1">
+        ירוק = מרווח הריבית הרבעוני במונחים שנתיים, מנתוני
+        {' '}
+        <bdi>FDIC</bdi>
+        . תכלת = שיפוע העקום. בחירת בנק בטבלה מחליפה את הגרף.
+      </p>
     </div>
   )
 }

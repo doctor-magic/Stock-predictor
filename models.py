@@ -38,6 +38,22 @@ class PositionCloseRequest(BaseModel):
     exit_price: float = Field(..., gt=0)
 
 
+class BankScenarioRequest(BaseModel):
+    # Yield curve → banks scenario (Aug 2026). Every bound is a clamp, not a
+    # suggestion: the impulse response is linear in the shock, so an unclamped
+    # shock would render a chart with an absurd axis rather than fail.
+    d_r3m_bp: float = Field(0.0, ge=-500, le=500)
+    d_slope_bp: float = Field(0.0, ge=-500, le=500)
+    horizon: int = Field(12, ge=1, le=40)
+    # Quarterly AR decay of the shock itself. 1.0 = permanent; the paper's VAR
+    # (their Chart 4) implies roughly 0.66 for the 3m rate.
+    persistence: float = Field(1.0, ge=0.0, le=1.0)
+    slope_persistence: Optional[float] = Field(None, ge=0.0, le=1.0)
+    # "unanticipated" is the paper's own convention and decides the sign on
+    # impact — see the timing note in bank_rates.impulse_response.
+    timing: str = Field("unanticipated", pattern=r"^(unanticipated|anticipated)$")
+
+
 class PositionEditRequest(BaseModel):
     # Partial edit of an OPEN position. Every field optional; the endpoint reads
     # model_fields_set so an omitted stop_pct means "leave it" while an explicit

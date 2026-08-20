@@ -23,8 +23,12 @@ PROJECT_DIR="$HOME/Desktop/Stock-predictor"
 # has_session_opened() from it, so it is inside the service's import graph and
 # is bound by the same must-travel-together rule as the original trio. Shipping
 # db.py without it is the ImportError-on-startup failure, one file further out.
+# bank_rates.py is in this list for the same reason as market_calendar.py:
+# api.py imports it for the /api/bank-rates endpoint, so it is inside the
+# service's import graph and must travel with the trio or the service
+# ImportErrors on startup.
 BACKEND_FILES=("api.py" "scanners.py" "db.py" "market_calendar.py"
-               "core_logic.py" "models.py")
+               "core_logic.py" "models.py" "bank_rates.py")
 # Support scripts: shipped on every deploy, but NOT part of the trio's
 # must-travel-together rule — nothing imports them, so they cannot ImportError
 # the service. They live here to end the "deployed by hand, drifted from git"
@@ -60,7 +64,7 @@ cd "$PROJECT_DIR"
 
 # ── Stage 0 — Blocking unittest gate ─────────────────────────────────────────
 stage "unittest gate"
-python3 -m unittest test_scanners
+python3 -m unittest test_scanners test_bank_rates
 # Each support script carries its own selftest; the gate runs them so nothing
 # reaches the server unproven. backup_dbs verifies the base64/hex hash logic
 # that silently degraded to "unverified" before, r1_sitting verifies the
