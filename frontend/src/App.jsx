@@ -1079,24 +1079,35 @@ function BankRatesView() {
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-1">
         <h2 className="text-xl font-bold font-mono text-neon-blue">עקום התשואות ← בנקים</h2>
         <span className="text-xs text-gray-500 font-mono">
+          {'עודכן '}
           <bdi>{data.updated_at ? new Date(data.updated_at).toLocaleDateString('he-IL') : '—'}</bdi>
           {' · תצפיתי בלבד — לא משפיע על אף איתות'}
         </span>
       </div>
 
-      {/* PANEL 1 — the curve now */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-        <BRStat label="ריבית 3 חודשים" value={c.r3m} unit="%" />
-        <BRStat label="תשואת 2 שנים" value={c.r2y} unit="%" />
-        <BRStat label="תשואת 10 שנים" value={c.r10y} unit="%" />
-        <BRStat label="שיפוע 10ש׳ − 3ח׳" value={c.slope} unit="%" signed highlight />
-        <BRStat label="שינוי שיפוע ברבעון" value={c.d_slope_q} unit="pp" signed />
+      {/* PANEL 1 — the curve the MODEL reads: quarterly averages of the last
+          closed quarter. The paper is estimated quarterly, so this is the only
+          curve the coefficients apply to. The live daily quote sits below it,
+          display-only, so the two are never mistaken for each other. */}
+      <div className="flex flex-col gap-2">
+        <p className="text-[11px] font-mono text-gray-500 uppercase tracking-wider">
+          {'קלט המודל · ממוצע רבעוני '}
+          <bdi>{brQuarterLabel(c.latest_q)}</bdi>
+        </p>
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+          <BRStat label="ריבית 3 חודשים" value={c.r3m} unit="%" />
+          <BRStat label="תשואת 2 שנים" value={c.r2y} unit="%" />
+          <BRStat label="תשואת 10 שנים" value={c.r10y} unit="%" />
+          <BRStat label="שיפוע 10ש׳ − 3ח׳" value={c.slope} unit="%" signed highlight />
+          <BRStat label="שינוי שיפוע ברבעון" value={c.d_slope_q} unit="pp" signed />
+        </div>
+        <BRLiveQuote live={c.live} />
       </div>
 
       {c.history?.length > 1 && (
         <div className="glass-card p-4">
           <p className="text-xs font-mono text-gray-500 uppercase tracking-wider mb-2">
-            שיפוע העקום מאז 2000 · <bdi>{c.latest_q}</bdi>
+            שיפוע העקום מאז 2000 · <bdi>{brQuarterLabel(c.latest_q)}</bdi>
           </p>
           <ResponsiveContainer width="100%" height={140}>
             <LineChart data={c.history} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
@@ -1227,6 +1238,37 @@ function BankRatesView() {
         </p>
       </div>
     </div>
+  )
+}
+
+// FRED stamps a quarter by its START month: 2026-04 is Q2 2026.
+function brQuarterLabel(q) {
+  if (!q) return '—'
+  const [y, m] = q.split('-')
+  const n = { '01': 1, '04': 2, '07': 3, '10': 4 }[m]
+  return n ? `Q${n} ${y}` : q
+}
+
+// Display-only. The daily curve as it stands today, shown so the quarterly
+// average above is never read as a live quote. Renders nothing if the daily
+// fetch failed — the model panel does not depend on it.
+function BRLiveQuote({ live }) {
+  if (!live || live.r10y === null || live.r10y === undefined) return null
+  const fmt = (v, signed = false) => (v === null || v === undefined)
+    ? '—'
+    : `${signed && v > 0 ? '+' : ''}${(+v).toFixed(2)}%`
+  const d = live.as_of ? new Date(live.as_of + 'T00:00:00').toLocaleDateString('he-IL') : '—'
+  return (
+    <p className="text-[11px] font-mono text-gray-500 leading-relaxed">
+      {'ציטוט חי · '}
+      <bdi>{d}</bdi>
+      {' · '}
+      {'3ח׳ '}<bdi className="text-gray-300">{fmt(live.r3m)}</bdi>
+      {' · שנתיים '}<bdi className="text-gray-300">{fmt(live.r2y)}</bdi>
+      {' · 10ש׳ '}<bdi className="text-gray-300">{fmt(live.r10y)}</bdi>
+      {' · שיפוע '}<bdi className="text-gray-300">{fmt(live.slope, true)}</bdi>
+      {' — לא נכנס למודל'}
+    </p>
   )
 }
 

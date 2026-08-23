@@ -31,7 +31,9 @@ Two coefficient sets are served side by side:
 
 Data sources
 ------------
-FRED  (needs FRED_API_KEY)  DGS3MO, DGS2, DGS10 — quarterly averages.
+FRED  (needs FRED_API_KEY)  DGS3MO, DGS2, DGS10 — quarterly averages for the
+                           model, plus the latest DAILY observation of the same
+                           three series for display (see fetch_curve_live).
 FDIC  (no key required)     api.fdic.gov/banks/financials — NIMY, ROA, ROE, ASSET.
 
 FRED's own aggregate bank series (USNIM/USROA/USROE) are DISCONTINUED — they
@@ -200,7 +202,7 @@ _CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 _CACHE_TTL = 6 * 3600            # FDIC publishes quarterly; 6h is generous
 # Bump when the payload shape changes — a stale disk cache from an older shape
 # must be refetched, not served for 6 hours with fields silently missing.
-_SCHEMA = 2                      # 2 = resilience layers added
+_SCHEMA = 3                      # 3 = curve.live (daily quote) added
 _cache = {"ts": 0, "data": None}
 
 
@@ -500,6 +502,61 @@ def _fred_quarterly(series_id, api_key, start=_ESTIMATION_START):
     return {o["date"][:7]: float(o["value"]) for o in obs if o["value"] != "."}
 
 
+def _fred_latest(series_id, api_key, lookback=10):
+    """Most recent non-missing DAILY observation. Returns (date, value) or None.
+
+    FRED stamps holidays and non-trading days with "." — hence the lookback
+    window rather than limit=1.
+    """
+    url = ("https://api.stlouisfed.org/fred/series/observations"
+           "?series_id=%s&api_key=%s&file_type=json"
+           "&sort_order=desc&limit=%d"
+           % (series_id, api_key, lookback))
+    with _req.urlopen(url, timeout=20) as r:
+        obs = _json.loads(r.read())["observations"]
+    for o in obs:
+        if o["value"] != ".":
+            return o["date"], float(o["value"])
+    return None
+
+
+def fetch_curve_live(api_key):
+    """Latest daily Treasury quote. Returns dict or None. DISPLAY ONLY.
+
+    This is NOT a model input and must never become one. The Alessandri &
+    Nelson specification is estimated on quarterly data, so every coefficient,
+    impulse response and scenario in this module reads the quarterly averages
+    from fetch_curve. This block exists only so the UI can show the curve as it
+    stands today next to the quarter it actually modelled — the two differ by
+    the length of the open quarter, which was the Aug 21 2026 confusion.
+
+    Sequential with sleeps, same FRED rate-limit rule as fetch_curve.
+    """
+    try:
+        r3m = _fred_latest(FRED_SERIES["r3m"], api_key)
+        time.sleep(0.5)
+        r10y = _fred_latest(FRED_SERIES["r10y"], api_key)
+        time.sleep(0.5)
+        r2y = _fred_latest(FRED_SERIES["r2y"], api_key)
+    except Exception:
+        return None
+    if not r3m or not r10y:
+        return None
+    return {
+        # Series can settle on different days; the UI stamps the 10y date and
+        # each value carries its own so a lagging series is never hidden.
+        "as_of": max(d for d, _ in (r3m, r10y, r2y or r10y)),
+        "r3m": r3m[1],
+        "r3m_as_of": r3m[0],
+        "r2y": r2y[1] if r2y else None,
+        "r2y_as_of": r2y[0] if r2y else None,
+        "r10y": r10y[1],
+        "r10y_as_of": r10y[0],
+        "slope": r10y[1] - r3m[1],
+        "slope_2y": (r10y[1] - r2y[1]) if r2y else None,
+    }
+
+
 def fetch_curve(api_key):
     """Quarterly average Treasury curve. Returns dict or None.
 
@@ -620,6 +677,10 @@ def get_bank_rates(api_key, force=False):
             return dict(_cache["data"], stale=True)
         return {"error": "curve_unavailable", "banks": [], "curve": None}
 
+    # Display-only daily quote. A failure here degrades to no live row in the
+    # UI; it must never block the quarterly payload the model depends on.
+    live = fetch_curve_live(api_key) if api_key else None
+
     qs = curve["quarters"]
     latest = qs[-1]
     prev = qs[-2] if len(qs) > 1 else latest
@@ -658,6 +719,7 @@ def get_bank_rates(api_key, force=False):
         "resilience_caveats": RESILIENCE_CAVEATS,
         "curve": {
             "latest_q": latest,
+            "live": live,
             "r3m": curve["r3m"].get(latest),
             "r2y": curve["r2y"].get(latest),
             "r10y": curve["r10y"].get(latest),

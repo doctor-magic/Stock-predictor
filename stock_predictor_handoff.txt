@@ -2697,3 +2697,60 @@ ONE LIVE BUG CAUGHT AND FIXED DURING DEPLOY: yf.download(group_by="ticker") retu
   question it answered before ranking on it. When a displayed number drives a
   ranking, verify its denominator — and when the user's own chart disagrees with
   the app, the app is not automatically the one that is wrong.
+
+===========================================================================================
+  (commit follows)  Aug 23 — banks tab: the curve it models vs the curve that exists today
+
+CONTEXT: the "עקום התשואות ← בנקים" tab shipped Aug 20 (commit eeef4f1). Its design,
+  guardrails and findings live in CLAUDE.md §"Yield Curve → Banks"; this entry is the
+  first handoff note on it, and it is about a labelling bug, not the model.
+
+THE REPORT (Aug 21): user, looking at the live tab — "זאת לא התשואה האמריקאית".
+  Displayed: 3m 3.73% / 2y 3.97% / 10y 4.42%. Actual that day: 3.86 / 4.19 / 4.65.
+
+IT WAS AMERICAN. The series are DGS3MO/DGS2/DGS10 — US Treasuries. What they were NOT
+  is current: fetch_curve() pulls frequency=q&aggregation_method=avg, so the panel was
+  showing the average of the last CLOSED quarter, Q2 2026 (Apr-Jun). The header above it
+  rendered data.updated_at — the CACHE REFRESH time, i.e. that morning's date. A
+  three-month-old average under today's date reads as a live quote that is simply wrong.
+
+WHY THE QUARTERLY AVERAGE STAYS: Alessandri & Nelson is estimated on quarterly data.
+  Every coefficient, impulse response and scenario in the module is defined against
+  quarterly observations. Feeding it daily values would leave the numbers looking fresher
+  and meaning nothing. The fix could not be "make it live" — it had to be "say which one
+  this is". User picked the label+live option over label-only.
+
+SHIPPED:
+  bank_rates.py — _fred_latest() (sort_order=desc with a lookback window, because FRED
+    stamps non-trading days ".") and fetch_curve_live(), returning curve.live: the latest
+    DAILY observation of the same three series, each value carrying its own as_of so a
+    lagging series is never hidden behind a shared date. Sequential with time.sleep(0.5),
+    the same FRED rate-limit rule as fetch_curve (the Jun 1 429-cached-as-nulls incident).
+    Wrapped try/except -> None: a failure here costs the live row and nothing else.
+  App.jsx — the five stat cards are now captioned "קלט המודל · ממוצע רבעוני Qn YYYY";
+    BRLiveQuote renders under them, labelled "לא נכנס למודל", and returns null if
+    curve.live is absent. Header date prefixed "עודכן" so it reads as freshness, not as
+    the data's date. Chart caption shows "Q2 2026" instead of the raw "2026-04".
+  _SCHEMA 2 -> 3, so every schema-2 disk cache is discarded rather than served for 6h
+    with curve.live silently missing — the same rule the resilience layer added.
+
+BOUNDARY HELD: curve.live is display-only, in the same class as the sector heatmap and
+  the leveraged sentiment strip. It is not a model input, not a covariate, not a gate,
+  writes nothing to setup_log, and is outside R1 and Stage B entirely. estimate(),
+  impulse_response() and the scenario endpoint still read ONLY the quarterly averages —
+  none of those call paths was touched.
+
+VERIFIED: 51 test_bank_rates tests pass, check_guardrails 77/77 IRON present, vite build
+  clean, deploy.sh green end to end (bank_rates.py is already in BACKEND_FILES). On the
+  server after deploy: schema 3, 17/17 banks still estimating, quarterly 3.73/3.97/4.42
+  next to live 3.87/4.19/4.69 as of Aug 20. Server cache warmed by hand post-deploy so
+  the first visitor did not pay the 17-call FDIC cold fetch.
+
+THE GAP CLOSES ITSELF Oct 1, when Q3 closes and Jul-Sep enters the model. Until then the
+  two rows will visibly disagree, which is now the intended reading rather than a defect.
+
+LESSON: same shape as the RVOL misread four days earlier — a number was correct and its
+  label was not, and the label is what everyone actually reads. Both times the user's own
+  reference disagreed with the app and the user was right about the reading even though
+  the data was right too. When a panel shows a quantity that has an as-of date, the as-of
+  date belongs next to the quantity, never in a header that means something else.
