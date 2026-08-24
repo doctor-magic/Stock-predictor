@@ -1100,10 +1100,66 @@ class TestTrendTemplate(unittest.TestCase):
 
     def test_payload_shape(self):
         result = scanners.compute_trend_template(_frame(_rising(300)))
-        self.assertEqual(set(result), {"score", "is_full_pass", "criteria", "values"})
+        self.assertEqual(set(result), {"score", "is_full_pass", "criteria", "margins", "values"})
         self.assertEqual(len(result["criteria"]), 7)
         self.assertTrue(all(isinstance(v, bool) for v in result["criteria"].values()))
         self.assertEqual(
             set(result["values"]),
             {"price", "ma50", "ma150", "ma200", "high52", "low52"},
         )
+
+    # ── Margins: the number behind the tick ───────────────────────────────
+
+    def test_margin_sign_agrees_with_every_criterion(self):
+        # The whole contract in one test. A margin whose sign disagrees with
+        # its tick would be worse than no margin at all — it would read as a
+        # second opinion rather than as the size of the first one.
+        for closes in (_rising(300),
+                       [250.0 - i * 0.5 for i in range(300)],
+                       _rising(260) + [230.0 - i * 1.5 for i in range(40)]):
+            result = scanners.compute_trend_template(_frame(closes))
+            for key, passed in result["criteria"].items():
+                margin = result["margins"][key]
+                if margin > 0:
+                    self.assertTrue(passed, f"{key}: margin {margin} but marked fail")
+                elif margin < 0:
+                    self.assertFalse(passed, f"{key}: margin {margin} but marked pass")
+
+    def test_margin_separates_a_touch_from_a_breakdown(self):
+        # Both fail c5. Only the margin says which one is a stock resting on
+        # its MA50 and which one has lost the trend.
+        # The last bar is inside its own MA50 window, so moving the close moves
+        # the average with it by 1/50 of the change. Solving x = f*(S49+x)/50
+        # for x lands the close exactly f of the resulting MA50.
+        closes = _rising(300)
+        s49 = sum(closes[-50:-1])
+
+        def _at(f):
+            adjusted = list(closes)
+            adjusted[-1] = f * s49 / (50 - f)
+            return scanners.compute_trend_template(_frame(adjusted))
+
+        m_touch = _at(0.999)
+        m_break = _at(0.90)
+
+        self.assertFalse(m_touch["criteria"]["c5_price_above_ma50"])
+        self.assertFalse(m_break["criteria"]["c5_price_above_ma50"])
+        self.assertGreater(m_touch["margins"]["c5_price_above_ma50"],
+                           m_break["margins"]["c5_price_above_ma50"])
+        self.assertGreater(m_touch["margins"]["c5_price_above_ma50"], -5)
+        self.assertLess(m_break["margins"]["c5_price_above_ma50"], -5)
+
+    def test_threshold_margins_are_relative_to_their_own_bar(self):
+        # c6 and c7 are measured against 30% / 25%, not against zero, so a
+        # stock exactly on either threshold has a margin of 0.
+        closes = _rising(300)
+        df = _frame(closes)
+        low52 = float(df["Low"].iloc[-260:].min())
+        df.loc[df.index[-1], "Close"] = low52 * 1.30
+        result = scanners.compute_trend_template(df)
+        self.assertAlmostEqual(result["margins"]["c6_30pct_above_low52"], 0.0, places=1)
+        self.assertTrue(result["criteria"]["c6_30pct_above_low52"])
+
+    def test_every_criterion_has_a_margin(self):
+        result = scanners.compute_trend_template(_frame(_rising(300)))
+        self.assertEqual(set(result["margins"]), set(result["criteria"]))

@@ -838,15 +838,22 @@ function TrendTemplateCard({ data }) {
              : score >= 4 ? 'text-yellow-400 border-yellow-500/30 bg-yellow-500/10'
              : 'text-red-400 border-red-500/30 bg-red-500/10'
 
+  // The margin is the point of this card. A bare red X reads the same whether
+  // the stock is resting on its MA50 or has lost the trend by 8%; the number
+  // beside it is what separates the two.
+  const margins = data.margins || {}
   const rows = [
-    ['Price > MA150 & MA200',    criteria.c1_price_above_ma150_200],
-    ['MA150 > MA200',            criteria.c2_ma150_above_ma200],
-    ['MA200 trending up (1mo)',  criteria.c3_ma200_uptrend],
-    ['MA50 > MA150 & MA200',     criteria.c4_ma50_above_ma150_200],
-    ['Price > MA50',             criteria.c5_price_above_ma50],
-    ['30%+ above 52w low',       criteria.c6_30pct_above_low52],
-    ['Within 25% of 52w high',   criteria.c7_within_25pct_high52],
+    ['Price > MA150 & MA200',   'c1_price_above_ma150_200'],
+    ['MA150 > MA200',           'c2_ma150_above_ma200'],
+    ['MA200 trending up (1mo)', 'c3_ma200_uptrend'],
+    ['MA50 > MA150 & MA200',    'c4_ma50_above_ma150_200'],
+    ['Price > MA50',            'c5_price_above_ma50'],
+    ['30%+ above 52w low',      'c6_30pct_above_low52'],
+    ['Within 25% of 52w high',  'c7_within_25pct_high52'],
   ]
+
+  const fmtMargin = (v) =>
+    typeof v === 'number' ? `${v > 0 ? '+' : ''}${v.toFixed(2)}%` : ''
 
   return (
     <div className="mt-10">
@@ -859,14 +866,20 @@ function TrendTemplateCard({ data }) {
       </h3>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mb-4">
-        {rows.map(([label, pass]) => (
-          <div key={label} className="flex items-center justify-between bg-white/5 border border-white/5 rounded-xl px-4 py-2.5">
-            <span className="text-sm text-gray-400 font-mono">{label}</span>
-            <span className={`text-lg font-bold ${pass ? 'text-green-400' : 'text-red-400'}`}>
-              {pass ? '\u2713' : '\u2717'}
-            </span>
-          </div>
-        ))}
+        {rows.map(([label, key]) => {
+          const pass = criteria[key]
+          return (
+            <div key={key} className="flex items-center justify-between bg-white/5 border border-white/5 rounded-xl px-4 py-2.5">
+              <span className="text-sm text-gray-400 font-mono">{label}</span>
+              <span className="flex items-center gap-3">
+                <span className="text-xs font-mono text-gray-500 tabular-nums">{fmtMargin(margins[key])}</span>
+                <span className={`text-lg font-bold ${pass ? 'text-green-400' : 'text-red-400'}`}>
+                  {pass ? '\u2713' : '\u2717'}
+                </span>
+              </span>
+            </div>
+          )
+        })}
       </div>
 
       <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs font-mono text-gray-500 px-1">

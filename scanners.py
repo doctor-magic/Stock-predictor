@@ -754,10 +754,31 @@ def compute_trend_template(df) -> Optional[dict]:
         criteria = {k: bool(v) for k, v in criteria.items()}
         score = sum(criteria.values())
 
+        # Margin to the threshold, in percent, one per criterion. The sign
+        # always agrees with the pass/fail above: positive means it clears the
+        # bar by that much, negative means it misses by that much.
+        #
+        # A bare red X hides the thing that matters. -0.05% is a stock resting
+        # on its MA50; -8.5% is a broken trend. Same X, different situation.
+        pct = lambda a, b: (a / b - 1) * 100
+        margins = {
+            "c1_price_above_ma150_200": min(pct(curr_close, curr_ma150), pct(curr_close, curr_ma200)),
+            "c2_ma150_above_ma200": pct(curr_ma150, curr_ma200),
+            "c3_ma200_uptrend": pct(curr_ma200, ma200_prior),
+            "c4_ma50_above_ma150_200": min(pct(curr_ma50, curr_ma150), pct(curr_ma50, curr_ma200)),
+            "c5_price_above_ma50": pct(curr_close, curr_ma50),
+            # These two are measured against their own thresholds (30% / 25%),
+            # so the margin is in percentage points, not percent.
+            "c6_30pct_above_low52": pct(curr_close, low_52w) - 30.0,
+            "c7_within_25pct_high52": pct(curr_close, high_52w) + 25.0,
+        }
+        margins = {k: round(v, 2) for k, v in margins.items()}
+
         return {
             "score": score,
             "is_full_pass": score == 7,
             "criteria": criteria,
+            "margins": margins,
             "values": {
                 "price": round(curr_close, 2),
                 "ma50": round(curr_ma50, 2),
