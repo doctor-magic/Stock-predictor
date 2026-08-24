@@ -192,6 +192,8 @@ function PredictView({ initialTicker = '', onUsed }) {
                </ResponsiveContainer>
             </div>
           </div>
+
+          <TrendTemplateCard data={result.trend_template} />
         </div>
       )}
 
@@ -820,6 +822,59 @@ function SignalBadge({ signal }) {
     <div className={`flex items-center gap-3 px-8 py-4 rounded-full border ${color}`}>
       <Icon className="w-8 h-8" />
       <span className="text-3xl font-bold font-mono tracking-widest">{signal}</span>
+    </div>
+  )
+}
+
+// Minervini Trend Template — display only, rendered under Feature Importance
+// in the Predict tab. Absent (null) whenever the symbol has under 260
+// sessions of history, in which case the card does not render at all rather
+// than showing a misleading 0/7.
+function TrendTemplateCard({ data }) {
+  if (!data) return null
+
+  const { score, criteria, values } = data
+  const tone = score === 7 ? 'text-green-400 border-green-500/30 bg-green-500/10'
+             : score >= 4 ? 'text-yellow-400 border-yellow-500/30 bg-yellow-500/10'
+             : 'text-red-400 border-red-500/30 bg-red-500/10'
+
+  const rows = [
+    ['Price > MA150 & MA200',    criteria.c1_price_above_ma150_200],
+    ['MA150 > MA200',            criteria.c2_ma150_above_ma200],
+    ['MA200 trending up (1mo)',  criteria.c3_ma200_uptrend],
+    ['MA50 > MA150 & MA200',     criteria.c4_ma50_above_ma150_200],
+    ['Price > MA50',             criteria.c5_price_above_ma50],
+    ['30%+ above 52w low',       criteria.c6_30pct_above_low52],
+    ['Within 25% of 52w high',   criteria.c7_within_25pct_high52],
+  ]
+
+  return (
+    <div className="mt-10">
+      <h3 className="text-lg font-mono text-gray-300 mb-6 flex items-center gap-2">
+        <Activity className="w-5 h-5 text-neon-purple" /> Trend Template
+        <span className="text-xs text-gray-500 font-mono">(Minervini)</span>
+        <span className={`ml-auto px-4 py-1 rounded-full border font-bold font-mono ${tone}`}>
+          {score}/7{score === 7 ? ' \u2605' : ''}
+        </span>
+      </h3>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mb-4">
+        {rows.map(([label, pass]) => (
+          <div key={label} className="flex items-center justify-between bg-white/5 border border-white/5 rounded-xl px-4 py-2.5">
+            <span className="text-sm text-gray-400 font-mono">{label}</span>
+            <span className={`text-lg font-bold ${pass ? 'text-green-400' : 'text-red-400'}`}>
+              {pass ? '\u2713' : '\u2717'}
+            </span>
+          </div>
+        ))}
+      </div>
+
+      <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs font-mono text-gray-500 px-1">
+        <span>MA50 {values.ma50}</span>
+        <span>MA150 {values.ma150}</span>
+        <span>MA200 {values.ma200}</span>
+        <span>52w {values.low52}–{values.high52}</span>
+      </div>
     </div>
   )
 }

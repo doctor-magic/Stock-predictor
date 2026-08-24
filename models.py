@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 class PredictionResult(BaseModel):
     symbol: str
@@ -13,6 +13,9 @@ class PredictionResult(BaseModel):
     options_context: Optional[Dict[str, Optional[float]]] = None
     importance_descriptions: Optional[Dict[str, str]] = None
     options_filtered: bool = False
+    # Minervini Trend Template (Aug 2026) — display only, no gate, no
+    # setup_log column. None when the symbol lacks 260 sessions of history.
+    trend_template: Optional[Dict[str, Any]] = None
 
 class ScanRequest(BaseModel):
     # Clamps restored Jul 5 2026 (May-2026 hardening, lost in the Jun 7 refactor)

@@ -1002,3 +1002,108 @@ class TestComputeDayRvol(unittest.TestCase):
         three_m, _ = scanners.compute_day_rvol(3_420_518, 1_534_072, 1_191_630)
         ten_d, _ = scanners.compute_day_rvol(3_420_518, None, 1_191_630)
         self.assertEqual((three_m, ten_d), (2.2, 2.9))
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Minervini Trend Template (Aug 2026)
+#
+# pandas is imported here only because this one function takes a DataFrame.
+# It is an existing hard dependency of the project (core_logic), not a new
+# one — the "no new dependencies" rule in the module docstring was about
+# pytest, and still holds.
+# ─────────────────────────────────────────────────────────────────────────
+
+import pandas as pd
+
+
+def _frame(closes):
+    """Build a daily OHLC frame from a close series, oldest first."""
+    return pd.DataFrame({
+        "Open": closes,
+        "High": [c * 1.01 for c in closes],
+        "Low": [c * 0.99 for c in closes],
+        "Close": closes,
+        "Volume": [1_000_000] * len(closes),
+    })
+
+
+def _rising(n=300, start=100.0, step=0.5):
+    return [start + i * step for i in range(n)]
+
+
+class TestTrendTemplate(unittest.TestCase):
+
+    # ── Insufficient data returns None, never a zero score ────────────────
+    # This is the whole point of the None contract: a stock we cannot judge
+    # must not render as one that failed all 7 criteria.
+
+    def test_none_frame_returns_none(self):
+        self.assertIsNone(scanners.compute_trend_template(None))
+
+    def test_below_260_sessions_returns_none(self):
+        self.assertIsNone(scanners.compute_trend_template(_frame(_rising(259))))
+
+    def test_exactly_260_sessions_is_computed(self):
+        result = scanners.compute_trend_template(_frame(_rising(260)))
+        self.assertIsNotNone(result)
+        self.assertEqual(result["score"], 7)
+
+    def test_nan_in_recent_close_returns_none(self):
+        closes = _rising(300)
+        df = _frame(closes)
+        df.loc[df.index[-1], "Close"] = float("nan")
+        self.assertIsNone(scanners.compute_trend_template(df))
+
+    # ── The two poles ─────────────────────────────────────────────────────
+
+    def test_steady_uptrend_scores_seven(self):
+        result = scanners.compute_trend_template(_frame(_rising(300)))
+        self.assertEqual(result["score"], 7)
+        self.assertTrue(result["is_full_pass"])
+        self.assertTrue(all(result["criteria"].values()))
+
+    def test_steady_downtrend_scores_zero(self):
+        closes = [250.0 - i * 0.5 for i in range(300)]
+        result = scanners.compute_trend_template(_frame(closes))
+        self.assertEqual(result["score"], 0)
+        self.assertFalse(result["is_full_pass"])
+
+    # ── Individual criteria fail in isolation ─────────────────────────────
+
+    def test_gap_below_ma50_fails_c5_only(self):
+        # Uptrend intact, but the last bar drops under MA50 while staying
+        # above MA150/MA200 — exactly the "first crack" case.
+        closes = _rising(300)
+        closes[-1] = closes[-1] * 0.90
+        result = scanners.compute_trend_template(_frame(closes))
+        self.assertFalse(result["criteria"]["c5_price_above_ma50"])
+        self.assertTrue(result["criteria"]["c1_price_above_ma150_200"])
+        self.assertTrue(result["criteria"]["c2_ma150_above_ma200"])
+
+    def test_far_below_52w_high_fails_c7(self):
+        # Rally, then a 40% slide from the high — still above the long MAs
+        # for a while, but no longer a Trend Template candidate.
+        closes = _rising(260) + [230.0 - i * 1.5 for i in range(40)]
+        result = scanners.compute_trend_template(_frame(closes))
+        self.assertFalse(result["criteria"]["c7_within_25pct_high52"])
+
+    def test_c6_boundary_is_inclusive(self):
+        # Exactly 30% above the 52w low must PASS (>=, not >).
+        closes = _rising(300)
+        df = _frame(closes)
+        low52 = float(df["Low"].iloc[-260:].min())
+        df.loc[df.index[-1], "Close"] = low52 * 1.30
+        result = scanners.compute_trend_template(df)
+        self.assertTrue(result["criteria"]["c6_30pct_above_low52"])
+
+    # ── Payload shape the frontend depends on ─────────────────────────────
+
+    def test_payload_shape(self):
+        result = scanners.compute_trend_template(_frame(_rising(300)))
+        self.assertEqual(set(result), {"score", "is_full_pass", "criteria", "values"})
+        self.assertEqual(len(result["criteria"]), 7)
+        self.assertTrue(all(isinstance(v, bool) for v in result["criteria"].values()))
+        self.assertEqual(
+            set(result["values"]),
+            {"price", "ma50", "ma150", "ma200", "high52", "low52"},
+        )

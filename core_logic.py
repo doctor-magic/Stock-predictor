@@ -11,6 +11,9 @@ import requests
 from io import StringIO
 import warnings
 
+# scanners imports only stdlib, so this direction never cycles back here.
+from scanners import compute_trend_template
+
 warnings.filterwarnings("ignore", category=FutureWarning)
 cache = TTLCache(maxsize=100, ttl=900)
 _sp500_cache  = TTLCache(maxsize=1, ttl=900)
@@ -603,6 +606,10 @@ def get_prediction(ticker: str, light_mode=False):
         "rows_trained": len(df.dropna(subset=FEATURES + ["label"])),
         "importance": {k: float(v) for k, v in list(importances.items())[:5]},
         "options_context": options_ctx,
+        # Display only — computed off the raw OHLC frame already in memory, so
+        # it costs no extra fetch. Never read by any gate. None for symbols
+        # with under 260 sessions.
+        "trend_template": compute_trend_template(df_raw),
     }
 
 def check_feature_health(symbol: str = "NVDA") -> dict:

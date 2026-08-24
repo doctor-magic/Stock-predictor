@@ -9,6 +9,7 @@ import time
 import sqlite3
 import statistics
 from datetime import datetime, date
+from typing import Optional
 from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
@@ -684,3 +685,88 @@ def screener_payload_suspect(prev_n: "int | None", new_n: int, ratio: float = 0.
     if not prev_n:
         return False
     return new_n < prev_n * ratio
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Minervini Trend Template (Aug 2026)
+#
+# Pure function: price history in, 7 booleans out. DISPLAY ONLY, per the
+# Sector Heatmap precedent — no gate, no setup_log column, nothing that can
+# reach a BUY decision or the frozen R1 baseline.
+#
+# Deliberately NOT wired into the market scanners: they download 6mo of
+# history (api.py volume-leaders path) and this needs 260 sessions, so a
+# scanner column would mean a separate 1y download per symbol — the same
+# path that already peaked at 2.84GB of RAM on the e2-small.
+# ─────────────────────────────────────────────────────────────────────────
+
+TT_MIN_SESSIONS = 260  # ~52 weeks of trading days
+TT_UPTREND_LOOKBACK = 21  # ~1 month, for the MA200 slope check
+
+
+def compute_trend_template(df) -> Optional[dict]:
+    """Score a daily OHLC frame 0-7 against Mark Minervini's Trend Template.
+
+    Expects the capitalized yfinance columns that core_logic.fetch_stock_data
+    returns (Open/High/Low/Close/Volume), daily bars, oldest first.
+
+    Returns None — never a zero score — when history is short or the data is
+    unusable, so "unknown" can never be displayed as "failed all 7".
+    """
+    if df is None or len(df) < TT_MIN_SESSIONS:
+        return None
+
+    try:
+        close = df["Close"]
+        high = df["High"]
+        low = df["Low"]
+
+        ma50 = close.rolling(50).mean()
+        ma150 = close.rolling(150).mean()
+        ma200 = close.rolling(200).mean()
+
+        high_52w = float(high.iloc[-TT_MIN_SESSIONS:].max())
+        low_52w = float(low.iloc[-TT_MIN_SESSIONS:].min())
+
+        curr_close = float(close.iloc[-1])
+        curr_ma50 = float(ma50.iloc[-1])
+        curr_ma150 = float(ma150.iloc[-1])
+        curr_ma200 = float(ma200.iloc[-1])
+        ma200_prior = float(ma200.iloc[-(TT_UPTREND_LOOKBACK + 1)])
+
+        # A NaN anywhere makes every comparison below False, which would render
+        # as a confident 0/7. Bail to None instead.
+        vals = (curr_close, curr_ma50, curr_ma150, curr_ma200,
+                ma200_prior, high_52w, low_52w)
+        if any(v != v for v in vals):
+            logger.warning("trend_template: NaN in computed values — skipping")
+            return None
+
+        criteria = {
+            "c1_price_above_ma150_200": curr_close > curr_ma150 and curr_close > curr_ma200,
+            "c2_ma150_above_ma200": curr_ma150 > curr_ma200,
+            "c3_ma200_uptrend": curr_ma200 > ma200_prior,
+            "c4_ma50_above_ma150_200": curr_ma50 > curr_ma150 and curr_ma50 > curr_ma200,
+            "c5_price_above_ma50": curr_close > curr_ma50,
+            "c6_30pct_above_low52": curr_close >= low_52w * 1.30,
+            "c7_within_25pct_high52": curr_close >= high_52w * 0.75,
+        }
+        criteria = {k: bool(v) for k, v in criteria.items()}
+        score = sum(criteria.values())
+
+        return {
+            "score": score,
+            "is_full_pass": score == 7,
+            "criteria": criteria,
+            "values": {
+                "price": round(curr_close, 2),
+                "ma50": round(curr_ma50, 2),
+                "ma150": round(curr_ma150, 2),
+                "ma200": round(curr_ma200, 2),
+                "high52": round(high_52w, 2),
+                "low52": round(low_52w, 2),
+            },
+        }
+    except Exception as e:
+        logger.warning("trend_template computation failed: %s", e)
+        return None
