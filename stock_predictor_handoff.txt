@@ -23,22 +23,52 @@ SCP (copy file to server):
   scp -i ~/.ssh/gcp_stock_rsa <local_path> elimaoz99@35.239.74.178:<remote_path>
 
 - GCP VM, Ubuntu, IP: 35.239.74.178
+  MACHINE TYPE: e2-small (2 vCPU shared, 2 GB RAM) since Aug 23 2026 — downsized from
+  e2-medium. It has a 4 GB /swapfile (in /etc/fstab) and MUST KEEP IT: pre_scan.py peaked
+  at 2.84 GB on Aug 19, which is over the 2 GB of RAM. Stress-tested to 2,900 MB on
+  Aug 23 — survived, 0 OOM, swap took only 220 MB. Never run e2-small without the swapfile.
+  EXTERNAL IP IS STATIC (reserved as "stock-app-ip", Aug 23 2026). It used to be ephemeral,
+  which meant stopping the VM would have changed it — and 7 files hardcode 35.239.74.178,
+  including pull_backup.py (both copies) and deploy.sh. Always reserve before stopping.
+  TAILSCALE: installed Aug 23 2026, tailnet IP 100.84.182.68, tailscaled enabled at boot,
+  ~39 MB RSS. Gives phone/laptop access to the app without going through the public
+  internet: http://100.84.182.68:8000
 - SSH user: elimaoz99 (NOT elima_oz, NOT root)
 - SSH key: ~/.ssh/gcp_stock_rsa
-- Sudo: elimaoz99 has passwordless sudo for: "systemctl restart stock-app.service",
+- Sudo: elimaoz99 has passwordless sudo ONLY for: "systemctl restart stock-app.service",
   /bin/chown, /usr/bin/chown, /usr/bin/chattr (verified via `sudo -n -l` Jun 21 2026; the old
   "restart only" note here was wrong — chown was used Jul 10 to fix the root-owned FK db).
-  For anything else (editing system files, changing service unit) ask the user to do it manually.
+  GENERAL SUDO — how to get it when you need it (Aug 23 2026): elimaoz99 is in NEITHER the
+  `sudo` nor the `google-sudoers` group. Use the GCP Console "SSH in browser" button
+  (Compute Engine -> VM instances -> SSH); that session is auto-granted passwordless sudo.
+  Do NOT try `usermod -aG google-sudoers elimaoz99` — it appears to work and then the GCE
+  guest agent silently reverts it within minutes (observed Aug 23). A file in
+  /etc/sudoers.d/ would survive, but that undoes the Aug 5 hardening — ask the user first.
 
 
 CRITICAL: TWO APP DIRECTORIES EXIST — ONLY ONE IS ACTIVE
 ----------------------------------------------------------
   /home/elimaoz99/stock_predictor/   <-- ACTIVE, edit this
-  /home/elimaoz99/stock_app/         <-- INACTIVE, do NOT touch
+  /home/elimaoz99/stock_app/         <-- do NOT edit, but do NOT delete either
 
 The systemd service stock-app.service runs stock_predictor, not stock_app.
 This has caused bugs before when the wrong file was edited.
 Always confirm the active path before editing.
+
+BUT stock_app IS LOAD-BEARING (established Aug 23 2026). It is not dead weight and
+deleting it breaks production:
+  - generate_report.py line 10 loads /home/elimaoz99/stock_app/.env  <-- the ACTIVE
+    15:00 Mon-Fri cron dies without it.
+  - 138 archived stock_recommendations_*.txt reports live there; the 15:00 cron copies
+    a fresh one in daily.
+  - Its 484 MB venv is what runs the two fetch_24h.py crons (12:00 and 18:00), which
+    still work — the telegram session file is touched on every run.
+The live API does NOT serve reports from there: _report_dir() returns dirname(api.py),
+i.e. stock_predictor. So the stock_recommendations_22_05_2026_*.txt files with the
+frozen May date are confusing duplicates, not a UI bug.
+DISABLED Aug 23 2026: the `tg_scraper.py` cron (05 12,18) — it had been failing on every
+single run with ModuleNotFoundError: matplotlib. Crontab backup:
+/home/elimaoz99/crontab.backup-20260823-072946.txt
 
 
 SYSTEMD SERVICE
@@ -54,6 +84,17 @@ Check status:
 
 The service runs: python3 -m uvicorn api:app --host 0.0.0.0 --port 8000
 Working directory: /home/elimaoz99/stock_predictor/
+
+NEVER STOP THIS SERVICE TO "TURN OFF THE WEBSITE" (established Aug 23 2026).
+warm_volume_cache.sh COLLECTS DATA THROUGH THE API — it runs
+  curl --user "$CREDS" "http://localhost:8000/api/volume-leaders?force=true"
+every 25 min, and that call is how gainers/reversion rows reach setup_log. Stopping
+uvicorn silently reopens the collection gap that was fixed Jul 26 2026 and starves R1's
+B2_RVOL_NO_ML arm. If the goal is "take the site off the internet", close the ports at
+the firewall or use Tailscale — do not stop the service.
+That warm cron has a market-hours gate (added Jul 5 2026): it only really runs
+09:00-16:59 ET on NYSE trading days = 16:00-24:00 Israel time, weekends/holidays skipped.
+Server TZ is Asia/Jerusalem, so ALL crontab times are Israel time, not UTC.
 
 
 BACKEND (api.py)
@@ -2754,3 +2795,90 @@ LESSON: same shape as the RVOL misread four days earlier — a number was correc
   reference disagreed with the app and the user was right about the reading even though
   the data was right too. When a panel shows a quantity that has an as-of date, the as-of
   date belongs next to the quantity, never in a header that means something else.
+
+
+================================================================================
+AUG 23 2026 — COST REDUCTION + LOCAL-FIRST MOVE (₪88.70 -> ₪44/mo)
+================================================================================
+
+WHY: user saw the GCP bill "getting high" and a scary "+47%" in the console.
+
+THE +47% WAS AN ARTIFACT — the bill was never rising. The console compared an August
+full-month forecast against a July that only had 22 billed days (Jul 1-9 cost ~₪0, a
+credit ran out around Jul 10). Real run rate: ₪2.80/day Aug 1-22 vs ₪2.74/day Jul 10-31
+= +2%, i.e. flat. Always compare like-for-like periods before reacting to that banner.
+
+COMPOSITION (Compute Engine was 100% of the bill; the 2nd project charges ₪0):
+  vCPU+RAM ~79% | 30 GB disk ~10% | external IPv4 ~10% | egress ₪0
+  Egress measured directly: 2.80 GB in 5d18h = ~14.6 GB/mo, far under the 200 GB free tier.
+  NOTE: E2 gets NO sustained-use discount (E2 is absent from the SUD-eligible list:
+  N1/N2/N2D/C2/M1/M2). An early analysis wrongly credited the "savings" line to SUD.
+
+WHAT WAS DONE (in this order — the order matters):
+  1. Reserved the external IP as static BEFORE stopping anything (7 files hardcode it).
+  2. Added a 4 GB /swapfile + fstab entry. THIS MUST COME BEFORE THE DOWNSIZE.
+  3. Capped the journal: SystemMaxUse=200M, freed 1.7 GB (it had grown to 1.9 GB).
+  4. Stopped the VM -> machine type e2-small -> started. Verified: IP unchanged, swap
+     auto-mounted, service active, all 11 crons survived, authenticated API 200s.
+  5. Stress-tested 2,900 MB: survived, 0 OOM, swap used only 220 MB.
+  6. Installed Tailscale; phone joined and reached the app over the tailnet.
+
+WHY NOT e2-small EARLIER / WHY THE SWAP IS NON-NEGOTIABLE: average utilisation looks like
+the box is wildly overprovisioned (2.4% CPU, 18% RAM, load 0.01) — and that is a trap.
+`sar` history showed 2026-08-19 05:30 hitting 2,904,716 kB (2.84 GB, 72.5%) during the
+05:00 pre_scan.py cron. Normal pre_scan peak is ~0.9 GB; that day was 3x. CPU also touches
+100% on every retained day. Without swap, e2-small would have been OOM-killed mid-scan.
+
+WHAT WAS DELIBERATELY *NOT* DONE:
+  - No 1-year CUD. It was recommended, then withdrawn: a 12-month lock is wrong when the
+    horizon in question is ~7 weeks. (For the record CUDs DO cover e2-medium, and under a
+    commitment contract e2-medium counts as 1.0 core, not 2 vCPUs — size it accordingly.)
+  - No GCE instance schedules / Cloud Run / GitHub Actions. GH Actions in particular is
+    DISQUALIFIED for live_tracker: scheduled workflows are documented as not guaranteed and
+    routinely run 15-60 min late, and R1's endpoint is measured from entry_price at signal
+    time, so jitter corrupts the very quantity under test.
+  - Ports 80/443 were NOT closed. See the domain note below.
+
+R1 TIMELINE WAS RECOMPUTED AND IS MUCH SOONER THAN "DECEMBER":
+  Counting by RESOLVED rows is a lagging measure. By LOGGED rows: 45 of 60 already logged
+  (8 pending resolution), 23 of the 25 required distinct days already banked. Recent rate
+  ~5/week. That puts the gates at roughly MID-OCTOBER 2026, not December.
+  All of this was counted BLIND — verdict/confidence/date columns only, no outcome column
+  was ever read, and r1_sitting.py --unblind was NOT run.
+  Stage B (lev_spec) SEPARATELY HIT ITS min_n: the BREAKOUT CONFIRMED pool reached
+  exactly 50/50 on 2026-08-21. That analysis is unblockable now and costs nothing.
+
+THE DOMAIN — stock-predictor.online:
+  Registrar NameCheap. Registered 2026-04-17, EXPIRES 2027-04-17. Paid annually, already
+  paid, NOT a monthly cost, and NOT billed through GCP. nginx (active) terminates TLS via
+  Certbot/Let's Encrypt and proxies to 127.0.0.1:8000.
+  IMPORTANT CORRECTION: port 8000 is ALREADY firewalled off from the internet (connections
+  time out). The site is public over 80/443 THROUGH NGINX. Anyone planning to "take the
+  site off the internet" must close 80/443 — closing 8000 would accomplish nothing.
+  Left open on purpose: no cost pressure until Apr 2027, and closing 443 is the easiest way
+  to lock yourself out. Revisit after R1 closes.
+
+LOCAL-FIRST WORKFLOW (new, working):
+  ~/Desktop/Stock-predictor/run_local.sh          syncs, then serves on localhost:8010
+  ~/Desktop/Stock-predictor/pull_caches_local.sh  ONE-WAY server->Mac sync of 7 DBs (~20 MB)
+  Verified 200 on /, /api/health, /api/gainers, /api/reversion-leaders, /api/positions,
+  /api/falling-knife-stats, /api/macro-score, /api/volume-leaders — against synced data,
+  with live yfinance price lookups working.
+  GOTCHAS FOUND WHILE SETTING THIS UP:
+    - requirements.txt IS INCOMPLETE. Also needed: cachetools, python-dotenv, requests,
+      httpx, scipy, anthropic, telethon. Without them `import api` raises ModuleNotFoundError.
+      Worth fixing in git.
+    - api_data.env did not exist on the Mac; pulled from the server, chmod 600. api.py
+      self-loads it for FRED_API_KEY and BASIC_AUTH_USERS.
+    - THE SERVER HAS NO sqlite3 CLI. Use venv/bin/python3 for any DB work there;
+      pull_caches_local.sh uses python3 sqlite3.backup() for consistent online copies.
+    - pull_caches_local.sh has NO push path by design — tracker.db pushed Mac->server
+      destroyed server data on Jun 14 2026.
+  DO NOT widen pull_backup.py to carry these caches. Its DATABASES list is deliberately
+  only the 4 unrebuildable research DBs (~350 KB/day, 365-day rotation); adding 20 MB/day
+  of rebuildable cache breaks that design and the wake-race hardening around it.
+
+STILL OPEN:
+  - Verify the first e2-small runs of the 03:00 / 05:00 / 20:05 crons (not yet observed).
+  - Tailscale on the Mac (phone done; Mac optional — run_local.sh needs no tailnet).
+  - Namecheap: check whether auto-renew is on, well before Apr 2027.
