@@ -213,7 +213,9 @@ def trend_template_board(min_score: int = 0):
     """
     if not 0 <= min_score <= 7:
         raise HTTPException(status_code=400, detail="min_score must be between 0 and 7.")
-    rows_by_market = {m: db.get_latest_scan(m) for m in ("sp500", "nasdaq100")}
+    # TASE included: .TA symbols carry a full 52-week history like any other,
+    # and leaving them out would make "all high scores" quietly mean "US only".
+    rows_by_market = {m: db.get_latest_scan(m) for m in ("sp500", "nasdaq100", "tase")}
     board = scanners.rank_trend_template(rows_by_market, min_score=min_score)
     return {
         "results": board,
