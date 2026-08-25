@@ -218,6 +218,27 @@ try:
 except Exception as e:
     add(False, "mac-backup", f"check error: {e}")
 
+# --- 9. macro feature source (t10y2y) ----------------------------------------
+# The model's t10y2y feature has no live fallback: when FRED is unavailable it
+# is served from a disk cache instead. That is correct but silent, so it gets a
+# check — the previous arrangement substituted the 10Y-3M curve under the same
+# name and ran that way for 12 straight days (Aug 10-21 2026) unnoticed.
+try:
+    with open(os.path.join(BASE, "macro_timeseries_cache.json")) as _fh:
+        _payload = json.load(_fh)
+    _saved = datetime.fromisoformat(_payload["saved_at"])
+    _age_h = (datetime.now(ZoneInfo("UTC")) - _saved).total_seconds() / 3600
+    if _age_h <= 48:
+        add(True, "macro", f"t10y2y cache {_age_h:.0f}h old")
+    else:
+        add(False, "macro", f"t10y2y cache {_age_h:.0f}h old — FRED may be down since "
+                            f"{_saved.date()}; predictions run on a stale curve")
+except FileNotFoundError:
+    add(False, "macro", "t10y2y disk cache missing — FRED has never succeeded")
+except Exception as _e:
+    add(False, "macro", f"t10y2y cache unreadable: {_e}")
+
+
 # --- report ------------------------------------------------------------------
 all_ok = all(ok for ok, _, _ in checks)
 today = datetime.now(ZoneInfo("Asia/Jerusalem")).strftime("%d/%m %H:%M")

@@ -228,6 +228,47 @@ def fetch_options_features(ticker: str, spot: float) -> dict:
     _options_cache[ticker] = result
     return result
 
+# Disk cache for the model's macro timeseries. The in-process TTLCache dies with
+# the process; this survives restarts and FRED outages, and it is the reason the
+# t10y2y yfinance fallback could be deleted outright. Yields move a few basis
+# points a day, so yesterday's real curve is a far better input than a synthetic
+# one built from the wrong maturity.
+_MACRO_DISK_CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "macro_timeseries_cache.json")
+MACRO_CACHE_MAX_AGE_H = 48  # watchdog alerts past this; see watchdog.py
+
+
+def _save_macro_disk_cache(macro: pd.DataFrame) -> None:
+    try:
+        payload = {
+            "saved_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "data": macro.tail(1500).to_json(orient="split", date_format="iso"),
+        }
+        tmp = _MACRO_DISK_CACHE + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump(payload, fh)
+        os.replace(tmp, _MACRO_DISK_CACHE)  # atomic — never a half-written cache
+    except Exception as e:
+        print(f"Macro disk cache write error: {e}")
+
+
+def load_macro_disk_cache():
+    """Return (DataFrame, age_hours) from the disk cache, or (None, None)."""
+    try:
+        with open(_MACRO_DISK_CACHE) as fh:
+            payload = json.load(fh)
+        df = pd.read_json(StringIO(payload["data"]), orient="split")
+        df.index = pd.to_datetime(df.index).tz_localize(None)
+        saved = datetime.datetime.fromisoformat(payload["saved_at"])
+        age_h = (datetime.datetime.now(datetime.timezone.utc) - saved).total_seconds() / 3600
+        return df, age_h
+    except FileNotFoundError:
+        return None, None
+    except Exception as e:
+        print(f"Macro disk cache read error: {e}")
+        return None, None
+
+
 def fetch_macro_timeseries() -> pd.DataFrame:
     """Return a tz-naive daily DataFrame with columns: vix, dgs10, t10y2y, spy_close.
     Cached for 1 hour — shared across all per-stock model fits in a scan."""
@@ -334,28 +375,28 @@ def fetch_macro_timeseries() -> pd.DataFrame:
                 except Exception as e2:
                     print(f"T10Y2Y DGS2 fallback error: {e2}")
 
-    # Final yfinance fallback — fires whenever FRED is completely down
-    if not _fred_dgs10_ok or not _fred_t10y2y_ok:
+    # yfinance fallback for DGS10 only. ^TNX IS the 10-year yield, so this is
+    # the same series from another vendor — a legitimate substitution.
+    #
+    # There is deliberately NO yfinance fallback for t10y2y. It used to be
+    # `^TNX - ^IRX`, but ^IRX is the 13-WEEK bill: that computes the 10Y-3M
+    # spread and stored it under the name of the 10Y-2Y spread. On 2026-08-24
+    # the real T10Y2Y was 0.46 while that expression gave 1.00 — more than
+    # double, on a top-5 feature that also sits in the interaction groups. It
+    # fired 43 times in production between Aug 10-21 2026, every day, silently.
+    # A different curve wearing the right name is worse than no value at all;
+    # the disk cache below serves the last real reading instead.
+    if not _fred_dgs10_ok:
         try:
             tnx = yf.download("^TNX", period=PERIOD, progress=False, auto_adjust=False)
-            irx = yf.download("^IRX", period=PERIOD, progress=False, auto_adjust=False)
             if isinstance(tnx.columns, pd.MultiIndex):
                 tnx.columns = tnx.columns.get_level_values(0)
-            if isinstance(irx.columns, pd.MultiIndex):
-                irx.columns = irx.columns.get_level_values(0)
-            tnx_s = tnx["Close"].rename("tnx")
-            irx_s = irx["Close"].rename("irx")
-            spread = pd.DataFrame({"tnx": tnx_s, "irx": irx_s}).dropna()
-            spread.index = pd.to_datetime(spread.index).tz_localize(None)
-            if not _fred_dgs10_ok:
-                frames.append(spread[["tnx"]].rename(columns={"tnx": "dgs10"}))
-                print("DGS10 fallback: ^TNX OK")
-            if not _fred_t10y2y_ok:
-                spread["t10y2y"] = spread["tnx"] - spread["irx"]
-                frames.append(spread[["t10y2y"]])
-                print("T10Y2Y fallback: ^TNX - ^IRX OK")
+            tnx_s = tnx[["Close"]].rename(columns={"Close": "dgs10"})
+            tnx_s.index = pd.to_datetime(tnx_s.index).tz_localize(None)
+            frames.append(tnx_s)
+            print("DGS10 fallback: ^TNX OK")
         except Exception as e:
-            print(f"yfinance FRED fallback error: {e}")
+            print(f"yfinance DGS10 fallback error: {e}")
 
     if not frames:
         return pd.DataFrame(columns=["vix", "dgs10", "t10y2y", "spy_close"])
@@ -369,6 +410,19 @@ def fetch_macro_timeseries() -> pd.DataFrame:
     for col in ["vix", "dgs10", "t10y2y", "spy_close"] + sect_cols:
         if col not in macro.columns:
             macro[col] = np.nan
+
+    # t10y2y has no live fallback left by design. If FRED did not supply it,
+    # patch it from the last good reading on disk rather than leaving the
+    # model's top-5 feature empty or, worse, filled from the wrong curve.
+    if "t10y2y" not in macro.columns or macro["t10y2y"].dropna().empty:
+        cached, age_h = load_macro_disk_cache()
+        if cached is not None and "t10y2y" in cached.columns:
+            macro["t10y2y"] = cached["t10y2y"].reindex(macro.index).ffill()
+            print(f"T10Y2Y from disk cache ({age_h:.1f}h old) — FRED unavailable")
+        else:
+            print("T10Y2Y unavailable: FRED down and no disk cache")
+    elif _fred_t10y2y_ok:
+        _save_macro_disk_cache(macro)  # only persist a frame carrying the real curve
 
     _macro_cache["macro"] = macro
     return macro

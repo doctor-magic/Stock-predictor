@@ -509,8 +509,25 @@ Cause:   FRED data availability — t10y2y is a top-5 feature. With FRED availab
          With FRED down (fallback ^TNX-^IRX): different t10y2y → signal can flip entirely.
          Also: core_logic.py caches fetch_stock_data 15min — a fresh Python process gets new data
          while the running API serves the cached result.
-Fix:     Run debug_fred.py on server to check FRED status.
-         API result is authoritative (uses cached FRED from last successful fetch).
+Fix:     FIXED 2026-08-25. The yfinance t10y2y fallback was `^TNX - ^IRX`, but ^IRX is
+         the 13-WEEK bill — it computed the 10Y-3M spread and stored it as t10y2y.
+         Measured 2026-08-24: real T10Y2Y 0.46 vs fallback 1.00, i.e. more than double
+         on a top-5 feature that also sits in INTERACTION_GROUPS.
+         That fallback is DELETED. t10y2y now comes from FRED, then DGS10-DGS2, then a
+         disk cache of the last good FRED reading (macro_timeseries_cache.json, written
+         only from a frame carrying the real curve). ^TNX is still a legitimate DGS10
+         fallback — it is the same instrument from another vendor.
+         Run debug_fred.py on server to check FRED status.
+
+         RESEARCH NOTE FOR THE R1 UNBLIND (Oct 2026): the broken fallback fired 43 times
+         in production between Aug 10 and Aug 21 2026 — every day in that window, mostly
+         16:00-17:00 server time (the warm-cron window). Predictions served then, and any
+         setup_log rows written from them, carry a t10y2y built from the wrong maturity.
+         Nothing fired from Aug 22 onward. This is a feature-value contamination, not a
+         spec deviation; it is recorded here so the unblind can account for it rather
+         than discover it.
+         watchdog.py check 9 now alerts if the macro disk cache goes over 48h stale, so
+         a silent 12-day run cannot repeat.
 
 Symptom: Frontend JS/CSS 404 after deploy
 Cause:   Only index.html was copied to frontend/dist/ — Vite hashes asset filenames each build.

@@ -12,6 +12,7 @@ api_data.env
 falling_knife_results.csv
 wedge_cache.json
 fred_cache.json
+macro_timeseries_cache.json
 bank_rates_cache.json
 macro_state.json
 volume_leaders_cache.json
