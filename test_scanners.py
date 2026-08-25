@@ -1163,3 +1163,50 @@ class TestTrendTemplate(unittest.TestCase):
     def test_every_criterion_has_a_margin(self):
         result = scanners.compute_trend_template(_frame(_rising(300)))
         self.assertEqual(set(result["margins"]), set(result["criteria"]))
+
+
+class TestTrendTemplateBoard(unittest.TestCase):
+    """rank_trend_template — merging cached scan rows into one leaderboard."""
+
+    def _rows(self):
+        return {
+            "sp500": [
+                {"symbol": "AAA", "symbol_name": "Alpha", "trend_template_score": 7, "signal": "HOLD"},
+                {"symbol": "BBB", "symbol_name": "Beta", "trend_template_score": None, "signal": "BUY"},
+                {"symbol": "CCC", "symbol_name": "Gamma", "trend_template_score": 3, "signal": "HOLD"},
+                {"symbol": "DDD", "symbol_name": "Delta", "trend_template_score": 7, "signal": "HOLD"},
+            ],
+            "nasdaq100": [
+                {"symbol": "AAA", "symbol_name": "Alpha", "trend_template_score": 7, "signal": "BUY"},
+            ],
+        }
+
+    def test_unknown_score_is_dropped_not_ranked_last(self):
+        # An unknown is not a low score. A board of the best trends is the one
+        # place a "we could not tell" row must never appear at all.
+        out = scanners.rank_trend_template(self._rows())
+        self.assertNotIn("BBB", [r["symbol"] for r in out])
+
+    def test_sorted_by_score_then_symbol(self):
+        out = scanners.rank_trend_template(self._rows())
+        self.assertEqual([r["symbol"] for r in out], ["AAA", "DDD", "CCC"])
+
+    def test_cross_listed_symbol_appears_once_keeping_the_live_signal(self):
+        # AAA is in both indices; the S&P row says HOLD, the Nasdaq row BUY.
+        out = scanners.rank_trend_template(self._rows())
+        aaa = [r for r in out if r["symbol"] == "AAA"]
+        self.assertEqual(len(aaa), 1)
+        self.assertEqual(aaa[0]["signal"], "BUY")
+
+    def test_min_score_filters(self):
+        out = scanners.rank_trend_template(self._rows(), min_score=7)
+        self.assertEqual([r["symbol"] for r in out], ["AAA", "DDD"])
+
+    def test_empty_and_none_inputs_are_safe(self):
+        self.assertEqual(scanners.rank_trend_template({}), [])
+        self.assertEqual(scanners.rank_trend_template(None), [])
+        self.assertEqual(scanners.rank_trend_template({"sp500": None}), [])
+
+    def test_row_without_symbol_is_skipped(self):
+        out = scanners.rank_trend_template({"sp500": [{"trend_template_score": 7}]})
+        self.assertEqual(out, [])

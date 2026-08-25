@@ -706,6 +706,11 @@ def _train_single(name, sym, raw_data, multi):
         min_prec = MIN_PRECISION_SELL if final_signal == "SELL" else MIN_PRECISION_BUY
         if precision < min_prec and final_signal != "HOLD":
             return None
+        # `raw` is already the 5y OHLC frame for this symbol, downloaded once
+        # by run_market_scan's batch phase — so the whole S&P 500 gets a Trend
+        # Template score for the cost of one rolling mean each, no extra fetch
+        # and no extra memory. None (not 0) when history is short.
+        tt = compute_trend_template(raw)
         return {
             "symbol": sym,
             "symbol_name": name,
@@ -713,7 +718,8 @@ def _train_single(name, sym, raw_data, multi):
             "confidence": float(confidence),
             "proba_buy": proba_buy,
             "precision": float(precision),
-            "last_price": float(raw["Close"].iloc[-1])
+            "last_price": float(raw["Close"].iloc[-1]),
+            "trend_template_score": tt["score"] if tt else None,
         }
     except Exception as e:
         print(f"Failed scanning {sym}: {e}")

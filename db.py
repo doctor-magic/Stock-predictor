@@ -44,13 +44,26 @@ def init_db():
         cursor.execute("ALTER TABLE scan_results ADD COLUMN proba_buy REAL")
     except Exception:
         pass  # column already exists
+    # Minervini Trend Template score, 0-7 (Aug 2026). Display only, no gate.
+    # Computed inside the scan off the 5y frame already in memory, so it costs
+    # no extra fetch. NULL for symbols with under 260 sessions — never 0, which
+    # would read as "failed all seven".
+    try:
+        cursor.execute("ALTER TABLE scan_results ADD COLUMN trend_template_score INTEGER")
+    except Exception:
+        pass  # column already exists
     conn.commit()
     conn.close()
 
 def save_scan_results(market_id: str, results: list):
     """
-    results is a list of dicts: 
-    { 'symbol': ..., 'symbol_name': ..., 'signal': ..., 'confidence': ..., 'precision': ..., 'last_price': ... }
+    results is a list of dicts:
+    { 'symbol': ..., 'symbol_name': ..., 'signal': ..., 'confidence': ...,
+      'precision': ..., 'last_price': ..., 'proba_buy': ...,
+      'trend_template_score': ... }
+
+    Every field here needs its own column — this table is relational, not a
+    JSON blob, so a key added upstream without a column is dropped silently.
     """
     today = date.today().isoformat()
     conn = sqlite3.connect(DB_PATH, timeout=30)
@@ -62,12 +75,12 @@ def save_scan_results(market_id: str, results: list):
     
     for row in results:
         cursor.execute("""
-            INSERT INTO scan_results (market_id, symbol, symbol_name, signal, confidence, precision_score, last_price, scan_date, proba_buy)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO scan_results (market_id, symbol, symbol_name, signal, confidence, precision_score, last_price, scan_date, proba_buy, trend_template_score)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             market_id, row['symbol'], row['symbol_name'], row['signal'],
             row['confidence'], row['precision'], row['last_price'], today,
-            row.get('proba_buy')
+            row.get('proba_buy'), row.get('trend_template_score')
         ))
     conn.commit()
     conn.close()
@@ -94,6 +107,7 @@ def get_latest_scan(market_id: str):
         "signal": r["signal"],
         "confidence": r["confidence"],
         "proba_buy": (r["proba_buy"] if "proba_buy" in r.keys() else None),
+        "trend_template_score": (r["trend_template_score"] if "trend_template_score" in r.keys() else None),
         "precision": r["precision_score"],
         "last_price": r["last_price"]
     } for r in rows]

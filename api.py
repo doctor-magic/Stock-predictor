@@ -202,6 +202,26 @@ async def get_scan_progress(task_id: str):
         GLOBAL_PROGRESS.pop(task_id, None)  # clean up once results are consumed
     return progress
 
+@app.get("/api/trend-template")
+def trend_template_board(min_score: int = 0):
+    """Trend Template leaderboard, served straight from the scan cache.
+
+    Read-only and free: the scores were computed during the daily pre-scan off
+    price frames that were already in memory, so this endpoint starts nothing,
+    downloads nothing and is not rate limited. It shows whatever the last scan
+    left behind — no scan today means an empty board, not a stale one.
+    """
+    if not 0 <= min_score <= 7:
+        raise HTTPException(status_code=400, detail="min_score must be between 0 and 7.")
+    rows_by_market = {m: db.get_latest_scan(m) for m in ("sp500", "nasdaq100")}
+    board = scanners.rank_trend_template(rows_by_market, min_score=min_score)
+    return {
+        "results": board,
+        "scanned": sum(len(r or []) for r in rows_by_market.values()),
+        "full_pass": sum(1 for r in board if r["score"] == 7),
+    }
+
+
 def _cross_sectional_rank(results: list, top_n: int) -> list:
     """Return top_n BUY signals ranked by confidence × precision, plus all non-BUY results."""
     buys = sorted(

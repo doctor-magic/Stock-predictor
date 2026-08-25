@@ -791,3 +791,40 @@ def compute_trend_template(df) -> Optional[dict]:
     except Exception as e:
         logger.warning("trend_template computation failed: %s", e)
         return None
+
+
+def rank_trend_template(rows_by_market: dict, min_score: int = 0) -> list:
+    """Merge cached scan rows from several markets into one Trend Template board.
+
+    Pure: takes {market_id: [row, ...]} as already read from the scan cache and
+    returns a flat, deduplicated list sorted best-first. No I/O, no scanning —
+    the scores were computed during the daily pre-scan.
+
+    Symbols whose score is None are dropped rather than sorted last: an unknown
+    is not a low score, and a board of "best trends" is no place to display one.
+    """
+    best: dict = {}
+    for market_id, rows in (rows_by_market or {}).items():
+        for row in rows or []:
+            score = row.get("trend_template_score")
+            if score is None or score < min_score:
+                continue
+            symbol = row.get("symbol")
+            if not symbol:
+                continue
+            # A symbol in both the S&P 500 and the Nasdaq 100 appears twice with
+            # identical scores; keep one, and prefer the row that carries an ML
+            # signal so the column is not needlessly blank.
+            existing = best.get(symbol)
+            if existing is None or (existing.get("signal") in (None, "HOLD")
+                                    and row.get("signal") not in (None, "HOLD")):
+                best[symbol] = {
+                    "symbol": symbol,
+                    "symbol_name": row.get("symbol_name"),
+                    "score": score,
+                    "signal": row.get("signal"),
+                    "confidence": row.get("confidence"),
+                    "last_price": row.get("last_price"),
+                    "market_id": market_id,
+                }
+    return sorted(best.values(), key=lambda r: (-r["score"], r["symbol"]))

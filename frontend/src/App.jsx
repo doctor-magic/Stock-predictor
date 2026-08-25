@@ -24,6 +24,7 @@ export default function App() {
         <div className="flex flex-wrap justify-center bg-white/5 p-1 rounded-xl glass-border border w-full sm:w-fit mx-auto gap-1">
           <TabButton active={activeTab === 'predict'} onClick={() => setActiveTab('predict')} icon={Search}>חיזוי מניה אחת</TabButton>
           <TabButton active={activeTab === 'scanner'} onClick={() => setActiveTab('scanner')} icon={ListFilter}>סורק מניות</TabButton>
+          <TabButton active={activeTab === 'trend-board'} onClick={() => setActiveTab('trend-board')} icon={Activity}>Trend Template</TabButton>
           <TabButton active={activeTab === 'review'} onClick={() => setActiveTab('review')} icon={BookOpen}>סקירה יומית</TabButton>
           <TabButton active={activeTab === 'macro'} onClick={() => setActiveTab('macro')} icon={BarChart3}>מאקרו FRED</TabButton>
           <TabButton active={activeTab === 'macro-score'} onClick={() => setActiveTab('macro-score')} icon={TrendingUp}>MACRO PREDICTED</TabButton>          <TabButton active={activeTab === 'volume-leaders'} onClick={() => setActiveTab('volume-leaders')} icon={Zap}>Volume Leaders</TabButton>
@@ -38,6 +39,7 @@ export default function App() {
       <main className="w-full max-w-5xl flex flex-col items-center">
         {activeTab === 'predict' && <PredictView initialTicker={predictTicker} onUsed={() => setPredictTicker('')} />}
         {activeTab === 'scanner' && <ScannerView onScanSingle={(sym) => { setPredictTicker(sym); setActiveTab('predict') }} />}
+        {activeTab === 'trend-board' && <TrendTemplateBoardView onScanSingle={(sym) => { setPredictTicker(sym); setActiveTab('predict') }} />}
         {activeTab === 'review'  && <ReviewView />}
         {activeTab === 'macro'        && <MacroDashboardView />}
         {activeTab === 'macro-score'  && <MacroPredictedView />}        {activeTab === 'volume-leaders' && <VolumeLeadersView />}
@@ -198,6 +200,127 @@ function PredictView({ initialTicker = '', onUsed }) {
       )}
 
       <ModelDisclaimer />
+    </div>
+  )
+}
+
+// ----------------------------------------------------
+// VIEW: TREND TEMPLATE BOARD
+// Reads the daily scan cache only — starts no scan, downloads nothing. The
+// scores were computed inside the pre-scan off frames already in memory.
+// ----------------------------------------------------
+function TrendTemplateBoardView({ onScanSingle }) {
+  const [rows, setRows]       = useState(null)
+  const [meta, setMeta]       = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError]     = useState(null)
+  const [minScore, setMinScore] = useState(5)
+
+  const fetchData = useCallback(() => {
+    setLoading(true)
+    setError(null)
+    fetch('/api/trend-template')
+      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json() })
+      .then(d => { setRows(d.results ?? []); setMeta({ scanned: d.scanned, fullPass: d.full_pass }); setLoading(false) })
+      .catch(e => { setError(e.message); setLoading(false) })
+  }, [])
+
+  useEffect(() => { fetchData() }, [fetchData])
+
+  const shown = (rows || []).filter(r => r.score >= minScore)
+
+  const tone = (score) =>
+    score === 7 ? 'text-green-400 bg-green-500/10 border-green-500/30'
+    : score >= 5 ? 'text-yellow-400 bg-yellow-500/10 border-yellow-500/30'
+    : 'text-gray-400 bg-white/5 border-white/10'
+
+  return (
+    <div className="w-full glass-card p-6 md:p-10">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-white/10 pb-6 mb-6">
+        <div>
+          <h2 className="text-2xl font-bold text-white flex items-center gap-2">
+            <Activity className="w-6 h-6 text-neon-purple" /> Trend Template Board
+          </h2>
+          <p className="text-sm text-gray-400 mt-1">
+            Minervini 7-criteria score across the S&amp;P 500 and Nasdaq 100, from the daily scan.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          {[7, 6, 5, 0].map(n => (
+            <button
+              key={n}
+              onClick={() => setMinScore(n)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-mono border transition-colors ${
+                minScore === n ? 'bg-neon-blue/20 text-neon-blue border-neon-blue/40'
+                               : 'bg-white/5 text-gray-400 border-white/10 hover:bg-white/10'}`}
+            >
+              {n === 0 ? 'All' : `${n}+`}
+            </button>
+          ))}
+          <button onClick={fetchData} className="p-2 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10" title="Refresh">
+            <RefreshCw className={`w-4 h-4 text-gray-400 ${loading ? 'animate-spin' : ''}`} />
+          </button>
+        </div>
+      </div>
+
+      {error && <p className="text-red-400 font-mono text-sm">{error}</p>}
+      {loading && !rows && <p className="text-gray-400 font-mono text-sm">Loading…</p>}
+
+      {rows && rows.length === 0 && (
+        <div className="text-gray-400 text-sm leading-relaxed">
+          <p className="mb-2">No scores cached yet.</p>
+          <p className="text-gray-500">
+            The board fills from the daily pre-scan. Run a full scan from the Scanner tab,
+            or wait for tomorrow morning&apos;s cron.
+          </p>
+        </div>
+      )}
+
+      {rows && rows.length > 0 && (
+        <>
+          <p className="text-xs font-mono text-gray-500 mb-4">
+            {shown.length} shown · {meta?.fullPass ?? 0} at 7/7 · {meta?.scanned ?? 0} symbols scanned
+          </p>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-xs font-mono text-gray-500 uppercase tracking-wider border-b border-white/10">
+                  <th className="text-left p-2">Symbol</th>
+                  <th className="text-left p-2">Name</th>
+                  <th className="text-center p-2">Score</th>
+                  <th className="text-right p-2">Price</th>
+                  <th className="text-center p-2">ML</th>
+                </tr>
+              </thead>
+              <tbody>
+                {shown.map(r => (
+                  <tr key={r.symbol} className="border-b border-white/5 hover:bg-white/5">
+                    <td className="p-2">
+                      <button onClick={() => onScanSingle?.(r.symbol)}
+                              className="font-mono font-bold text-neon-blue hover:underline">
+                        {r.symbol}
+                      </button>
+                    </td>
+                    <td className="p-2 text-gray-400 truncate max-w-[16rem]">{r.symbol_name || '—'}</td>
+                    <td className="p-2 text-center">
+                      <span className={`px-2.5 py-0.5 rounded-full border text-xs font-bold font-mono ${tone(r.score)}`}>
+                        {r.score}/7
+                      </span>
+                    </td>
+                    <td className="p-2 text-right font-mono text-gray-300 tabular-nums">
+                      {r.last_price != null ? r.last_price.toFixed(2) : '—'}
+                    </td>
+                    <td className="p-2 text-center font-mono text-xs text-gray-500">{r.signal || '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {shown.length === 0 && (
+            <p className="text-gray-500 text-sm mt-4">Nothing at {minScore}/7 or better right now.</p>
+          )}
+        </>
+      )}
     </div>
   )
 }
