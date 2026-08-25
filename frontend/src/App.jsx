@@ -165,7 +165,7 @@ function PredictView({ initialTicker = '', onUsed }) {
               </h2>
               <p className="text-gray-400">Model Updated: {result.last_date}</p>
             </div>
-            <div className="mt-6 md:mt-0"><SignalBadge signal={result.signal} /></div>
+            <div className="mt-6 md:mt-0"><SignalBadge signal={result.signal} quality={result.signal_quality} /></div>
           </div>
 
           <div className="grid grid-cols-2 md:grid-cols-4 gap-6 mb-10">
@@ -932,17 +932,36 @@ function FeatureTooltip({ active, payload, descriptions }) {
   )
 }
 
-function SignalBadge({ signal }) {
+function SignalBadge({ signal, quality }) {
   const isBuy = signal === 'BUY'
   const isSell = signal === 'SELL'
-  const color = isBuy ? 'text-green-400 border-green-500/30 bg-green-500/10 shadow-[0_0_30px_rgba(74,222,128,0.2)]' 
+
+  // A signal the held-out data says is worth nothing must not be painted the
+  // same green as one that is. Two conditions hollow it out: an edge at or
+  // under 1 point over the symbol's own base rate, or a model that fires on
+  // most days and therefore carries no information whatever its precision
+  // reads. PLTR on 2026-08-25: edge +0.95%, fires on 92% of days.
+  const hollow = quality && (isBuy || isSell) &&
+                 (quality.edge <= 0.01 || quality.selectivity >= 0.8)
+
+  const color = hollow ? 'text-amber-400 border-amber-500/30 bg-amber-500/10'
+              : isBuy ? 'text-green-400 border-green-500/30 bg-green-500/10 shadow-[0_0_30px_rgba(74,222,128,0.2)]'
               : isSell ? 'text-red-400 border-red-500/30 bg-red-500/10 shadow-[0_0_30px_rgba(248,113,113,0.2)]'
               : 'text-yellow-400 border-yellow-500/30 bg-yellow-500/10'
-  const Icon = isBuy ? TrendingUp : isSell ? TrendingDown : Minus
+  const Icon = hollow ? AlertCircle : isBuy ? TrendingUp : isSell ? TrendingDown : Minus
+
+  const why = !hollow ? null
+            : quality.selectivity >= 0.8
+              ? `fires on ${(quality.selectivity * 100).toFixed(0)}% of days — no information`
+              : `edge ${quality.edge > 0 ? '+' : ''}${(quality.edge * 100).toFixed(1)}% over base rate`
+
   return (
-    <div className={`flex items-center gap-3 px-8 py-4 rounded-full border ${color}`}>
-      <Icon className="w-8 h-8" />
-      <span className="text-3xl font-bold font-mono tracking-widest">{signal}</span>
+    <div className={`flex items-center gap-3 px-8 py-4 rounded-2xl border ${color}`}>
+      <Icon className="w-8 h-8 shrink-0" />
+      <div className="flex flex-col">
+        <span className="text-3xl font-bold font-mono tracking-widest leading-tight">{signal}</span>
+        {why && <span className="text-[11px] font-mono opacity-80 mt-0.5">{why}</span>}
+      </div>
     </div>
   )
 }
