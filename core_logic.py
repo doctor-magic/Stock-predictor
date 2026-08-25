@@ -119,29 +119,46 @@ def _p_buy(proba, classes) -> "float | None":
 
 
 @cached(_sp500_cache)
+# Both index loaders used to fall back to the 8-stock US preset on failure.
+# That is how "nasdaq100" quietly meant AAPL/NVDA/TSLA/MSFT/AMZN/GOOGL/META/SPY
+# for months (Wikipedia moved the constituents table to its own article and the
+# match simply stopped firing — no exception, no log, just eight rows labelled
+# as an index of a hundred). An empty universe is now returned instead: it
+# scans to 0 results, and pre_scan already reports 0 as a failure.
 def load_sp500():
     try:
         url  = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
         html = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15).text
         df   = pd.read_html(StringIO(html))[0]
-        return dict(zip(df["Security"], df["Symbol"].str.replace(".", "-", regex=False)))
+        out = dict(zip(df["Security"], df["Symbol"].str.replace(".", "-", regex=False)))
+        if len(out) < 100:
+            print(f"SP500 Load Error: only {len(out)} constituents parsed — layout changed?")
+            return {}
+        return out
     except Exception as e:
         print("SP500 Load Error:", e)
-        return PRESET_STOCKS["us"]
+        return {}
 
 @cached(_nasdaq_cache)
 def load_nasdaq100():
-    try:
-        url  = "https://en.wikipedia.org/wiki/Nasdaq-100"
-        html = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15).text
-        for t in pd.read_html(StringIO(html)):
-            if "Ticker" in t.columns or "Symbol" in t.columns:
-                col      = "Ticker" if "Ticker" in t.columns else "Symbol"
-                name_col = "Company" if "Company" in t.columns else t.columns[0]
-                return dict(zip(t[name_col], t[col].str.replace(".", "-", regex=False)))
-    except Exception as e:
-        print("NASDAQ Load Error:", e)
-    return PRESET_STOCKS["us"]
+    # The constituents table lives in its own article now; the index article is
+    # kept as a secondary attempt in case it ever moves back.
+    urls = ("https://en.wikipedia.org/wiki/List_of_NASDAQ-100_companies",
+            "https://en.wikipedia.org/wiki/Nasdaq-100")
+    for url in urls:
+        try:
+            html = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15).text
+            for t in pd.read_html(StringIO(html)):
+                if "Ticker" in t.columns or "Symbol" in t.columns:
+                    col      = "Ticker" if "Ticker" in t.columns else "Symbol"
+                    name_col = "Company" if "Company" in t.columns else t.columns[0]
+                    out = dict(zip(t[name_col], t[col].str.replace(".", "-", regex=False)))
+                    if len(out) >= 50:
+                        return out
+        except Exception as e:
+            print(f"NASDAQ Load Error ({url}): {e}")
+    print("NASDAQ Load Error: no constituents table found at any known URL")
+    return {}
 
 def compute_rsi(series, period=14):
     delta = series.diff()

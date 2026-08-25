@@ -455,7 +455,6 @@ function ScannerView({ onScanSingle }) {
           value={market} 
           onChange={e => setMarket(e.target.value)}
         >
-          <option value="us" className="bg-space-dark text-white">🇺🇸 USA (US)</option>
           <option value="tase" className="bg-space-dark text-white">🇮🇱 Israel (TASE)</option>
           <option value="nasdaq100" className="bg-space-dark text-white">📈 NASDAQ-100</option>
           <option value="sp500" className="bg-space-dark text-white">📊 S&P 500</option>
