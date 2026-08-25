@@ -12,7 +12,7 @@ from io import StringIO
 import warnings
 
 # scanners imports only stdlib, so this direction never cycles back here.
-from scanners import compute_trend_template
+from scanners import compute_trend_template, summarize_signal_quality
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 cache = TTLCache(maxsize=100, ttl=900)
@@ -571,6 +571,26 @@ def train_and_evaluate(df: pd.DataFrame, light_mode=False):
 
     return clf, _prec("BUY"), _prec("SELL")
 
+def _signal_quality(clf, df) -> "dict | None":
+    """Re-score the held-out test split to describe what a BUY was worth here.
+
+    Repeats train_and_evaluate's chronological split rather than changing its
+    signature: that function feeds run_market_scan and the frozen R1 path, and
+    this is a display-only addition. One predict over ~200 rows.
+    """
+    try:
+        clean = df.dropna(subset=FEATURES + ["label"])
+        split = int(len(clean) * 0.8)
+        test = clean.iloc[split:]
+        if test.empty:
+            return None
+        return summarize_signal_quality(test["label"].values,
+                                        clf.predict(test[FEATURES]), "BUY")
+    except Exception as e:
+        print(f"signal_quality error: {e}")
+        return None
+
+
 def get_prediction(ticker: str, light_mode=False):
     df_raw = fetch_stock_data(ticker)
     if df_raw.empty:
@@ -681,6 +701,11 @@ def get_prediction(ticker: str, light_mode=False):
         # it costs no extra fetch. Never read by any gate. None for symbols
         # with under 260 sessions.
         "trend_template": compute_trend_template(df_raw),
+        # Display only. A precision score cannot be read without the base rate
+        # beside it, and neither can be read without knowing how often the
+        # model fires at all — PLTR on 2026-08-25 predicted BUY on 183 of 199
+        # test rows, which makes its "precision" a restatement of its base rate.
+        "signal_quality": _signal_quality(clf, df),
     }
 
 def check_feature_health(symbol: str = "NVDA") -> dict:

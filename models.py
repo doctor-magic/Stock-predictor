@@ -16,6 +16,9 @@ class PredictionResult(BaseModel):
     # Minervini Trend Template (Aug 2026) — display only, no gate, no
     # setup_log column. None when the symbol lacks 260 sessions of history.
     trend_template: Optional[Dict[str, Any]] = None
+    # Precision alongside its base rate and how often the model fires at all.
+    # Display only, like trend_template — no gate reads it.
+    signal_quality: Optional[Dict[str, Any]] = None
 
 class ScanRequest(BaseModel):
     # Clamps restored Jul 5 2026 (May-2026 hardening, lost in the Jun 7 refactor)

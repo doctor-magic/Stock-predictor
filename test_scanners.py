@@ -1210,3 +1210,46 @@ class TestTrendTemplateBoard(unittest.TestCase):
     def test_row_without_symbol_is_skipped(self):
         out = scanners.rank_trend_template({"sp500": [{"trend_template_score": 7}]})
         self.assertEqual(out, [])
+
+
+class TestSignalQuality(unittest.TestCase):
+    """summarize_signal_quality — reading a precision score honestly."""
+
+    def test_always_firing_has_zero_edge(self):
+        # The PLTR case. A model that says BUY on every row cannot beat the
+        # base rate by construction: its precision IS the base rate. This is
+        # the number the card exists to surface.
+        y_true = ["BUY"] * 30 + ["SELL"] * 50 + ["HOLD"] * 20
+        y_pred = ["BUY"] * 100
+        q = scanners.summarize_signal_quality(y_true, y_pred)
+        self.assertEqual(q["precision"], q["base_rate"])
+        self.assertEqual(q["edge"], 0.0)
+        self.assertEqual(q["selectivity"], 1.0)
+
+    def test_selective_and_right_shows_positive_edge(self):
+        y_true = ["BUY"] * 20 + ["HOLD"] * 80
+        y_pred = ["BUY"] * 10 + ["HOLD"] * 90   # fires 10 times, all correct
+        q = scanners.summarize_signal_quality(y_true, y_pred)
+        self.assertEqual(q["precision"], 1.0)
+        self.assertEqual(q["base_rate"], 0.2)
+        self.assertAlmostEqual(q["edge"], 0.8)
+        self.assertEqual(q["selectivity"], 0.1)
+
+    def test_negative_edge_is_reported_not_floored(self):
+        # A signal worse than doing nothing must read as worse than nothing.
+        y_true = ["BUY"] * 50 + ["SELL"] * 50
+        y_pred = ["HOLD"] * 40 + ["BUY"] * 10 + ["HOLD"] * 30 + ["BUY"] * 20
+        q = scanners.summarize_signal_quality(y_true, y_pred)
+        self.assertLess(q["edge"], 0)
+
+    def test_outcomes_split_hold_from_sell(self):
+        # Precision lumps every miss together; the split is what says whether
+        # the misses drifted sideways or went the other way.
+        y_true = ["BUY"] * 2 + ["HOLD"] * 3 + ["SELL"] * 5
+        q = scanners.summarize_signal_quality(y_true, ["BUY"] * 10)
+        self.assertEqual(q["outcomes"], {"BUY": 2, "HOLD": 3, "SELL": 5})
+
+    def test_never_fired_and_empty_return_none(self):
+        self.assertIsNone(scanners.summarize_signal_quality(["BUY"], ["HOLD"]))
+        self.assertIsNone(scanners.summarize_signal_quality([], []))
+        self.assertIsNone(scanners.summarize_signal_quality(["BUY"], []))

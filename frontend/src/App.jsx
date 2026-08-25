@@ -196,6 +196,7 @@ function PredictView({ initialTicker = '', onUsed }) {
           </div>
 
           <TrendTemplateCard data={result.trend_template} />
+          <SignalQualityCard data={result.signal_quality} />
         </div>
       )}
 
@@ -1009,6 +1010,65 @@ function TrendTemplateCard({ data }) {
         <span>MA150 {values.ma150}</span>
         <span>MA200 {values.ma200}</span>
         <span>52w {values.low52}–{values.high52}</span>
+      </div>
+    </div>
+  )
+}
+
+// The precision number on its own is unreadable, and reads better than it is.
+// This puts the two figures next to it that decide what it means: the base
+// rate the same window produced anyway, and how often the model fires at all.
+// A model that says BUY on 92% of days has no edge whatever its precision.
+function SignalQualityCard({ data }) {
+  if (!data) return null
+
+  const { precision, base_rate, edge, selectivity, test_rows, fired, outcomes } = data
+  const pct = (v) => `${(v * 100).toFixed(1)}%`
+  const edgeTone = edge > 0.05 ? 'text-green-400' : edge > 0.01 ? 'text-yellow-400' : 'text-red-400'
+
+  const verdict =
+    selectivity > 0.8 ? `Fires on ${pct(selectivity)} of days — barely selective, so its precision is close to the base rate by construction.`
+    : edge <= 0.01 ? 'No measurable edge over doing nothing on this symbol.'
+    : edge < 0.05 ? 'A small edge over the base rate.'
+    : 'A clear edge over the base rate.'
+
+  const up = outcomes?.BUY ?? 0, flat = outcomes?.HOLD ?? 0, down = outcomes?.SELL ?? 0
+  const tot = up + flat + down || 1
+
+  return (
+    <div className="mt-10">
+      <h3 className="text-lg font-mono text-gray-300 mb-6 flex items-center gap-2">
+        <Info className="w-5 h-5 text-neon-purple" /> Signal Quality
+        <span className="text-xs text-gray-500 font-mono">(held-out test set)</span>
+      </h3>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+        <MetricBox label="Precision" value={pct(precision)} />
+        <MetricBox label="Base rate" value={pct(base_rate)} />
+        <div className="bg-white/5 border border-white/5 rounded-xl p-4 flex flex-col justify-center">
+          <span className="text-xs font-mono text-gray-500 mb-1 uppercase tracking-wider">Edge</span>
+          <span className={`text-2xl font-bold ${edgeTone}`}>
+            {edge > 0 ? '+' : ''}{(edge * 100).toFixed(1)}%
+          </span>
+        </div>
+        <MetricBox label="Fires on" value={pct(selectivity)} />
+      </div>
+
+      <div className="bg-white/5 border border-white/5 rounded-xl p-4">
+        <p className="text-xs font-mono text-gray-500 mb-3">
+          What actually happened over the next 10 days on the {fired} of {test_rows} test days it called BUY
+        </p>
+        <div className="flex h-2 rounded-full overflow-hidden mb-3">
+          <div className="bg-green-500/70" style={{ width: `${(up / tot) * 100}%` }} />
+          <div className="bg-gray-600/70" style={{ width: `${(flat / tot) * 100}%` }} />
+          <div className="bg-red-500/70" style={{ width: `${(down / tot) * 100}%` }} />
+        </div>
+        <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs font-mono">
+          <span className="text-green-400">rose 3%+ &nbsp;{up} ({pct(up / tot)})</span>
+          <span className="text-gray-400">sideways &nbsp;{flat} ({pct(flat / tot)})</span>
+          <span className="text-red-400">fell 3%+ &nbsp;{down} ({pct(down / tot)})</span>
+        </div>
+        <p className="text-xs text-gray-500 mt-3 leading-relaxed">{verdict}</p>
       </div>
     </div>
   )

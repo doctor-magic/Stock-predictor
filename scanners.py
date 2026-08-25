@@ -828,3 +828,49 @@ def rank_trend_template(rows_by_market: dict, min_score: int = 0) -> list:
                     "market_id": market_id,
                 }
     return sorted(best.values(), key=lambda r: (-r["score"], r["symbol"]))
+
+
+def summarize_signal_quality(y_true, y_pred, signal: str = "BUY") -> Optional[dict]:
+    """What a signal was actually worth on the held-out test set.
+
+    Pure counting over two label arrays — no model, no I/O.
+
+    A precision figure alone cannot be read. 32% sounds poor next to a 50% base
+    rate and good next to a 25% one, and it says nothing about whether the
+    misses drifted sideways or went the other way. Three numbers fix that:
+
+      base_rate   how often the outcome happened anyway, on this symbol, in
+                  this window. Precision below it means the signal subtracts.
+      edge        precision - base_rate. The only figure worth acting on.
+      selectivity share of test rows that got the signal at all. Near 1.0 means
+                  the model fires constantly and carries no information, no
+                  matter how its precision reads.
+    """
+    y_true = list(y_true)
+    y_pred = list(y_pred)
+    n = len(y_true)
+    if n == 0 or len(y_pred) != n:
+        return None
+
+    fired = [t for t, p in zip(y_true, y_pred) if p == signal]
+    if not fired:
+        return None
+
+    hits = sum(1 for t in fired if t == signal)
+    precision = hits / len(fired)
+    base_rate = sum(1 for t in y_true if t == signal) / n
+
+    outcomes = {}
+    for t in fired:
+        outcomes[t] = outcomes.get(t, 0) + 1
+
+    return {
+        "signal": signal,
+        "precision": round(precision, 4),
+        "base_rate": round(base_rate, 4),
+        "edge": round(precision - base_rate, 4),
+        "selectivity": round(len(fired) / n, 4),
+        "test_rows": n,
+        "fired": len(fired),
+        "outcomes": {k: int(v) for k, v in sorted(outcomes.items())},
+    }
